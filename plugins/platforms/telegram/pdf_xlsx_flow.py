@@ -128,6 +128,11 @@ class PdfXlsxFlow:
                     raise RuntimeError("Telegram no confirmó la entrega del Excel")
                 delivered_filename = getattr(delivery, "delivered_filename", None)
                 if delivered_filename is not None and delivered_filename != output.name:
+                    logger.error(
+                        "[PDF-XLSX] stage=delivery status=DELIVERY_FILENAME_MISMATCH expected=%r delivered=%r",
+                        output.name,
+                        delivered_filename,
+                    )
                     raise ConversionFailure(
                         "ERROR_TECNICO",
                         "DELIVERY_FILENAME_MISMATCH",
