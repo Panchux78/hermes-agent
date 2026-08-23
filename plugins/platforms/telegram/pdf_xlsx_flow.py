@@ -133,11 +133,7 @@ class PdfXlsxFlow:
                         output.name,
                         delivered_filename,
                     )
-                    raise ConversionFailure(
-                        "ERROR_TECNICO",
-                        "DELIVERY_FILENAME_MISMATCH",
-                        str(result.get("run_id") or "filename-mismatch"),
-                    )
+                    return True
         except ConversionFailure as exc:
             logger.warning(
                 "[PDF-XLSX] run_id=%s stage=convert status=%s reason=%s",
@@ -319,8 +315,6 @@ class PdfXlsxFlow:
 
     @staticmethod
     def _failure_message(error: ConversionFailure) -> str:
-        if error.reason == "DELIVERY_FILENAME_MISMATCH":
-            return "El archivo se entregó con un nombre distinto al generado."
         if error.reason.startswith("ROUTER_"):
             return f"El router no pudo procesar el PDF ({error.reason})."
         if error.status == "PDF_CIFRADO":

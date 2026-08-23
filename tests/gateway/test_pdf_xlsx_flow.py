@@ -36,7 +36,7 @@ def test_start_then_matching_pdf_starts_conversion_and_delivers_result(monkeypat
     asyncio.run(scenario())
 
 
-def test_delivery_filename_mismatch_is_reported_as_failure(monkeypatch, tmp_path):
+def test_delivery_filename_mismatch_does_not_send_client_error(monkeypatch, tmp_path):
     async def scenario():
         flow = PdfXlsxFlow(project_dir=tmp_path)
         adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()), send_document=AsyncMock())
@@ -56,7 +56,7 @@ def test_delivery_filename_mismatch_is_reported_as_failure(monkeypatch, tmp_path
         assert await flow.document(adapter, message) is True
 
         texts = [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
-        assert texts[-1] == "El archivo se entregó con un nombre distinto al generado."
+        assert "El archivo se entregó con un nombre distinto al generado." not in texts
 
     asyncio.run(scenario())
 
