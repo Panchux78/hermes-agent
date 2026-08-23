@@ -2469,6 +2469,7 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
+    delivered_filename: Optional[str] = None
     # Adapter-specific metadata.  Cross-layer contracts that affect delivery
     # semantics must be documented at the producer and consumer sites.  Current
     # known contract: Telegram edit overflow partials set

@@ -16,6 +16,7 @@ import logging
 import os
 import html as _html
 import re
+import subprocess
 import threading
 import time
 from contextvars import ContextVar
@@ -234,7 +235,15 @@ async def _shutdown_abandoned_app(app) -> None:
             logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import (
+        Update,
+        Bot,
+        Message,
+        InlineKeyboardButton,
+        InlineKeyboardMarkup,
+        KeyboardButton,
+        ReplyKeyboardMarkup,
+    )
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -258,6 +267,8 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    KeyboardButton = Any
+    ReplyKeyboardMarkup = Any
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
@@ -308,6 +319,8 @@ from plugins.platforms.telegram.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
+from plugins.platforms.telegram.agip_ddjj_flow import AgipDdjjFlow
+from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
 from utils import atomic_replace, env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -415,7 +428,8 @@ def check_telegram_requirements() -> bool:
     so the adapter's class-level type aliases get rebound.
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
-    global InlineKeyboardMarkup, LinkPreviewOptions, Application
+    global InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+    global LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler
     if TELEGRAM_AVAILABLE:
@@ -427,7 +441,12 @@ def check_telegram_requirements() -> bool:
         return False
     try:
         from telegram import Update as _Update, Bot as _Bot, Message as _Message
-        from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
+        from telegram import (
+            InlineKeyboardButton as _IKB,
+            InlineKeyboardMarkup as _IKM,
+            KeyboardButton as _KB,
+            ReplyKeyboardMarkup as _RKM,
+        )
         try:
             from telegram import LinkPreviewOptions as _LPO
         except ImportError:
@@ -448,6 +467,8 @@ def check_telegram_requirements() -> bool:
     Message = _Message
     InlineKeyboardButton = _IKB
     InlineKeyboardMarkup = _IKM
+    KeyboardButton = _KB
+    ReplyKeyboardMarkup = _RKM
     LinkPreviewOptions = _LPO
     Application = _App
     CommandHandler = _CH
@@ -728,6 +749,8 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        self._agip_ddjj_flow = AgipDdjjFlow()
+        self._pdf_xlsx_flow = PdfXlsxFlow()
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -1223,6 +1246,158 @@ class TelegramAdapter(BasePlatformAdapter):
             return _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
+
+    @staticmethod
+    def _schedule_gateway_restart() -> None:
+        """Restart the user gateway service after the callback response is sent."""
+        subprocess.Popen(
+            [
+                "systemd-run", "--user", "--on-active=2s", "--collect",
+                "--unit=hermes-gateway-button-restart",
+                "systemctl", "--user", "restart", "hermes-gateway.service",
+            ],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    @staticmethod
+    def _gateway_restart_notice() -> str:
+        """Return the user-visible warning sent immediately before a restart."""
+        return "⚠️ El gateway se reiniciará en unos segundos…"
+
+    @staticmethod
+    def _persistent_menu_keyboard():
+        """Return the one-button reply keyboard that opens the inline menu."""
+        return ReplyKeyboardMarkup(
+            [[KeyboardButton("☰ Menú")]],
+            resize_keyboard=True,
+            is_persistent=True,
+        )
+
+    @staticmethod
+    def _persistent_menu_reply_markup() -> Dict[str, Any]:
+        """Return raw Bot API reply-keyboard markup used by sendRichMessage."""
+        return {
+            "keyboard": [[{"text": "☰ Menú"}],],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        }
+
+    @staticmethod
+    def _menu_panel_title(page: str = "main") -> str:
+        titles = {
+            "main": "¿Qué querés hacer?",
+            "consultar": "Consultas\n\nMaqueta: sólo DDJJ IIBB ejecuta una acción.",
+            "preparar": "Preparar / generar",
+            "conciliar": "Conciliar\n\nMaqueta: estas acciones todavía no ejecutan nada.",
+            "controlar": "Controlar / analizar\n\nMaqueta: estas acciones todavía no ejecutan nada.",
+            "ayuda": "Ayuda\n\nMaqueta: estas acciones todavía no ejecutan nada.",
+        }
+        return titles.get(page, titles["main"])
+
+    @staticmethod
+    def _menu_panel_keyboard(page: str = "main"):
+        """Return one page of the operational-menu mockup."""
+        if page == "consultar":
+            rows = [
+                [InlineKeyboardButton("Consultar DDJJ IIBB", callback_data="ad:start")],
+                [InlineKeyboardButton("Vencimientos", callback_data="om:noop")],
+                [InlineKeyboardButton("Retenciones", callback_data="om:noop")],
+            ]
+        elif page == "preparar":
+            rows = [
+                [InlineKeyboardButton("Convertir PDF a Excel", callback_data="px:start")],
+                [InlineKeyboardButton("Liquidaciones", callback_data="om:noop")],
+                [InlineKeyboardButton("Papeles de trabajo", callback_data="om:noop")],
+            ]
+        elif page == "conciliar":
+            rows = [
+                [InlineKeyboardButton("Bancos", callback_data="om:noop")],
+                [InlineKeyboardButton("Comprobantes", callback_data="om:noop")],
+                [InlineKeyboardButton("Retenciones", callback_data="om:noop")],
+            ]
+        elif page == "controlar":
+            rows = [
+                [InlineKeyboardButton("Vencimientos", callback_data="om:noop")],
+                [InlineKeyboardButton("Posición fiscal", callback_data="om:noop")],
+                [InlineKeyboardButton("Reportes", callback_data="om:noop")],
+            ]
+        elif page == "ayuda":
+            rows = [
+                [InlineKeyboardButton("Cómo funciona", callback_data="om:noop")],
+                [InlineKeyboardButton("Escribir una consulta", callback_data="om:noop")],
+            ]
+        else:
+            return InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Consultar", callback_data="om:consultar"),
+                    InlineKeyboardButton("Preparar / generar", callback_data="om:preparar"),
+                ],
+                [
+                    InlineKeyboardButton("Conciliar", callback_data="om:conciliar"),
+                    InlineKeyboardButton("Controlar / analizar", callback_data="om:controlar"),
+                ],
+                [InlineKeyboardButton("Ayuda", callback_data="om:ayuda")],
+            ])
+
+        rows.append([
+            InlineKeyboardButton("‹ Menú", callback_data="om:main"),
+            InlineKeyboardButton("Cerrar", callback_data="om:close"),
+        ])
+        return InlineKeyboardMarkup(rows)
+
+    @staticmethod
+    def _menu_avatar_sticker_path() -> _Path:
+        """Return the transparent WebP sticker used above the menu panel."""
+        return _Path(__file__).resolve().parent / "assets" / "contabot-menu-avatar.webp"
+
+    async def _reply_operational_menu(self, message: Message, bot) -> None:
+        """Open the menu below a transparent circular avatar sticker."""
+        sticker = getattr(self, "_menu_avatar_sticker_file_id_cache", None)
+        if sticker is None:
+            sticker = self._menu_avatar_sticker_path()
+        try:
+            sent = await message.reply_sticker(sticker=sticker)
+            sent_sticker = getattr(sent, "sticker", None)
+            if sent_sticker is not None:
+                self._menu_avatar_sticker_file_id_cache = sent_sticker.file_id
+        except Exception as exc:
+            logger.warning(
+                "[Telegram] Could not send the transparent menu avatar: %s",
+                type(exc).__name__,
+            )
+        await message.reply_text(
+            self._menu_panel_title(),
+            reply_markup=self._menu_panel_keyboard(),
+        )
+
+    async def _handle_operational_menu_callback(self, query, data: str) -> None:
+        """Navigate the non-operative menu mockup without starting a workflow."""
+        page = data.removeprefix("om:")
+        if page == "noop":
+            await query.answer(text="Maqueta: esta acción todavía no está disponible.")
+            return
+        if page == "close":
+            await query.answer()
+            await query.edit_message_reply_markup(reply_markup=None)
+            return
+        if page not in {"main", "consultar", "preparar", "conciliar", "controlar", "ayuda"}:
+            await query.answer()
+            return
+        await query.answer()
+        title = self._menu_panel_title(page)
+        keyboard = self._menu_panel_keyboard(page)
+        if getattr(query.message, "photo", None):
+            await query.edit_message_caption(
+                caption=title,
+                reply_markup=keyboard,
+            )
+            return
+        await query.edit_message_text(
+            title,
+            reply_markup=keyboard,
+        )
 
     def _source_from_message_for_auth(self, message: Message):
         """Build the same Telegram source shape the gateway auth path expects.
@@ -2219,6 +2394,7 @@ class TelegramAdapter(BasePlatformAdapter):
         payload: Dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id),
             "rich_message": self._rich_message_payload(content),
+            "reply_markup": self._persistent_menu_reply_markup(),
         }
         # Only forward non-None routing keys: when direct_messages_topic_id is
         # present _thread_kwargs_for_send pairs it with message_thread_id=None,
@@ -3955,54 +4131,61 @@ class TelegramAdapter(BasePlatformAdapter):
             self._run_post_connect_housekeeping()
         )
 
+    async def _register_technical_command_menu(self) -> None:
+        """Expose the command menu only in the configured technical user's DM."""
+        technical_user_id = str(
+            self.config.extra.get("technical_menu_user_id", "")
+        ).strip()
+        if not technical_user_id.isdigit():
+            logger.info("[%s] Telegram command menu disabled: no technical user configured", self.name)
+            return
+        if not self._bot:
+            return
+
+        from telegram import (
+            BotCommand,
+            BotCommandScopeAllGroupChats,
+            BotCommandScopeAllPrivateChats,
+            BotCommandScopeChat,
+            BotCommandScopeDefault,
+        )
+        from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
+
+        for scope in (
+            BotCommandScopeDefault(),
+            BotCommandScopeAllPrivateChats(),
+            BotCommandScopeAllGroupChats(),
+        ):
+            await self._bot.delete_my_commands(scope=scope)
+        logger.info("[%s] Cleared Telegram command menus outside the technical scope", self.name)
+
+        menu_commands, hidden_count = telegram_menu_commands(
+            max_commands=telegram_menu_max_commands()
+        )
+        technical_commands = [
+            BotCommand(name, description) for name, description in menu_commands
+        ]
+        await self._bot.set_my_commands(
+            technical_commands,
+            scope=BotCommandScopeChat(chat_id=int(technical_user_id)),
+        )
+        logger.info(
+            "[%s] Registered %d commands in the technical Telegram command menu%s",
+            self.name,
+            len(technical_commands),
+            f"; {hidden_count} omitted by the configured cap" if hidden_count else "",
+        )
+
     async def _run_post_connect_housekeeping(self) -> None:
         """Register the command menu, surface the status indicator, and set up
         DM topics — all off the connect path so a slow Bot API call cannot blow
         the gateway connect timeout (#46298). Every step is non-fatal."""
         try:
-            # Register bot commands so Telegram shows a hint menu when users type /
-            # List is derived from the central COMMAND_REGISTRY — adding a new
-            # gateway command there automatically adds it to the Telegram menu.
             try:
-                from telegram import (
-                    BotCommand,
-                    BotCommandScopeAllPrivateChats,
-                    BotCommandScopeAllGroupChats,
-                    BotCommandScopeDefault,
-                )
-                from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
-                if not self._bot:
-                    return
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit (~4KB total).  Hermes defaults to 60 to
-                # keep built-ins plus common skill commands visible while
-                # staying under the threshold; users can tune the cap via
-                # platforms.telegram.extra.command_menu.
-                max_commands = telegram_menu_max_commands()
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
-                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
-                # Register for all scopes independently — Telegram picks the
-                # narrowest matching scope per chat type (forum topics fall
-                # through to AllGroupChats or Default).
-                for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
-                    scope_name = getattr(scope_cls, "__name__", str(scope_cls))
-                    try:
-                        await self._bot.set_my_commands(bot_commands, scope=scope_cls())
-                        logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
-                    except Exception as scope_err:
-                        logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
-                # Forum topics don't inherit AllGroupChats — Telegram resolves
-                # commands via BotCommandScopeChat(chat_id) for forum groups.
-                # Lazy registration happens in _ensure_forum_commands on first
-                # message from a forum topic (see _handle_text_message).
-                if hidden_count:
-                    logger.info(
-                        "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count, max_commands,
-                    )
+                await self._register_technical_command_menu()
             except Exception as e:
                 logger.warning(
-                    "[%s] Could not register Telegram command menu: %s",
+                    "[%s] Could not register technical Telegram command menu: %s",
                     self.name,
                     _redact_telegram_error_text(e),
                     exc_info=True,
@@ -5261,6 +5444,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=self._persistent_menu_keyboard(),
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -5275,6 +5459,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=self._persistent_menu_keyboard(),
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -7043,6 +7228,71 @@ class TelegramAdapter(BasePlatformAdapter):
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
+        # --- Operational menu mockup ---
+        if data.startswith("om:"):
+            await self._handle_operational_menu_callback(query, data)
+            return
+
+        # --- Conversión visual PDF a XLSX ---
+        if data.startswith("px:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ No estás autorizado para convertir documentos.")
+                return
+            if await self._pdf_xlsx_flow.callback(
+                self, query, data, query_chat_id, query_thread_id, caller_id
+            ):
+                return
+
+        # --- Consulta DDJJ IIBB AGIP ---
+        if data.startswith("ad:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ No estás autorizado para consultar DDJJ.")
+                return
+            if await self._agip_ddjj_flow.callback(
+                self, query, data, query_chat_id, query_thread_id, caller_id
+            ):
+                return
+
+        # --- Default gateway control button ---
+        if data == "hg:restart":
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to restart the gateway.")
+                return
+            try:
+                if query_chat_id is not None:
+                    await self._bot.send_message(
+                        chat_id=normalize_telegram_chat_id(str(query_chat_id)),
+                        text=self._gateway_restart_notice(),
+                    )
+                await query.answer(text="Restarting gateway…")
+                self._schedule_gateway_restart()
+            except Exception as exc:
+                logger.error("[%s] Could not schedule gateway restart: %s", self.name, exc)
+                await query.answer(text="⚠️ Could not schedule the restart.")
+                return
+            return
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
@@ -7991,7 +8241,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     "document",
                     reset_media=lambda: f.seek(0),
                 )
-            return SendResult(success=True, message_id=str(msg.message_id))
+            remote_document = getattr(msg, "document", None)
+            remote_filename = getattr(remote_document, "file_name", None)
+            return SendResult(
+                success=True,
+                message_id=str(msg.message_id),
+                delivered_filename=str(remote_filename) if remote_filename else None,
+            )
         except Exception as e:
             logger.warning(
                 "[%s] Failed to send document: %s",
@@ -9480,12 +9736,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._message_matches_mention_patterns(message)
 
     async def _ensure_forum_commands(self, message) -> None:
-        """Lazy-register bot commands for forum supergroups.
-
-        Forum topics don't inherit AllGroupChats scope — Telegram resolves
-        via BotCommandScopeChat(chat_id).  Register on first message so the
-        command menu works in topic views.
-        """
+        """Clear any legacy forum-specific command menu once per chat."""
         async with self._forum_lock:
             try:
                 chat = getattr(message, "chat", None)
@@ -9494,15 +9745,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id = int(chat.id)
                 if chat_id in self._forum_command_registered:
                     return
-                from telegram import BotCommand, BotCommandScopeChat
-                from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
-                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
-                await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
+                from telegram import BotCommandScopeChat
+                await self._bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
-                logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
+                logger.info("[%s] Cleared legacy command menu for forum chat %s", self.name, chat_id)
             except Exception as e:
-                logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
+                logger.warning("[%s] Forum command cleanup failed: %s", self.name, _redact_telegram_error_text(e))
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.
@@ -9534,6 +9782,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "from_user", None), "id", None),
                 getattr(getattr(msg, "chat", None), "id", None),
             )
+            return
+        if msg.text == "☰ Menú":
+            await self._reply_operational_menu(msg, context.bot)
+            return
+        if await self._agip_ddjj_flow.text(self, msg):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
@@ -9827,6 +10080,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         msg = update.message
+
+        if msg.document and await self._pdf_xlsx_flow.document(self, msg):
+            return
 
         msg_type = self._media_message_type(msg)
 
