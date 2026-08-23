@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -234,7 +235,7 @@ class PdfXlsxFlow:
         output = Path(output_value) if isinstance(output_value, str) else workdir / "missing.xlsx"
         if proc.returncode != 0 or result.get("status") != "CONVERTED" or not output.is_file():
             status = str(result.get("status") or "ERROR_TECNICO")
-            reason = str(result.get("reason") or f"SUBPROCESS_EXIT_{proc.returncode}")
+            reason = self._router_failure_reason(result, stderr, proc.returncode)
             logger.warning(
                 "[PDF-XLSX] run_id=%s stage=router status=%s reason=%s stderr_present=%s",
                 run_id, status, reason, bool(stderr.strip()),
@@ -287,6 +288,18 @@ class PdfXlsxFlow:
             raise
 
     @staticmethod
+    def _router_failure_reason(result: dict[str, Any], stderr: bytes, returncode: int | None) -> str:
+        reported = result.get("reason")
+        if isinstance(reported, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{2,80}", reported):
+            return f"ROUTER_{reported}"
+        text = stderr.decode("utf-8", errors="replace")
+        matches = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Mismatch|Blocked))\b", text)
+        if matches:
+            normalized = re.sub(r"(?<!^)(?=[A-Z])", "_", matches[-1]).upper()
+            return f"ROUTER_{normalized}"
+        return f"ROUTER_SUBPROCESS_EXIT_{returncode}"
+
+    @staticmethod
     def _success_caption(result: dict[str, Any]) -> str:
         rows = int(result.get("rows_ok") or 0)
         if rows == 0:
@@ -303,6 +316,8 @@ class PdfXlsxFlow:
     def _failure_message(error: ConversionFailure) -> str:
         if error.reason == "DELIVERY_FILENAME_MISMATCH":
             return "El archivo se entregó con un nombre distinto al generado."
+        if error.reason.startswith("ROUTER_"):
+            return f"El router no pudo procesar el PDF ({error.reason})."
         if error.status == "PDF_CIFRADO":
             return "El PDF está cifrado. Enviá una copia sin contraseña."
         if error.status == "VISION_BACKEND_UNAVAILABLE" and error.reason in {

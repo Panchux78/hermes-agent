@@ -61,6 +61,10 @@ def test_delivery_filename_mismatch_is_reported_as_failure(monkeypatch, tmp_path
     asyncio.run(scenario())
 
 
+def test_router_failure_reason_is_sanitized_from_stderr():
+    assert PdfXlsxFlow._router_failure_reason({}, b"Traceback\nLayoutMismatch: headers absent\n", 1) == "ROUTER_LAYOUT_MISMATCH"
+
+
 def test_pending_conversion_ignores_other_user_document(tmp_path):
     async def scenario():
         flow = PdfXlsxFlow(project_dir=tmp_path)
