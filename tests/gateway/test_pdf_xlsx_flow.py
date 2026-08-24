@@ -244,6 +244,11 @@ def test_internal_review_state_is_not_exposed_to_user(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
+def test_router_business_states_do_not_expose_internal_codes():
+    error = ConversionFailure("UNIDENTIFIED", "ROUTER_UNIDENTIFIED", "run")
+    assert PdfXlsxFlow._failure_message(error) == "El documento no corresponde todavía a un emisor reconocido."
+
+
 def test_real_pipeline_stages_are_reported_to_telegram(monkeypatch, tmp_path):
     async def scenario():
         flow = PdfXlsxFlow(project_dir=tmp_path)

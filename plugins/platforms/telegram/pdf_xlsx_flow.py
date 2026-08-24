@@ -322,6 +322,15 @@ class PdfXlsxFlow:
 
     @staticmethod
     def _failure_message(error: ConversionFailure) -> str:
+        business_messages = {
+            "ROUTER_UNIDENTIFIED": "El documento no corresponde todavía a un emisor reconocido.",
+            "ROUTER_IDENTIFIED_NO_ROUTE": "El formato de este documento todavía no está soportado.",
+            "ROUTER_LAYOUT_NOT_SUPPORTED": "El formato de este documento todavía no está soportado.",
+            "ROUTER_ROUTE_NOT_CONNECTED": "El formato fue reconocido y quedó preservado; su procesamiento aún no está habilitado.",
+            "ROUTER_AMBIGUOUS": "El emisor o formato del documento requiere revisión.",
+        }
+        if error.reason in business_messages:
+            return business_messages[error.reason]
         if error.reason.startswith("ROUTER_"):
             return f"El router no pudo procesar el PDF ({error.reason})."
         if error.status == "PDF_CIFRADO":
