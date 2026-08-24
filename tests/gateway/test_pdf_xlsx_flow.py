@@ -61,6 +61,32 @@ def test_delivery_filename_mismatch_does_not_send_client_error(monkeypatch, tmp_
     asyncio.run(scenario())
 
 
+def test_long_delivery_filename_warns_before_send(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()), send_document=AsyncMock())
+        query = SimpleNamespace(answer=AsyncMock())
+        message = SimpleNamespace(
+            chat_id=123,
+            message_thread_id=None,
+            from_user=SimpleNamespace(id=99),
+            document=SimpleNamespace(file_name="resumen.pdf", mime_type="application/pdf", file_size=10),
+        )
+        name = "Resumen_Cta_CC$_191_006_0444811_Del_2025_01_01_Al_2025_01_31_2-v06.xlsx"
+        delivered = tmp_path / name
+        delivered.write_bytes(b"xlsx")
+        monkeypatch.setattr(flow, "_convert", AsyncMock(return_value=(delivered, {"rows_ok": 6})))
+        adapter.send_document.return_value = SimpleNamespace(success=True, message_id="77", delivered_filename=name)
+
+        await flow.callback(adapter, query, "px:start", 123, None, "99")
+        assert await flow.document(adapter, message) is True
+
+        texts = [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
+        assert "Aviso: Telegram acortará el nombre del archivo a 64 caracteres." in texts
+
+    asyncio.run(scenario())
+
+
 def test_router_failure_reason_is_sanitized_from_stderr():
     assert PdfXlsxFlow._router_failure_reason({}, b"Traceback\nLayoutMismatch: headers absent\n", 1) == "ROUTER_LAYOUT_MISMATCH"
 

@@ -116,6 +116,13 @@ class PdfXlsxFlow:
         try:
             with tempfile.TemporaryDirectory(prefix="contabot-pdf-xlsx-") as work:
                 output, result = await self._convert(document, Path(work), report_progress)
+                if len(output.stem) > 64:
+                    await self._send(
+                        adapter,
+                        chat_id,
+                        "Aviso: Telegram acortará el nombre del archivo a 64 caracteres.",
+                        thread_id,
+                    )
                 caption = self._success_caption(result)
                 delivery = await adapter.send_document(
                     chat_id=str(chat_id),
