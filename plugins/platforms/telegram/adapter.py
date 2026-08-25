@@ -320,6 +320,7 @@ from plugins.platforms.telegram.telegram_network import (
     parse_fallback_ip_env,
 )
 from plugins.platforms.telegram.agip_ddjj_flow import AgipDdjjFlow
+from plugins.platforms.telegram.admin_maintenance_flow import AdminMaintenanceFlow
 from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
 from utils import atomic_replace, env_float, env_int
 
@@ -750,6 +751,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
         self._agip_ddjj_flow = AgipDdjjFlow()
+        self._admin_maintenance_flow = AdminMaintenanceFlow()
         self._pdf_xlsx_flow = PdfXlsxFlow()
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
@@ -1293,11 +1295,12 @@ class TelegramAdapter(BasePlatformAdapter):
             "conciliar": "Conciliar\n\nMaqueta: estas acciones todavía no ejecutan nada.",
             "controlar": "Controlar / analizar\n\nMaqueta: estas acciones todavía no ejecutan nada.",
             "ayuda": "Ayuda\n\nMaqueta: estas acciones todavía no ejecutan nada.",
+            "administracion": "Administración",
         }
         return titles.get(page, titles["main"])
 
     @staticmethod
-    def _menu_panel_keyboard(page: str = "main"):
+    def _menu_panel_keyboard(page: str = "main", *, show_administration: bool = False):
         """Return one page of the operational-menu mockup."""
         if page == "consultar":
             rows = [
@@ -1328,8 +1331,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 [InlineKeyboardButton("Cómo funciona", callback_data="om:noop")],
                 [InlineKeyboardButton("Escribir una consulta", callback_data="om:noop")],
             ]
+        elif page == "administracion":
+            rows = [
+                [InlineKeyboardButton("Actualizar mapa de impuestos", callback_data="oa:arca:start")],
+                [InlineKeyboardButton("Actualizar bancos BCRA", callback_data="oa:bcra:start")],
+            ]
         else:
-            return InlineKeyboardMarkup([
+            rows = [
                 [
                     InlineKeyboardButton("Consultar", callback_data="om:consultar"),
                     InlineKeyboardButton("Preparar / generar", callback_data="om:preparar"),
@@ -1339,7 +1347,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     InlineKeyboardButton("Controlar / analizar", callback_data="om:controlar"),
                 ],
                 [InlineKeyboardButton("Ayuda", callback_data="om:ayuda")],
-            ])
+            ]
+            if show_administration:
+                rows.append([InlineKeyboardButton("Administración", callback_data="om:administracion")])
+            return InlineKeyboardMarkup(rows)
 
         rows.append([
             InlineKeyboardButton("‹ Menú", callback_data="om:main"),
@@ -1367,9 +1378,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[Telegram] Could not send the transparent menu avatar: %s",
                 type(exc).__name__,
             )
+        extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        technical_user_id = str(extra.get("technical_menu_user_id", "")).strip()
+        message_user_id = str(getattr(getattr(message, "from_user", None), "id", "")).strip()
+        message_chat = getattr(message, "chat", None)
+        show_administration = (
+            technical_user_id.isdigit()
+            and message_user_id == technical_user_id
+            and str(getattr(message_chat, "type", "")) == "private"
+        )
         await message.reply_text(
             self._menu_panel_title(),
-            reply_markup=self._menu_panel_keyboard(),
+            reply_markup=self._menu_panel_keyboard(show_administration=show_administration),
         )
 
     async def _handle_operational_menu_callback(self, query, data: str) -> None:
@@ -1382,12 +1402,12 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer()
             await query.edit_message_reply_markup(reply_markup=None)
             return
-        if page not in {"main", "consultar", "preparar", "conciliar", "controlar", "ayuda"}:
+        if page not in {"main", "consultar", "preparar", "conciliar", "controlar", "ayuda", "administracion"}:
             await query.answer()
             return
         await query.answer()
         title = self._menu_panel_title(page)
-        keyboard = self._menu_panel_keyboard(page)
+        keyboard = self._menu_panel_keyboard(page, show_administration=self._is_technical_administrator_callback(query))
         if getattr(query.message, "photo", None):
             await query.edit_message_caption(
                 caption=title,
@@ -1397,6 +1417,20 @@ class TelegramAdapter(BasePlatformAdapter):
         await query.edit_message_text(
             title,
             reply_markup=keyboard,
+        )
+
+    def _is_technical_administrator_callback(self, query) -> bool:
+        extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        technical_user_id = str(extra.get("technical_menu_user_id", "")).strip()
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        caller_id = str(getattr(getattr(query, "from_user", None), "id", "")).strip()
+        chat_id = str(getattr(message, "chat_id", "")).strip()
+        return (
+            technical_user_id.isdigit()
+            and caller_id == technical_user_id
+            and chat_id == technical_user_id
+            and str(getattr(chat, "type", "")) == "private"
         )
 
     def _source_from_message_for_auth(self, message: Message):
@@ -7227,6 +7261,19 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Administración ContaBot: technical DM only ---
+        if data.startswith("oa:") or data == "om:administracion":
+            if not self._is_technical_administrator_callback(query):
+                await query.answer(text="⛔ No estás autorizado para administrar ContaBot.")
+                return
+            if data == "om:administracion":
+                await self._handle_operational_menu_callback(query, data)
+                return
+            if await self._admin_maintenance_flow.callback(
+                self, query, data, query_chat_id, query_thread_id, str(getattr(query.from_user, "id", ""))
+            ):
+                return
 
         # --- Operational menu mockup ---
         if data.startswith("om:"):
