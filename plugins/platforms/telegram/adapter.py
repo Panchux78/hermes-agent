@@ -1333,8 +1333,8 @@ class TelegramAdapter(BasePlatformAdapter):
             ]
         elif page == "administracion":
             rows = [
-                [InlineKeyboardButton("Actualizar mapa de impuestos", callback_data="oa:arca:start")],
-                [InlineKeyboardButton("Actualizar bancos BCRA", callback_data="oa:bcra:start")],
+                [InlineKeyboardButton("Actualizar mapa de impuestos ARCA", callback_data="oa:arca:start")],
+                [InlineKeyboardButton("Actualizar tabla de bancos BCRA", callback_data="oa:bcra:start")],
             ]
         else:
             rows = [
