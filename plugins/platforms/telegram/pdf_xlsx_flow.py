@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -217,6 +218,21 @@ class PdfXlsxFlow:
             "--input", str(source),
         ]
 
+    def _cleanup_preserved_staging(self, source: Path) -> None:
+        staging = source.parent
+        root = self.input_cache_dir
+        if (
+            root.is_symlink()
+            or staging.is_symlink()
+            or not root.is_dir()
+            or not staging.is_dir()
+            or staging.parent != root
+            or source.parent != staging
+        ):
+            logger.error("[PDF-XLSX] stage=staging_cleanup status=CONTAINMENT_REJECTED")
+            return
+        shutil.rmtree(staging)
+
     async def _convert_with_router(
         self,
         source: Path,
@@ -251,6 +267,8 @@ class PdfXlsxFlow:
             raise ConversionFailure(status, reason, run_id)
         if progress is not None:
             await progress("validating", 1, 1)
+        if result.get("reception_preserved") is True:
+            self._cleanup_preserved_staging(source)
         return output, result
 
     async def _communicate_with_progress(

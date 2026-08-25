@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -6,6 +7,116 @@ from unittest.mock import AsyncMock
 import pytest
 
 from plugins.platforms.telegram.pdf_xlsx_flow import ConversionFailure, PdfXlsxFlow
+
+
+def _router_process(result: dict, *, returncode: int = 0):
+    return SimpleNamespace(
+        returncode=returncode,
+        communicate=AsyncMock(return_value=(json.dumps(result).encode(), b"")),
+        kill=AsyncMock(),
+        wait=AsyncMock(),
+    )
+
+
+def test_router_success_removes_only_staging_after_reception_is_preserved(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        staging = tmp_path / "pdf-xlsx-inputs" / "run-success"
+        staging.mkdir(parents=True)
+        flow.input_cache_dir = staging.parent
+        source = staging / "documento.pdf"
+        source.write_bytes(b"%PDF")
+        output = tmp_path / "resultado.xlsx"
+        output.write_bytes(b"xlsx")
+        monkeypatch.setattr(flow, "_router_command", lambda _: ["router"])
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_router_process({"status": "CONVERTED", "output_path": str(output), "reception_preserved": True})))
+
+        await flow._convert_with_router(source, tmp_path, "run-success", None)
+
+        assert not staging.exists()
+        assert output.exists()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status", ["BLOCKED", "ROUTE_NOT_CONNECTED"])
+def test_router_business_block_keeps_staging_for_recovery(monkeypatch, tmp_path, status):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        staging = tmp_path / "pdf-xlsx-inputs" / f"run-{status}"
+        staging.mkdir(parents=True)
+        source = staging / "documento.pdf"
+        source.write_bytes(b"%PDF")
+        monkeypatch.setattr(flow, "_router_command", lambda _: ["router"])
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_router_process({"status": status, "reason": "blocked"}, returncode=1)))
+
+        with pytest.raises(ConversionFailure):
+            await flow._convert_with_router(source, tmp_path, "run", None)
+
+        assert source.exists()
+        assert staging.exists()
+
+    asyncio.run(scenario())
+
+
+def test_router_failure_before_reception_preserved_keeps_staging(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        staging = tmp_path / "pdf-xlsx-inputs" / "run-technical"
+        staging.mkdir(parents=True)
+        source = staging / "documento.pdf"
+        source.write_bytes(b"%PDF")
+        monkeypatch.setattr(flow, "_router_command", lambda _: ["router"])
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_router_process({"status": "TECHNICAL_ERROR", "reason": "reception_failed"}, returncode=1)))
+
+        with pytest.raises(ConversionFailure):
+            await flow._convert_with_router(source, tmp_path, "run", None)
+
+        assert source.exists()
+        assert staging.exists()
+
+    asyncio.run(scenario())
+
+
+def test_router_converted_without_reception_preserved_keeps_staging(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        staging = tmp_path / "pdf-xlsx-inputs" / "run-unpreserved"
+        staging.mkdir(parents=True)
+        source = staging / "documento.pdf"
+        source.write_bytes(b"%PDF")
+        output = tmp_path / "resultado.xlsx"
+        output.write_bytes(b"xlsx")
+        monkeypatch.setattr(flow, "_router_command", lambda _: ["router"])
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_router_process({"status": "CONVERTED", "output_path": str(output)})))
+
+        await flow._convert_with_router(source, tmp_path, "run-unpreserved", None)
+
+        assert source.exists()
+        assert staging.exists()
+
+    asyncio.run(scenario())
+
+
+def test_router_never_cleans_a_path_outside_its_staging_root(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        flow.input_cache_dir = tmp_path / "owned-staging"
+        outside = tmp_path / "outside" / "run"
+        outside.mkdir(parents=True)
+        source = outside / "documento.pdf"
+        source.write_bytes(b"%PDF")
+        output = tmp_path / "resultado.xlsx"
+        output.write_bytes(b"xlsx")
+        monkeypatch.setattr(flow, "_router_command", lambda _: ["router"])
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_router_process({"status": "CONVERTED", "output_path": str(output), "reception_preserved": True})))
+
+        await flow._convert_with_router(source, tmp_path, "run", None)
+
+        assert source.exists()
+        assert outside.exists()
+
+    asyncio.run(scenario())
 
 
 def test_start_then_matching_pdf_starts_conversion_and_delivers_result(monkeypatch, tmp_path):
