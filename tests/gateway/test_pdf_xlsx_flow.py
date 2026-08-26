@@ -247,6 +247,13 @@ def test_long_delivery_filename_warns_before_send(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
+def test_router_failure_reason_normalizes_safe_snake_case_only():
+    assert PdfXlsxFlow._router_failure_reason({"reason": "qpdf_check_failed"}, b"", 1) == "ROUTER_QPDF_CHECK_FAILED"
+    assert PdfXlsxFlow._router_failure_reason({"reason": "QPDF_CHECK_FAILED"}, b"", 1) == "ROUTER_QPDF_CHECK_FAILED"
+    for unsafe in ("qpdf check failed", "/tmp/private.pdf", "qpdf.check.failed"):
+        assert PdfXlsxFlow._router_failure_reason({"reason": unsafe}, b"", 1) == "ROUTER_SUBPROCESS_EXIT_1"
+
+
 def test_router_failure_reason_is_sanitized_from_stderr():
     assert PdfXlsxFlow._router_failure_reason({}, b"Traceback\nLayoutMismatch: headers absent\n", 1) == "ROUTER_LAYOUT_MISMATCH"
 

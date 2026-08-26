@@ -329,8 +329,11 @@ class PdfXlsxFlow:
     @staticmethod
     def _router_failure_reason(result: dict[str, Any], stderr: bytes, returncode: int | None) -> str:
         reported = result.get("reason")
-        if isinstance(reported, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{2,80}", reported):
-            return f"ROUTER_{reported}"
+        if isinstance(reported, str) and (
+            re.fullmatch(r"[a-z][a-z0-9_]{2,80}", reported)
+            or re.fullmatch(r"[A-Z][A-Z0-9_]{2,80}", reported)
+        ):
+            return f"ROUTER_{reported.upper()}"
         text = stderr.decode("utf-8", errors="replace")
         matches = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Mismatch|Blocked))\b", text)
         if matches:
