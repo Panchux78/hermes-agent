@@ -2,25 +2,53 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from plugins.platforms.telegram import pdf_xlsx_flow
 from plugins.platforms.telegram.pdf_xlsx_flow import ConversionFailure, PdfXlsxFlow
 
 
-def test_delivery_filename_pretruncates_long_versioned_stem_preserving_dash_v(tmp_path):
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("a" * 59 + ".xlsx", "a" * 59 + ".xlsx"),
+        ("a" * 60 + ".xlsx", "a" * 59 + ".xlsx"),
+        ("91 MAESTRO MASTERCARD JUNIO 2026-v04.xlsx", "91 MAESTRO MASTERCARD JUNIO 2026-v04.xlsx"),
+    ],
+)
+def test_delivery_filename_uses_64_characters_for_the_complete_filename(tmp_path, name, expected):
     flow = PdfXlsxFlow(project_dir=tmp_path)
-    output = tmp_path / "Resumen_Cta_CC$_191_006_0444811_Del_2025_01_01_Al_2025_01_31_2-v07.xlsx"
 
-    assert flow._delivery_filename(output) == "Resumen_Cta_CC$_191_006_0444811_Del_2025_01_01_Al_2025_01_31_2-v.xlsx"
+    actual = flow._delivery_filename(tmp_path / name)
+
+    assert actual == expected
+    assert len(actual) <= 64
 
 
-def test_delivery_filename_never_duplicates_dash_when_version_boundary_is_truncated(tmp_path):
+@pytest.mark.parametrize("version", ["-v02", "-v04", "-v123"])
+def test_delivery_filename_preserves_every_version_digit(tmp_path, version):
     flow = PdfXlsxFlow(project_dir=tmp_path)
-    output = tmp_path / ("a" * 61 + "-v07.xlsx")
+    basename = "a" * 60
+    name = f"{basename}{version}.xlsx"
+    expected = f"{basename[:64 - len(version) - len('.xlsx')]}{version}.xlsx"
 
-    assert flow._delivery_filename(output) == "a" * 61 + "-v.xlsx"
+    actual = flow._delivery_filename(tmp_path / name)
+
+    assert actual == expected
+    assert len(actual) == 64
+
+
+def test_delivery_filename_truncates_banco_ciudad_before_full_version(tmp_path):
+    flow = PdfXlsxFlow(project_dir=tmp_path)
+    name = "000000050000039703_01_ME_20250301114906_00000643 Febrero-v04.xlsx"
+    stem_without_version = Path(name).stem.removesuffix("-v04")
+
+    actual = flow._delivery_filename(tmp_path / name)
+
+    assert actual == f"{stem_without_version[:55]}-v04.xlsx"
+    assert len(actual) == 64
 
 
 def _router_process(result: dict, *, returncode: int = 0):
@@ -201,7 +229,9 @@ def test_long_delivery_filename_warns_before_send(monkeypatch, tmp_path):
         delivered = tmp_path / name
         delivered.write_bytes(b"xlsx")
         monkeypatch.setattr(flow, "_convert", AsyncMock(return_value=(delivered, {"rows_ok": 6})))
-        remote_name = "Resumen_Cta_CC$_191_006_0444811_Del_2025_01_01_Al_2025_01_31_2-v.xlsx"
+        logger_error = MagicMock()
+        monkeypatch.setattr(pdf_xlsx_flow.logger, "error", logger_error)
+        remote_name = f"{Path(name).stem.removesuffix('-v06')[:55]}-v06.xlsx"
         adapter.send_document.return_value = SimpleNamespace(success=True, message_id="77", delivered_filename=remote_name)
 
         await flow.callback(adapter, query, "px:start", 123, None, "99")
@@ -210,6 +240,9 @@ def test_long_delivery_filename_warns_before_send(monkeypatch, tmp_path):
         texts = [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
         assert "Aviso: por el límite de Telegram, el archivo se enviará con un nombre acortado a 64 caracteres." in texts
         assert adapter.send_document.await_args.kwargs["file_name"] == remote_name
+        assert adapter.send_document.await_args.kwargs["file_path"] == str(delivered)
+        assert delivered.name == name
+        logger_error.assert_not_called()
 
     asyncio.run(scenario())
 

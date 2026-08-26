@@ -64,13 +64,15 @@ class PdfXlsxFlow:
 
     @staticmethod
     def _delivery_filename(output: Path) -> str:
-        stem = output.stem
-        if len(stem) <= 64:
+        if len(output.name) <= 64:
             return output.name
-        versioned = re.fullmatch(r"(?P<base>.*)-v\d+", stem)
+        stem, extension = output.stem, output.suffix
+        versioned = re.fullmatch(r"(?P<base>.*)(?P<version>-v\d+)", stem)
         if versioned:
-            return f"{versioned.group('base')[:62]}-v{output.suffix}"
-        return f"{stem[:64]}{output.suffix}"
+            version = versioned.group("version")
+            budget = 64 - len(version) - len(extension)
+            return f"{versioned.group('base')[:budget]}{version}{extension}"
+        return f"{stem[:64 - len(extension)]}{extension}"
 
     @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
