@@ -63,6 +63,16 @@ class PdfXlsxFlow:
         return parsed if parsed > 0 else default
 
     @staticmethod
+    def _delivery_filename(output: Path) -> str:
+        stem = output.stem
+        if len(stem) <= 64:
+            return output.name
+        versioned = re.fullmatch(r"(?P<base>.*)-v\d+", stem)
+        if versioned:
+            return f"{versioned.group('base')[:62]}-v{output.suffix}"
+        return f"{stem[:64]}{output.suffix}"
+
+    @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
         return f"{chat_id}:{thread_id or ''}:{user_id}"
 
@@ -117,28 +127,29 @@ class PdfXlsxFlow:
         try:
             with tempfile.TemporaryDirectory(prefix="contabot-pdf-xlsx-") as work:
                 output, result = await self._convert(document, Path(work), report_progress)
-                if len(output.stem) > 64:
+                delivery_name = self._delivery_filename(output)
+                if delivery_name != output.name:
                     await self._send(
                         adapter,
                         chat_id,
-                        "Aviso: Telegram acortará el nombre del archivo a 64 caracteres.",
+                        "Aviso: por el límite de Telegram, el archivo se enviará con un nombre acortado a 64 caracteres.",
                         thread_id,
                     )
                 caption = self._success_caption(result)
                 delivery = await adapter.send_document(
                     chat_id=str(chat_id),
                     file_path=str(output),
-                    file_name=output.name,
+                    file_name=delivery_name,
                     caption=caption,
                     metadata={"thread_id": thread_id} if thread_id is not None else None,
                 )
                 if not delivery.success:
                     raise RuntimeError("Telegram no confirmó la entrega del Excel")
                 delivered_filename = getattr(delivery, "delivered_filename", None)
-                if delivered_filename is not None and delivered_filename != output.name:
+                if delivered_filename is not None and delivered_filename != delivery_name:
                     logger.error(
                         "[PDF-XLSX] stage=delivery status=DELIVERY_FILENAME_MISMATCH expected=%r delivered=%r",
-                        output.name,
+                        delivery_name,
                         delivered_filename,
                     )
                     return True

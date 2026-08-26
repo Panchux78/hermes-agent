@@ -9,6 +9,20 @@ import pytest
 from plugins.platforms.telegram.pdf_xlsx_flow import ConversionFailure, PdfXlsxFlow
 
 
+def test_delivery_filename_pretruncates_long_versioned_stem_preserving_dash_v(tmp_path):
+    flow = PdfXlsxFlow(project_dir=tmp_path)
+    output = tmp_path / "Resumen_Cta_CC$_191_006_0444811_Del_2025_01_01_Al_2025_01_31_2-v07.xlsx"
+
+    assert flow._delivery_filename(output) == "Resumen_Cta_CC$_191_006_0444811_Del_2025_01_01_Al_2025_01_31_2-v.xlsx"
+
+
+def test_delivery_filename_never_duplicates_dash_when_version_boundary_is_truncated(tmp_path):
+    flow = PdfXlsxFlow(project_dir=tmp_path)
+    output = tmp_path / ("a" * 61 + "-v07.xlsx")
+
+    assert flow._delivery_filename(output) == "a" * 61 + "-v.xlsx"
+
+
 def _router_process(result: dict, *, returncode: int = 0):
     return SimpleNamespace(
         returncode=returncode,
@@ -187,13 +201,15 @@ def test_long_delivery_filename_warns_before_send(monkeypatch, tmp_path):
         delivered = tmp_path / name
         delivered.write_bytes(b"xlsx")
         monkeypatch.setattr(flow, "_convert", AsyncMock(return_value=(delivered, {"rows_ok": 6})))
-        adapter.send_document.return_value = SimpleNamespace(success=True, message_id="77", delivered_filename=name)
+        remote_name = "Resumen_Cta_CC$_191_006_0444811_Del_2025_01_01_Al_2025_01_31_2-v.xlsx"
+        adapter.send_document.return_value = SimpleNamespace(success=True, message_id="77", delivered_filename=remote_name)
 
         await flow.callback(adapter, query, "px:start", 123, None, "99")
         assert await flow.document(adapter, message) is True
 
         texts = [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
-        assert "Aviso: Telegram acortará el nombre del archivo a 64 caracteres." in texts
+        assert "Aviso: por el límite de Telegram, el archivo se enviará con un nombre acortado a 64 caracteres." in texts
+        assert adapter.send_document.await_args.kwargs["file_name"] == remote_name
 
     asyncio.run(scenario())
 
