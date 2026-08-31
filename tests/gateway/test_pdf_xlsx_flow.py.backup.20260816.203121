@@ -1,0 +1,142 @@
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from plugins.platforms.telegram.pdf_xlsx_flow import ConversionFailure, PdfXlsxFlow
+
+
+def test_start_then_matching_pdf_starts_conversion_and_delivers_result(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()), send_document=AsyncMock())
+        query = SimpleNamespace(answer=AsyncMock())
+        message = SimpleNamespace(
+            chat_id=123,
+            message_thread_id=None,
+            from_user=SimpleNamespace(id=99),
+            document=SimpleNamespace(file_name="resumen.pdf", mime_type="application/pdf", file_size=10),
+        )
+        delivered = tmp_path / "resumen.xlsx"
+        delivered.write_bytes(b"xlsx")
+        monkeypatch.setattr(flow, "_convert", AsyncMock(return_value=(delivered, {"rows_ok": 6})))
+        adapter.send_document.return_value = SimpleNamespace(success=True, message_id="77")
+
+        assert await flow.callback(adapter, query, "px:start", 123, None, "99") is True
+        assert await flow.document(adapter, message) is True
+
+        query.answer.assert_awaited_once_with("Convertir PDF a Excel")
+        adapter.send_document.assert_awaited_once()
+        assert adapter.send_document.await_args.kwargs["file_path"] == str(delivered)
+        assert "6 movimientos" in adapter.send_document.await_args.kwargs["caption"]
+
+    asyncio.run(scenario())
+
+
+def test_pending_conversion_ignores_other_user_document(tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()))
+        query = SimpleNamespace(answer=AsyncMock())
+        await flow.callback(adapter, query, "px:start", 123, None, "99")
+        message = SimpleNamespace(
+            chat_id=123,
+            message_thread_id=None,
+            from_user=SimpleNamespace(id=100),
+            document=SimpleNamespace(file_name="resumen.pdf", mime_type="application/pdf", file_size=10),
+        )
+        assert await flow.document(adapter, message) is False
+
+    asyncio.run(scenario())
+
+
+def test_converter_uses_the_project_venv_python(tmp_path):
+    python = tmp_path / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.touch()
+    assert PdfXlsxFlow(project_dir=tmp_path)._converter_python() == python
+
+
+def test_authorized_callback_starts_visual_pdf_xlsx_flow():
+    async def scenario():
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        flow = SimpleNamespace(callback=AsyncMock(return_value=True))
+        adapter = object.__new__(TelegramAdapter)
+        adapter._pdf_xlsx_flow = flow
+        adapter._is_callback_user_authorized = lambda *args, **kwargs: True
+        query = SimpleNamespace(
+            data="px:start",
+            from_user=SimpleNamespace(id=99, first_name="Test"),
+            message=SimpleNamespace(chat_id=123, chat=SimpleNamespace(type="private"), message_thread_id=None),
+            answer=AsyncMock(),
+        )
+        await adapter._handle_callback_query(SimpleNamespace(callback_query=query), SimpleNamespace())
+        flow.callback.assert_awaited_once_with(adapter, query, "px:start", 123, None, "99")
+
+    asyncio.run(scenario())
+
+
+def test_document_timeout_is_configurable_and_not_fixed_at_sixty_seconds(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONTA_PDF_XLSX_DOCUMENT_TIMEOUT_SECONDS", "900")
+
+    flow = PdfXlsxFlow(project_dir=tmp_path)
+
+    assert flow.document_timeout_seconds == 900
+
+
+def test_backend_timeout_is_reported_as_technical_failure_not_format_rejection(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()), send_document=AsyncMock())
+        query = SimpleNamespace(answer=AsyncMock())
+        message = SimpleNamespace(
+            chat_id=123,
+            message_thread_id=None,
+            from_user=SimpleNamespace(id=99),
+            document=SimpleNamespace(file_name="resumen.pdf", mime_type="application/pdf", file_size=10),
+        )
+        monkeypatch.setattr(
+            flow,
+            "_convert",
+            AsyncMock(side_effect=ConversionFailure("VISION_BACKEND_UNAVAILABLE", "PAGE_TIMEOUT", "run-test")),
+        )
+
+        await flow.callback(adapter, query, "px:start", 123, None, "99")
+        assert await flow.document(adapter, message) is True
+
+        texts = [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
+        assert texts[-1] == "El servicio de interpretación visual no respondió a tiempo. Volvé a intentar."
+        assert all("formato" not in text.lower() for text in texts)
+
+    asyncio.run(scenario())
+
+
+def test_review_result_is_delivered_with_its_true_status(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()), send_document=AsyncMock())
+        query = SimpleNamespace(answer=AsyncMock())
+        message = SimpleNamespace(
+            chat_id=123,
+            message_thread_id=None,
+            from_user=SimpleNamespace(id=99),
+            document=SimpleNamespace(file_name="resumen.pdf", mime_type="application/pdf", file_size=10),
+        )
+        delivered = tmp_path / "revision.xlsx"
+        delivered.write_bytes(b"xlsx")
+        monkeypatch.setattr(
+            flow,
+            "_convert",
+            AsyncMock(return_value=(delivered, {"status": "REQUIERE_REVISION", "rows_ok": 4, "review_count": 2})),
+        )
+        adapter.send_document.return_value = SimpleNamespace(success=True, message_id="77")
+
+        await flow.callback(adapter, query, "px:start", 123, None, "99")
+        assert await flow.document(adapter, message) is True
+
+        caption = adapter.send_document.await_args.kwargs["caption"]
+        assert "REQUIERE_REVISION" in caption
+        assert "2 observaciones" in caption
+
+    asyncio.run(scenario())

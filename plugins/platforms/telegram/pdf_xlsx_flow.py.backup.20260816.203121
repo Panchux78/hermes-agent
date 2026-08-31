@@ -1,0 +1,195 @@
+"""Flujo Telegram autorizado para convertir un PDF recibido a XLSX."""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import tempfile
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+_DEFAULT_PROJECT_DIR = Path("/home/pancho/hermes-workspace/conversion-documentos-contables-xlsx")
+_MAX_PDF_BYTES = 5_000_000
+
+
+@dataclass(frozen=True)
+class PdfXlsxRequest:
+    user_id: str
+
+
+class ConversionFailure(RuntimeError):
+    """Falla saneada del subprocess de conversión."""
+
+    def __init__(self, status: str, reason: str, run_id: str) -> None:
+        super().__init__(f"{status}: {reason}")
+        self.status = status
+        self.reason = reason
+        self.run_id = run_id
+
+
+class PdfXlsxFlow:
+    """One pending PDF→XLSX conversion per authorized Telegram sender."""
+
+    def __init__(self, project_dir: Path = _DEFAULT_PROJECT_DIR) -> None:
+        self.project_dir = Path(project_dir)
+        self.requests: dict[str, PdfXlsxRequest] = {}
+        self.document_timeout_seconds = self._positive_float(
+            os.getenv("CONTA_PDF_XLSX_DOCUMENT_TIMEOUT_SECONDS"), 1800.0
+        )
+
+    @staticmethod
+    def _positive_float(value: str | None, default: float) -> float:
+        try:
+            parsed = float(value) if value is not None else default
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
+
+    @staticmethod
+    def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
+        return f"{chat_id}:{thread_id or ''}:{user_id}"
+
+    @staticmethod
+    async def _send(adapter, chat_id, text: str, thread_id=None) -> None:
+        kwargs = {"chat_id": chat_id, "text": text}
+        if thread_id is not None:
+            kwargs["message_thread_id"] = thread_id
+        await adapter._bot.send_message(**kwargs)
+
+    async def callback(self, adapter, query, data: str, chat_id, thread_id, user_id) -> bool:
+        if data != "px:start":
+            return False
+        self.requests[self._key(chat_id, thread_id, user_id)] = PdfXlsxRequest(user_id=str(user_id))
+        await query.answer("Convertir PDF a Excel")
+        await self._send(adapter, chat_id, "Mandame el PDF que querés convertir a Excel.", thread_id)
+        return True
+
+    async def document(self, adapter, message) -> bool:
+        chat_id = message.chat_id
+        thread_id = getattr(message, "message_thread_id", None)
+        user_id = str(getattr(message.from_user, "id", ""))
+        key = self._key(chat_id, thread_id, user_id)
+        if key not in self.requests:
+            return False
+        document = getattr(message, "document", None)
+        name = str(getattr(document, "file_name", "") or "").lower()
+        mime_type = str(getattr(document, "mime_type", "") or "").lower()
+        size = int(getattr(document, "file_size", 0) or 0)
+        if not document or not (name.endswith(".pdf") or mime_type == "application/pdf"):
+            await self._send(adapter, chat_id, "Esperaba un archivo PDF. Mandá el PDF para convertirlo a Excel.", thread_id)
+            return True
+        if size <= 0 or size > _MAX_PDF_BYTES:
+            await self._send(adapter, chat_id, "El PDF supera el límite de 5 MB o Telegram no informó su tamaño.", thread_id)
+            return True
+
+        self.requests.pop(key, None)
+        await self._send(adapter, chat_id, "Renderizando e interpretando el PDF…", thread_id)
+        try:
+            with tempfile.TemporaryDirectory(prefix="contabot-pdf-xlsx-") as work:
+                output, result = await self._convert(document, Path(work))
+                caption = self._success_caption(result)
+                delivery = await adapter.send_document(
+                    chat_id=str(chat_id),
+                    file_path=str(output),
+                    file_name="conversion.xlsx",
+                    caption=caption,
+                    metadata={"thread_id": thread_id} if thread_id is not None else None,
+                )
+                if not delivery.success:
+                    raise RuntimeError("Telegram no confirmó la entrega del Excel")
+        except ConversionFailure as exc:
+            logger.warning(
+                "[PDF-XLSX] run_id=%s stage=convert status=%s reason=%s",
+                exc.run_id,
+                exc.status,
+                exc.reason,
+            )
+            await self._send(adapter, chat_id, self._failure_message(exc), thread_id)
+            return True
+        except Exception as exc:
+            logger.exception("[PDF-XLSX] stage=delivery status=ERROR_TECNICO error=%s", type(exc).__name__)
+            await self._send(adapter, chat_id, "Ocurrió un error técnico al convertir o entregar el Excel.", thread_id)
+            return True
+        await self._send(adapter, chat_id, "Excel enviado.", thread_id)
+        return True
+
+    async def _convert(self, document, workdir: Path) -> tuple[Path, dict[str, Any]]:
+        run_id = uuid.uuid4().hex
+        source = workdir / "entrada.pdf"
+        output = workdir / "conversion.xlsx"
+        telegram_file = await document.get_file()
+        await telegram_file.download_to_drive(custom_path=source)
+        proc = await asyncio.create_subprocess_exec(
+            str(self._converter_python()), "-m", "conversion_documentos.convertir_documento",
+            "--input", str(source), "--output", str(output),
+            cwd=str(self.project_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            raw, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self.document_timeout_seconds
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise ConversionFailure("VISION_BACKEND_UNAVAILABLE", "DOCUMENT_TIMEOUT", run_id) from None
+        result = self._read_result(raw)
+        if proc.returncode != 0 or not result.get("ok") or not output.is_file():
+            status = str(result.get("status") or "ERROR_TECNICO")
+            reason = str(result.get("reason") or f"SUBPROCESS_EXIT_{proc.returncode}")
+            logger.warning(
+                "[PDF-XLSX] run_id=%s stage=subprocess status=%s reason=%s stderr_present=%s",
+                run_id,
+                status,
+                reason,
+                bool(stderr.strip()),
+            )
+            raise ConversionFailure(status, reason, run_id)
+        return output, result
+
+    @staticmethod
+    def _success_caption(result: dict[str, Any]) -> str:
+        status = str(result.get("status") or "VALIDADO")
+        rows = int(result.get("rows_ok") or 0)
+        reviews = int(result.get("review_count") or 0)
+        if status == "REQUIERE_REVISION":
+            return f"Excel generado — REQUIERE_REVISION: {rows} movimientos y {reviews} observaciones."
+        if status == "NO_TABULAR_DATA":
+            return "Excel generado con las tablas observadas; no se detectaron movimientos transaccionales."
+        return f"Excel generado — {status}: {rows} movimientos."
+
+    @staticmethod
+    def _failure_message(error: ConversionFailure) -> str:
+        if error.status == "PDF_CIFRADO":
+            return "El PDF está cifrado. Enviá una copia sin contraseña."
+        if error.status == "VISION_BACKEND_UNAVAILABLE" and error.reason in {
+            "PAGE_TIMEOUT", "DOCUMENT_TIMEOUT", "TimeoutError"
+        }:
+            return "El servicio de interpretación visual no respondió a tiempo. Volvé a intentar."
+        if error.status == "VISION_BACKEND_UNAVAILABLE":
+            return "El servicio de interpretación visual no está disponible en este momento."
+        if error.status == "NO_TABULAR_DATA":
+            return "El PDF no contiene tablas que se puedan convertir."
+        return "Ocurrió un error técnico durante la conversión del PDF."
+
+    def _converter_python(self) -> Path:
+        python = self.project_dir / ".venv" / "bin" / "python"
+        if not python.is_file():
+            raise RuntimeError("ENTORNO_DE_CONVERSION_NO_DISPONIBLE")
+        return python
+
+    @staticmethod
+    def _read_result(raw: bytes) -> dict[str, Any]:
+        for line in reversed(raw.decode("utf-8", errors="replace").splitlines()):
+            try:
+                result = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(result, dict):
+                return result
+        return {}
