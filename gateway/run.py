@@ -17121,6 +17121,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
             if effective_busy_input_mode == "queue":
+                # A native multi-choice clarify blocks the running agent on a
+                # threading.Event.  If unrelated prose did not match a button
+                # choice, queueing that prose while leaving the clarify open
+                # creates a deadlock: the agent waits for clarify, while the
+                # user's message waits for the agent.  Cancel the abandoned
+                # prompt first so the active turn can unwind and drain the
+                # queued follow-up normally.
+                if _pending_clarify is not None and _clarify_mod is not None:
+                    cancelled = _clarify_mod.clear_session(_quick_key)
+                    if cancelled:
+                        logger.info(
+                            "Cancelled %d pending clarify prompt(s) before "
+                            "queueing unmatched follow-up for session %s",
+                            cancelled,
+                            _quick_key,
+                        )
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None

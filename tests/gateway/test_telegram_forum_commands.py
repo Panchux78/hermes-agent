@@ -19,6 +19,7 @@ def _make_test_adapter():
     # ``name`` is a property derived from platform.value.title()
     adapter._bot = MagicMock()
     adapter._bot.set_my_commands = AsyncMock()
+    adapter._bot.delete_my_commands = AsyncMock()
     adapter._forum_command_registered = set()
     adapter._forum_lock = asyncio.Lock()
     return adapter
@@ -31,37 +32,24 @@ def _forum_message(chat_id=-100, is_forum=True):
 
 
 @pytest.mark.asyncio
-async def test_ensure_forum_commands_registers_once():
+async def test_ensure_forum_commands_clears_legacy_scope_once():
     adapter = _make_test_adapter()
     msg = _forum_message(chat_id=-123, is_forum=True)
 
-    with patch("hermes_cli.commands.telegram_menu_commands") as mock_menu:
-        mock_menu.return_value = ([("new", "Start new session"), ("help", "Show help")], 0)
-        with patch("telegram.BotCommand") as MockBotCommand:
-            instances = []
-
-            def _make_cmd(name, desc):
-                cmd = MagicMock()
-                cmd.name = name
-                cmd.description = desc
-                instances.append(cmd)
-                return cmd
-
-            MockBotCommand.side_effect = _make_cmd
-            with patch("telegram.BotCommandScopeChat") as MockScope:
-                # Track the chat_id passed to the BotCommandScopeChat constructor
-                # so the assertions below see an int instead of a bare MagicMock.
-                def _make_scope(chat_id):
-                    s = MagicMock()
-                    s.chat_id = chat_id
-                    return s
-                MockScope.side_effect = _make_scope
-                await adapter._ensure_forum_commands(msg)
+    with patch("telegram.BotCommandScopeChat") as MockScope:
+        # Track the chat_id passed to the BotCommandScopeChat constructor
+        # so the assertions below see an int instead of a bare MagicMock.
+        def _make_scope(chat_id):
+            s = MagicMock()
+            s.chat_id = chat_id
+            return s
+        MockScope.side_effect = _make_scope
+        await adapter._ensure_forum_commands(msg)
 
     assert -123 in adapter._forum_command_registered
-    adapter._bot.set_my_commands.assert_awaited_once()
-    args, kwargs = adapter._bot.set_my_commands.call_args
-    assert len(args[0]) == 2  # two BotCommand instances
+    adapter._bot.set_my_commands.assert_not_awaited()
+    adapter._bot.delete_my_commands.assert_awaited_once()
+    _, kwargs = adapter._bot.delete_my_commands.call_args
     assert kwargs["scope"] is not None
     assert isinstance(kwargs["scope"].chat_id, int)
     assert kwargs["scope"].chat_id == -123
@@ -73,13 +61,10 @@ async def test_ensure_forum_commands_race_safety():
     adapter = _make_test_adapter()
     msg = _forum_message(chat_id=-789, is_forum=True)
 
-    with patch("hermes_cli.commands.telegram_menu_commands") as mock_menu:
-        mock_menu.return_value = ([("new", "Start new session")], 0)
-        with patch("telegram.BotCommand"):
-            with patch("telegram.BotCommandScopeChat"):
-                coro1 = adapter._ensure_forum_commands(msg)
-                coro2 = adapter._ensure_forum_commands(msg)
-                await asyncio.gather(coro1, coro2)
+    with patch("telegram.BotCommandScopeChat"):
+        coro1 = adapter._ensure_forum_commands(msg)
+        coro2 = adapter._ensure_forum_commands(msg)
+        await asyncio.gather(coro1, coro2)
 
     # The lock should make this exactly 1 call, not 2.
-    assert adapter._bot.set_my_commands.await_count == 1
+    assert adapter._bot.delete_my_commands.await_count == 1

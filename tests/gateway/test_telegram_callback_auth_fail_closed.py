@@ -87,3 +87,40 @@ class TestCallbackAuthFailClosed:
         assert adapter._is_callback_user_authorized("12345") is True
 
 
+class TestGatewayRestartButton:
+    def test_restart_button_schedules_a_delayed_user_service_restart(self, monkeypatch):
+        """The callback must schedule a restart after Telegram can acknowledge it."""
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        launched = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.subprocess.Popen",
+            lambda args, **kwargs: launched.append((args, kwargs)),
+        )
+
+        adapter = _make_adapter()
+        adapter._schedule_gateway_restart()
+
+        assert len(launched) == 1
+        args, kwargs = launched[0]
+        assert args[:4] == ["systemd-run", "--user", "--on-active=2s", "--collect"]
+        assert args[-4:] == ["systemctl", "--user", "restart", "hermes-gateway.service"]
+        assert kwargs["start_new_session"] is True
+
+    def test_restart_notice_mentions_the_imminent_gateway_restart(self):
+        """The user-visible notice must be sent before the restart is scheduled."""
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        assert TelegramAdapter._gateway_restart_notice() == "⚠️ El gateway se reiniciará en unos segundos…"
+
+    def test_rich_messages_include_the_persistent_menu_trigger(self):
+        """Rich replies must install the one-button persistent menu."""
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        assert TelegramAdapter._persistent_menu_reply_markup() == {
+            "keyboard": [[{"text": "☰ Menú"}]],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        }
+
+
