@@ -198,11 +198,27 @@ class BatchPdfXlsxFlow:
             await progress_message.edit_text("\n".join(lines))
             return True
         groups = result.get("groups") if isinstance(result.get("groups"), list) else []
-        lines = [f"Detecté {result.get('pdf_count', 0)} PDFs y se generarán {len(groups)} XLSX.", ""]
+        output_count = len(groups)
+        output_text = "se generará 1 XLSX" if output_count == 1 else f"se generarán {output_count} XLSX"
+        lines = [f"Detecté {result.get('pdf_count', 0)} PDFs y {output_text}.", ""]
         for group in groups:
             periods = group.get("periods") or []
-            span = str(periods[0]) if len(periods) == 1 else f"{periods[0]} a {periods[-1]}"
-            lines.append(f"{group.get('contributor_name')} — {group.get('entity_name')}: {group.get('pdf_count')} PDF, {', '.join(group.get('currencies') or [])}, {span}")
+            period_start = group.get("period_start") or (periods[0] if periods else "sin período")
+            period_end = group.get("period_end") or (periods[-1] if periods else period_start)
+            span = str(period_start) if period_start == period_end else f"{period_start} a {period_end}"
+            pdf_count = int(group.get("pdf_count") or 0)
+            pdf_label = "PDF" if pdf_count == 1 else "PDFs"
+            lines.append(f"{group.get('contributor_name')} — {group.get('entity_name')}: {pdf_count} {pdf_label}, {', '.join(group.get('currencies') or [])}, {span}")
+            if group.get("is_twelve_month_period"):
+                lines.append("12 meses consecutivos")
+            elif group.get("is_contiguous"):
+                lines.append(f"{group.get('distinct_period_count', len(periods))} meses consecutivos")
+            missing = group.get("missing_periods") or []
+            if missing:
+                lines.append(f"Advertencia: faltan los períodos {', '.join(str(value) for value in missing)}")
+            repeated = group.get("repeated_periods") or []
+            if repeated:
+                lines.append(f"Advertencia: hay más de un PDF para {', '.join(str(value) for value in repeated)}")
         batch_id = str(result["batch_id"])
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Procesar", callback_data=f"bx:p:{batch_id}"), InlineKeyboardButton("Cancelar", callback_data=f"bx:c:{batch_id}")]])
         await progress_message.edit_text("\n".join(lines), reply_markup=keyboard)
