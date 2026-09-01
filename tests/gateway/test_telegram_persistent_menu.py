@@ -140,6 +140,10 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
             reply_markup=[
                 [{"text": "Convertir PDF a Excel", "callback_data": "px:start"}],
                 [{"text": "Procesar lote de resúmenes", "callback_data": "bx:start"}],
+                [
+                    {"text": "Proteger PDF", "callback_data": "ps:protect:start"},
+                    {"text": "Desbloquear PDF", "callback_data": "ps:unlock:start"},
+                ],
                 [{"text": "Liquidaciones", "callback_data": "om:noop"}],
                 [{"text": "Papeles de trabajo", "callback_data": "om:noop"}],
                 [
