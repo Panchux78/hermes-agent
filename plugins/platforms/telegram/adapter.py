@@ -321,6 +321,7 @@ from plugins.platforms.telegram.telegram_network import (
 )
 from plugins.platforms.telegram.agip_ddjj_flow import AgipDdjjFlow
 from plugins.platforms.telegram.admin_maintenance_flow import AdminMaintenanceFlow
+from plugins.platforms.telegram.batch_pdf_xlsx_flow import BatchPdfXlsxFlow
 from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
 from utils import atomic_replace, env_float, env_int
 
@@ -752,6 +753,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._bot: Optional[Bot] = None
         self._agip_ddjj_flow = AgipDdjjFlow()
         self._admin_maintenance_flow = AdminMaintenanceFlow()
+        self._batch_pdf_xlsx_flow = BatchPdfXlsxFlow()
         self._pdf_xlsx_flow = PdfXlsxFlow()
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
@@ -1311,6 +1313,7 @@ class TelegramAdapter(BasePlatformAdapter):
         elif page == "preparar":
             rows = [
                 [InlineKeyboardButton("Convertir PDF a Excel", callback_data="px:start")],
+                [InlineKeyboardButton("Procesar lote de resúmenes", callback_data="bx:start")],
                 [InlineKeyboardButton("Liquidaciones", callback_data="om:noop")],
                 [InlineKeyboardButton("Papeles de trabajo", callback_data="om:noop")],
             ]
@@ -7281,6 +7284,23 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         # --- Conversión visual PDF a XLSX ---
+        if data.startswith("bx:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ No estás autorizado para procesar lotes.")
+                return
+            if await self._batch_pdf_xlsx_flow.callback(
+                self, query, data, query_chat_id, query_thread_id, caller_id
+            ):
+                return
+
+        # --- Conversión visual PDF a XLSX ---
         if data.startswith("px:"):
             caller_id = str(getattr(query.from_user, "id", ""))
             if not self._is_callback_user_authorized(
@@ -10127,6 +10147,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         msg = update.message
+
+        if msg.document and await self._batch_pdf_xlsx_flow.document(self, msg):
+            return
 
         if msg.document and await self._pdf_xlsx_flow.document(self, msg):
             return
