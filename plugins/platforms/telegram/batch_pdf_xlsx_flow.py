@@ -208,7 +208,7 @@ class BatchPdfXlsxFlow:
             span = str(period_start) if period_start == period_end else f"{period_start} a {period_end}"
             pdf_count = int(group.get("pdf_count") or 0)
             pdf_label = "PDF" if pdf_count == 1 else "PDFs"
-            lines.append(f"{group.get('contributor_name')} — {group.get('entity_name')}: {pdf_count} {pdf_label}, {', '.join(group.get('currencies') or [])}, {span}")
+            lines.append(f"{group.get('contributor_name')} — {group.get('entity_name')}: {pdf_count} {pdf_label}, {group.get('currency')}, {span}")
             if group.get("is_twelve_month_period"):
                 lines.append("12 meses consecutivos")
             elif group.get("is_contiguous"):

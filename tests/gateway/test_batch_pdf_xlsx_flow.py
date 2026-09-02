@@ -22,7 +22,7 @@ def test_start_requests_zip_and_inspection_offers_process_cancel(monkeypatch, tm
         message = SimpleNamespace(chat_id=20, message_thread_id=None, from_user=SimpleNamespace(id=10), document=document)
         result = {"batch_id": "abc", "digest": "d" * 64, "groups": [{
             "contributor_name": "Empresa", "entity_name": "Banco", "pdf_count": 12,
-            "currencies": ["ARS"], "periods": ["2025/06", "2025/07", "2025/08", "2025/09", "2025/10", "2025/11", "2025/12", "2026/01", "2026/02", "2026/03", "2026/04", "2026/05"],
+            "currency": "ARS", "periods": ["2025/06", "2025/07", "2025/08", "2025/09", "2025/10", "2025/11", "2025/12", "2026/01", "2026/02", "2026/03", "2026/04", "2026/05"],
             "period_start": "2025/06", "period_end": "2026/05", "distinct_period_count": 12,
             "is_contiguous": True, "is_twelve_month_period": True,
             "missing_periods": [], "repeated_periods": [],
@@ -40,6 +40,7 @@ def test_start_requests_zip_and_inspection_offers_process_cancel(monkeypatch, tm
         assert callbacks == ["bx:p:abc", "bx:c:abc"]
         text = prompt.edit_text.await_args.args[0]
         assert "se generará 1 XLSX" in text
+        assert "12 PDFs, ARS" in text
         assert "2025/06 a 2026/05" in text
         assert "12 meses consecutivos" in text
         assert not any(flow.input_cache.glob("*"))
@@ -82,7 +83,7 @@ def test_preview_reports_missing_and_repeated_periods(monkeypatch, tmp_path):
         message = SimpleNamespace(chat_id=20, message_thread_id=None, from_user=SimpleNamespace(id=10), document=SimpleNamespace(file_name="lote.zip", file_size=100, get_file=AsyncMock(return_value=telegram_file)))
         result = {"batch_id": "abc", "digest": "d" * 64, "groups": [{
             "contributor_name": "Empresa", "entity_name": "Banco", "pdf_count": 3,
-            "currencies": ["ARS"], "periods": ["2025/11", "2026/01"],
+            "currency": "ARS", "periods": ["2025/11", "2026/01"],
             "period_start": "2025/11", "period_end": "2026/01", "distinct_period_count": 2,
             "is_contiguous": False, "is_twelve_month_period": False,
             "missing_periods": ["2025/12"], "repeated_periods": ["2026/01"],
