@@ -20,6 +20,45 @@ logger = logging.getLogger(__name__)
 _PDF_MIME = "application/pdf"
 _STATE_TTL_SECONDS = 15 * 60
 _MAX_DELIVERY_FILENAME = 64
+_PASSWORD_RECOVERY_SECONDS = 15
+_COMMON_PDF_PASSWORDS = (
+    "password",
+    "Password",
+    "PASSWORD",
+    "contraseña",
+    "Contrasena",
+    "1234",
+    "12345",
+    "123456",
+    "1234567",
+    "12345678",
+    "123456789",
+    "1234567890",
+    "0000",
+    "1111",
+    "1212",
+    "4321",
+    "987654",
+    "qwerty",
+    "qwerty123",
+    "abc123",
+    "admin",
+    "admin123",
+    "welcome",
+    "Welcome1",
+    "letmein",
+    "iloveyou",
+    "secret",
+    "documento",
+    "Documento",
+    "empresa",
+    "Empresa",
+    "contador",
+    "Contador",
+    "contable",
+    "argentina",
+    "Argentina",
+)
 
 
 class PdfSecurityError(RuntimeError):
@@ -52,20 +91,48 @@ def _delivery_filename(received_name: str, suffix: str) -> str:
     return f"{stem[:available]}{tail}"
 
 
-def _run_qpdf(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_qpdf(
+    args: list[str], *, password: str | None = None, timeout: int = 120
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["qpdf", *args],
-        stdin=subprocess.DEVNULL,
+        input=f"{password}\n" if password is not None else None,
+        stdin=subprocess.DEVNULL if password is None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        timeout=120,
+        timeout=timeout,
         check=False,
     )
 
 
-def _page_count(path: Path) -> int:
-    run = _run_qpdf(["--warning-exit-0", "--show-npages", str(path)])
+def _run_qpdf_argument_file(lines: list[str]) -> subprocess.CompletedProcess[str]:
+    """Entrega argumentos sensibles por un pipe heredado, no por argv o disco."""
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, ("\n".join([*lines, ""])).encode("utf-8"))
+    finally:
+        os.close(write_fd)
+    try:
+        return subprocess.run(
+            ["qpdf", f"@/proc/self/fd/{read_fd}"],
+            pass_fds=(read_fd,),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    finally:
+        os.close(read_fd)
+
+
+def _page_count(path: Path, password: str | None = None) -> int:
+    args = ["--warning-exit-0", "--show-npages", str(path)]
+    if password is not None:
+        args.insert(0, "--password-file=/dev/stdin")
+    run = _run_qpdf(args, password=password)
     if run.returncode != 0:
         raise PdfSecurityError("INVALID_PDF", "El archivo no es un PDF procesable.")
     try:
@@ -88,34 +155,50 @@ def _validate_unlocked_output(path: Path, expected_pages: int) -> None:
         raise PdfSecurityError("PAGE_COUNT_MISMATCH", "El PDF resultante no conserva todas las páginas.")
 
 
-def unlock_pdf_without_password(source: Path, output: Path) -> None:
-    """Retira cifrado/restricciones sólo si qpdf puede abrir el PDF sin clave."""
-    password_status = _run_qpdf(["--requires-password", str(source)])
-    if password_status.returncode == 0:
-        raise PdfSecurityError(
-            "OPEN_PASSWORD_REQUIRED",
-            "Este PDF exige una contraseña real de apertura. No se puede desbloquear automáticamente sin conocerla.",
+def recover_common_pdf_password(source: Path) -> str | None:
+    """Prueba un conjunto pequeño y fijo sin exponer candidatos fuera del proceso."""
+    deadline = time.monotonic() + _PASSWORD_RECOVERY_SECONDS
+    for candidate in _COMMON_PDF_PASSWORDS:
+        if time.monotonic() >= deadline:
+            break
+        run = _run_qpdf(
+            ["--password-file=/dev/stdin", "--requires-password", str(source)],
+            password=candidate,
+            timeout=5,
         )
-    if password_status.returncode not in {2, 3}:
+        if run.returncode == 3:
+            return candidate
+        if run.returncode not in {0, 2}:
+            raise PdfSecurityError("PASSWORD_CHECK_FAILED", "No se pudo verificar la protección del PDF.")
+    return None
+
+
+def unlock_pdf_without_password(source: Path, output: Path) -> None:
+    """Retira restricciones y recupera contraseñas comunes de forma acotada."""
+    password_status = _run_qpdf(["--requires-password", str(source)])
+    recovered_password: str | None = None
+    if password_status.returncode == 0:
+        recovered_password = recover_common_pdf_password(source)
+        if recovered_password is None:
+            raise PdfSecurityError(
+                "PASSWORD_RECOVERY_FAILED",
+                "El PDF exige una contraseña de apertura y no pude recuperarla con el método automático.",
+            )
+    elif password_status.returncode not in {2, 3}:
         raise PdfSecurityError("INVALID_PDF", "No se pudo determinar el estado de protección del PDF.")
 
-    expected_pages = _page_count(source)
-    run = _run_qpdf(
-        [
-            "--warning-exit-0",
-            "--decrypt",
-            "--remove-restrictions",
-            str(source),
-            str(output),
-        ]
-    )
+    expected_pages = _page_count(source, recovered_password)
+    args = ["--warning-exit-0", "--decrypt", "--remove-restrictions", str(source), str(output)]
+    if recovered_password is not None:
+        args.insert(0, "--password-file=/dev/stdin")
+    run = _run_qpdf(args, password=recovered_password)
     if run.returncode != 0:
         raise PdfSecurityError("UNLOCK_FAILED", "No se pudo retirar la protección del PDF.")
     os.chmod(output, 0o600)
     _validate_unlocked_output(output, expected_pages)
 
 
-def protect_pdf(source: Path, output: Path, password: str, run_dir: Path) -> None:
+def protect_pdf(source: Path, output: Path, password: str) -> None:
     """Cifra con AES-256 sin exponer la contraseña en argv ni logs."""
     if not password or "\n" in password or "\r" in password or "\x00" in password:
         raise PdfSecurityError("INVALID_PASSWORD", "La contraseña no puede estar vacía ni contener saltos de línea.")
@@ -130,32 +213,17 @@ def protect_pdf(source: Path, output: Path, password: str, run_dir: Path) -> Non
     expected_pages = _page_count(source)
 
     owner_password = secrets.token_urlsafe(32)
-    args_path = run_dir / ".qpdf-args"
-    fd = os.open(args_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        payload = "\n".join(
-            [
-                "--encrypt",
-                f"--user-password={password}",
-                f"--owner-password={owner_password}",
-                "--bits=256",
-                "--",
-                str(source),
-                str(output),
-                "",
-            ]
-        ).encode("utf-8")
-        os.write(fd, payload)
-    finally:
-        os.close(fd)
-
-    try:
-        run = _run_qpdf([f"@{args_path}"])
-    finally:
-        try:
-            args_path.unlink()
-        except FileNotFoundError:
-            pass
+    run = _run_qpdf_argument_file(
+        [
+            "--encrypt",
+            f"--user-password={password}",
+            f"--owner-password={owner_password}",
+            "--bits=256",
+            "--",
+            str(source),
+            str(output),
+        ]
+    )
 
     if run.returncode != 0:
         raise PdfSecurityError("PROTECT_FAILED", "No se pudo proteger el PDF con la contraseña indicada.")
@@ -163,35 +231,8 @@ def protect_pdf(source: Path, output: Path, password: str, run_dir: Path) -> Non
     check = _run_qpdf(["--requires-password", str(output)])
     if check.returncode != 0:
         raise PdfSecurityError("OUTPUT_NOT_PROTECTED", "El PDF resultante no quedó protegido por contraseña.")
-    if _page_count_with_password(output, password) != expected_pages:
+    if _page_count(output, password) != expected_pages:
         raise PdfSecurityError("OUTPUT_INVALID", "El PDF protegido no superó la validación.")
-
-
-def _page_count_with_password(path: Path, password: str) -> int:
-    """Valida el resultado protegido; la clave sólo vive durante esta llamada."""
-    # El password queda dentro del archivo de argumentos privado, no en argv.
-    args_path = path.parent / ".qpdf-check-args"
-    fd = os.open(args_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.write(
-            fd,
-            f"--password={password}\n--warning-exit-0\n--show-npages\n{path}\n".encode("utf-8"),
-        )
-    finally:
-        os.close(fd)
-    try:
-        run = _run_qpdf([f"@{args_path}"])
-    finally:
-        try:
-            args_path.unlink()
-        except FileNotFoundError:
-            pass
-    if run.returncode != 0:
-        raise PdfSecurityError("OUTPUT_INVALID", "No se pudo reabrir el PDF protegido.")
-    try:
-        return int(run.stdout.strip())
-    except ValueError as exc:
-        raise PdfSecurityError("OUTPUT_INVALID", "No se pudo verificar el PDF protegido.") from exc
 
 
 class PdfSecurityFlow:
@@ -355,7 +396,7 @@ class PdfSecurityFlow:
             if not state.source_path or not state.run_dir or not state.received_name:
                 raise PdfSecurityError("STATE_INVALID", "La operación venció. Volvé a iniciarla.")
             output = state.run_dir / "output.pdf"
-            await asyncio.to_thread(protect_pdf, state.source_path, output, password, state.run_dir)
+            await asyncio.to_thread(protect_pdf, state.source_path, output, password)
             await self._deliver(
                 adapter,
                 message.chat_id,
@@ -386,6 +427,12 @@ class PdfSecurityFlow:
             if not state.source_path or not state.run_dir or not state.received_name:
                 raise PdfSecurityError("STATE_INVALID", "La operación venció. Volvé a iniciarla.")
             output = state.run_dir / "output.pdf"
+            await self._send(
+                adapter,
+                chat_id,
+                "Estoy verificando la protección e intentando recuperar una contraseña común si fuera necesario.",
+                thread_id=thread_id,
+            )
             await asyncio.to_thread(unlock_pdf_without_password, state.source_path, output)
             await self._deliver(
                 adapter,

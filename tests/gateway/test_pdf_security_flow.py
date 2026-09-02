@@ -12,6 +12,7 @@ from plugins.platforms.telegram.pdf_security_flow import (
     PdfSecurityFlow,
     _delivery_filename,
     protect_pdf,
+    recover_common_pdf_password,
     unlock_pdf_without_password,
 )
 from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -39,14 +40,41 @@ def test_protect_and_unlock_contract_distinguishes_real_open_password(tmp_path):
     source = _plain_pdf(tmp_path)
     protected = tmp_path / "protected.pdf"
 
-    protect_pdf(source, protected, "clave-segura", tmp_path)
+    protect_pdf(source, protected, "clave-segura")
 
     assert _qpdf("--requires-password", str(protected)).returncode == 0
-    with pytest.raises(PdfSecurityError, match="contraseña real de apertura") as caught:
+    with pytest.raises(PdfSecurityError, match="no pude recuperarla") as caught:
         unlock_pdf_without_password(protected, tmp_path / "unlocked.pdf")
-    assert caught.value.code == "OPEN_PASSWORD_REQUIRED"
-    assert not (tmp_path / ".qpdf-args").exists()
-    assert not (tmp_path / ".qpdf-check-args").exists()
+    assert caught.value.code == "PASSWORD_RECOVERY_FAILED"
+
+
+def test_unlock_recovers_a_common_open_password_without_user_input(tmp_path):
+    source = _plain_pdf(tmp_path)
+    protected = tmp_path / "common-password.pdf"
+    output = tmp_path / "unlocked.pdf"
+    protect_pdf(source, protected, "password")
+
+    unlock_pdf_without_password(protected, output)
+
+    assert _qpdf("--requires-password", str(output)).returncode == 2
+    assert _qpdf("--show-npages", str(output)).stdout.strip() == "1"
+
+
+def test_password_candidates_travel_by_stdin_not_argv(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 3, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    recovered = recover_common_pdf_password(tmp_path / "protected.pdf")
+
+    assert recovered is not None
+    argv, kwargs = calls[0]
+    assert all(arg != recovered and f"={recovered}" not in arg for arg in argv)
+    assert kwargs["input"] == f"{recovered}\n"
 
 
 def test_unlock_removes_owner_restrictions_without_requesting_a_password(tmp_path):
