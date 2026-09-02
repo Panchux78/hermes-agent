@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from plugins.platforms.telegram.pdf_security_flow import (
+    _COMMON_PDF_PASSWORDS,
     PdfSecurityError,
     PdfSecurityFlow,
     _delivery_filename,
@@ -58,6 +59,15 @@ def test_unlock_recovers_a_common_open_password_without_user_input(tmp_path):
 
     assert _qpdf("--requires-password", str(output)).returncode == 2
     assert _qpdf("--show-npages", str(output)).stdout.strip() == "1"
+
+
+def test_common_password_candidates_include_deduplicated_seclists_top_100():
+    assert len(_COMMON_PDF_PASSWORDS) == 122
+    assert len(_COMMON_PDF_PASSWORDS) == len(set(_COMMON_PDF_PASSWORDS))
+    assert "" not in _COMMON_PDF_PASSWORDS
+    assert _COMMON_PDF_PASSWORDS[:3] == ("password", "Password", "PASSWORD")
+    assert "dragon" in _COMMON_PDF_PASSWORDS
+    assert "taylor" in _COMMON_PDF_PASSWORDS
 
 
 def test_password_candidates_travel_by_stdin_not_argv(monkeypatch, tmp_path):
