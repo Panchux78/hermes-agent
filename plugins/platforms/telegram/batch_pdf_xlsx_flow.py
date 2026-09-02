@@ -90,7 +90,7 @@ class BatchPdfXlsxFlow:
         key = self._key(chat_id, thread_id, user_id)
         if data == "bx:start":
             self.requests[key] = BatchUploadRequest(user_id=user_id)
-            await query.answer("Procesar lote")
+            await query.answer("Lote de resúmenes bancarios → Excel")
             await self._send(adapter, chat_id, "Mandame un ZIP con los resúmenes bancarios. Primero lo voy a revisar; no se convierte nada hasta que confirmes.", thread_id)
             return True
         if data.startswith("bx:p:"):

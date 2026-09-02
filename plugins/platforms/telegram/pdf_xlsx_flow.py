@@ -89,8 +89,13 @@ class PdfXlsxFlow:
         if data != "px:start":
             return False
         self.requests[self._key(chat_id, thread_id, user_id)] = PdfXlsxRequest(user_id=str(user_id))
-        await query.answer("Convertir PDF a Excel")
-        await self._send(adapter, chat_id, "Mandame el PDF que querés convertir a Excel.", thread_id)
+        await query.answer("Resumen bancario → Excel")
+        await self._send(
+            adapter,
+            chat_id,
+            "Mandame el resumen bancario que querés convertir a Excel.",
+            thread_id,
+        )
         return True
 
     async def document(self, adapter, message) -> bool:

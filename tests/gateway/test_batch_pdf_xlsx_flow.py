@@ -33,7 +33,7 @@ def test_start_requests_zip_and_inspection_offers_process_cancel(monkeypatch, tm
         assert await flow.callback(adapter, query, "bx:start", 20, None, "10")
         assert await flow.document(adapter, message)
 
-        query.answer.assert_awaited_once_with("Procesar lote")
+        query.answer.assert_awaited_once_with("Lote de resúmenes bancarios → Excel")
         prompt.edit_text.assert_awaited_once()
         markup = prompt.edit_text.await_args.kwargs["reply_markup"]
         callbacks = [button["callback_data"] for row in markup for button in row]

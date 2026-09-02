@@ -180,7 +180,11 @@ def test_start_then_matching_pdf_starts_conversion_and_delivers_result(monkeypat
         assert await flow.callback(adapter, query, "px:start", 123, None, "99") is True
         assert await flow.document(adapter, message) is True
 
-        query.answer.assert_awaited_once_with("Convertir PDF a Excel")
+        query.answer.assert_awaited_once_with("Resumen bancario → Excel")
+        assert (
+            adapter._bot.send_message.await_args_list[0].kwargs["text"]
+            == "Mandame el resumen bancario que querés convertir a Excel."
+        )
         adapter.send_document.assert_awaited_once()
         assert adapter.send_document.await_args.kwargs["file_path"] == str(delivered)
         assert adapter.send_document.await_args.kwargs["file_name"] == "resumen.xlsx"

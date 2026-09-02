@@ -60,14 +60,13 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
             "¿Qué querés hacer?",
             reply_markup=[
                 [
-                    {"text": "Consultar", "callback_data": "om:consultar"},
-                    {"text": "Preparar / generar", "callback_data": "om:preparar"},
+                    {"text": "🔎 Consultar", "callback_data": "om:consultar"},
+                    {"text": "📄 Preparar / generar", "callback_data": "om:preparar"},
                 ],
                 [
-                    {"text": "Conciliar", "callback_data": "om:conciliar"},
-                    {"text": "Controlar / analizar", "callback_data": "om:controlar"},
+                    {"text": "🧰 Herramientas", "callback_data": "om:herramientas"},
+                    {"text": "❓ Ayuda", "callback_data": "om:ayuda"},
                 ],
-                [{"text": "Ayuda", "callback_data": "om:ayuda"}],
             ],
         )
         adapter._agip_ddjj_flow.text.assert_not_awaited()
@@ -75,7 +74,7 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
     asyncio.run(scenario())
 
 
-def test_consult_menu_page_keeps_ddjj_as_the_only_functional_action(monkeypatch):
+def test_consult_menu_page_shows_only_the_functional_action(monkeypatch):
     async def scenario():
         import plugins.platforms.telegram.adapter as adapter_module
 
@@ -100,14 +99,12 @@ def test_consult_menu_page_keeps_ddjj_as_the_only_functional_action(monkeypatch)
 
         query.answer.assert_awaited_once_with()
         query.edit_message_text.assert_awaited_once_with(
-            "Consultas\n\nMaqueta: sólo DDJJ IIBB ejecuta una acción.",
+            "Consultas disponibles",
             reply_markup=[
-                [{"text": "Consultar DDJJ IIBB", "callback_data": "ad:start"}],
-                [{"text": "Vencimientos", "callback_data": "om:noop"}],
-                [{"text": "Retenciones", "callback_data": "om:noop"}],
+                [{"text": "🧾 DDJJ de IIBB", "callback_data": "ad:start"}],
                 [
                     {"text": "‹ Menú", "callback_data": "om:main"},
-                    {"text": "Cerrar", "callback_data": "om:close"},
+                    {"text": "✕ Cerrar", "callback_data": "om:close"},
                 ],
             ],
         )
@@ -136,22 +133,94 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
         await adapter._handle_operational_menu_callback(query, "om:preparar")
 
         query.edit_message_caption.assert_awaited_once_with(
-            caption="Preparar / generar",
+            caption=(
+                "Preparar documentos contables\n\n"
+                "Convertí resúmenes bancarios compatibles a Excel. "
+                "No convierte PDFs generales."
+            ),
             reply_markup=[
-                [{"text": "Convertir PDF a Excel", "callback_data": "px:start"}],
-                [{"text": "Procesar lote de resúmenes", "callback_data": "bx:start"}],
+                [{"text": "🏦 Resumen bancario → Excel", "callback_data": "px:start"}],
                 [
-                    {"text": "Proteger PDF", "callback_data": "ps:protect:start"},
-                    {"text": "Desbloquear PDF", "callback_data": "ps:unlock:start"},
+                    {
+                        "text": "📦 Lote de resúmenes bancarios → Excel",
+                        "callback_data": "bx:start",
+                    }
                 ],
-                [{"text": "Liquidaciones", "callback_data": "om:noop"}],
-                [{"text": "Papeles de trabajo", "callback_data": "om:noop"}],
                 [
                     {"text": "‹ Menú", "callback_data": "om:main"},
-                    {"text": "Cerrar", "callback_data": "om:close"},
+                    {"text": "✕ Cerrar", "callback_data": "om:close"},
                 ],
             ],
         )
         query.edit_message_text.assert_not_awaited()
 
     asyncio.run(scenario())
+
+
+def test_pdf_tools_are_separate_from_accounting_preparation(monkeypatch):
+    import plugins.platforms.telegram.adapter as adapter_module
+
+    monkeypatch.setattr(
+        adapter_module,
+        "InlineKeyboardButton",
+        lambda text, callback_data: {"text": text, "callback_data": callback_data},
+    )
+    monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
+
+    tools = TelegramAdapter._menu_panel_keyboard("herramientas")
+    preparation = TelegramAdapter._menu_panel_keyboard("preparar")
+
+    assert tools == [
+        [{"text": "🔒 Proteger PDF", "callback_data": "ps:protect:start"}],
+        [{"text": "🔓 Desbloquear PDF", "callback_data": "ps:unlock:start"}],
+        [
+            {"text": "‹ Menú", "callback_data": "om:main"},
+            {"text": "✕ Cerrar", "callback_data": "om:close"},
+        ],
+    ]
+    assert all(
+        not button["callback_data"].startswith("ps:")
+        for row in preparation
+        for button in row
+    )
+
+
+def test_operational_menu_has_no_placeholder_actions(monkeypatch):
+    import plugins.platforms.telegram.adapter as adapter_module
+
+    monkeypatch.setattr(
+        adapter_module,
+        "InlineKeyboardButton",
+        lambda text, callback_data: {"text": text, "callback_data": callback_data},
+    )
+    monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
+
+    for page in ("main", "consultar", "preparar", "herramientas", "ayuda"):
+        keyboard = TelegramAdapter._menu_panel_keyboard(page)
+        assert all(
+            button["callback_data"] != "om:noop"
+            for row in keyboard
+            for button in row
+        )
+
+
+def test_help_menu_offers_real_information_and_free_query_actions(monkeypatch):
+    import plugins.platforms.telegram.adapter as adapter_module
+
+    monkeypatch.setattr(
+        adapter_module,
+        "InlineKeyboardButton",
+        lambda text, callback_data: {"text": text, "callback_data": callback_data},
+    )
+    monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
+
+    assert TelegramAdapter._menu_panel_keyboard("ayuda") == [
+        [{"text": "ℹ️ Qué hace ContaBot", "callback_data": "om:que_hace"}],
+        [{"text": "💬 Hacer una consulta", "callback_data": "om:consulta"}],
+        [
+            {"text": "‹ Menú", "callback_data": "om:main"},
+            {"text": "✕ Cerrar", "callback_data": "om:close"},
+        ],
+    ]
+    assert "Escribí tu consulta en el chat." in TelegramAdapter._menu_panel_title("consulta")
+    assert "Convierte resúmenes bancarios" in TelegramAdapter._menu_panel_title("que_hace")

@@ -1294,12 +1294,26 @@ class TelegramAdapter(BasePlatformAdapter):
     def _menu_panel_title(page: str = "main") -> str:
         titles = {
             "main": "¿Qué querés hacer?",
-            "consultar": "Consultas\n\nMaqueta: sólo DDJJ IIBB ejecuta una acción.",
-            "preparar": "Preparar / generar",
-            "conciliar": "Conciliar\n\nMaqueta: estas acciones todavía no ejecutan nada.",
-            "controlar": "Controlar / analizar\n\nMaqueta: estas acciones todavía no ejecutan nada.",
-            "ayuda": "Ayuda\n\nMaqueta: estas acciones todavía no ejecutan nada.",
-            "administracion": "Administración",
+            "consultar": "Consultas disponibles",
+            "preparar": (
+                "Preparar documentos contables\n\n"
+                "Convertí resúmenes bancarios compatibles a Excel. "
+                "No convierte PDFs generales."
+            ),
+            "herramientas": (
+                "Herramientas PDF\n\n"
+                "Protegé o desbloqueá archivos PDF. Estas opciones no generan Excel."
+            ),
+            "ayuda": "¿Con qué necesitás ayuda?",
+            "que_hace": (
+                "Qué hace ContaBot\n\n"
+                "• Consulta DDJJ de IIBB.\n"
+                "• Convierte resúmenes bancarios compatibles a Excel.\n"
+                "• Procesa lotes de resúmenes bancarios.\n"
+                "• Protege y desbloquea archivos PDF."
+            ),
+            "consulta": "Hacer una consulta\n\nEscribí tu consulta en el chat.",
+            "administracion": "Administración — acceso restringido",
         }
         return titles.get(page, titles["main"])
 
@@ -1308,62 +1322,61 @@ class TelegramAdapter(BasePlatformAdapter):
         """Return one page of the operational-menu mockup."""
         if page == "consultar":
             rows = [
-                [InlineKeyboardButton("Consultar DDJJ IIBB", callback_data="ad:start")],
-                [InlineKeyboardButton("Vencimientos", callback_data="om:noop")],
-                [InlineKeyboardButton("Retenciones", callback_data="om:noop")],
+                [InlineKeyboardButton("🧾 DDJJ de IIBB", callback_data="ad:start")],
             ]
         elif page == "preparar":
             rows = [
-                [InlineKeyboardButton("Convertir PDF a Excel", callback_data="px:start")],
-                [InlineKeyboardButton("Procesar lote de resúmenes", callback_data="bx:start")],
+                [InlineKeyboardButton("🏦 Resumen bancario → Excel", callback_data="px:start")],
                 [
-                    InlineKeyboardButton("Proteger PDF", callback_data="ps:protect:start"),
-                    InlineKeyboardButton("Desbloquear PDF", callback_data="ps:unlock:start"),
+                    InlineKeyboardButton(
+                        "📦 Lote de resúmenes bancarios → Excel",
+                        callback_data="bx:start",
+                    )
                 ],
-                [InlineKeyboardButton("Liquidaciones", callback_data="om:noop")],
-                [InlineKeyboardButton("Papeles de trabajo", callback_data="om:noop")],
             ]
-        elif page == "conciliar":
+        elif page == "herramientas":
             rows = [
-                [InlineKeyboardButton("Bancos", callback_data="om:noop")],
-                [InlineKeyboardButton("Comprobantes", callback_data="om:noop")],
-                [InlineKeyboardButton("Retenciones", callback_data="om:noop")],
-            ]
-        elif page == "controlar":
-            rows = [
-                [InlineKeyboardButton("Vencimientos", callback_data="om:noop")],
-                [InlineKeyboardButton("Posición fiscal", callback_data="om:noop")],
-                [InlineKeyboardButton("Reportes", callback_data="om:noop")],
+                [
+                    InlineKeyboardButton("🔒 Proteger PDF", callback_data="ps:protect:start"),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔓 Desbloquear PDF", callback_data="ps:unlock:start"
+                    ),
+                ],
             ]
         elif page == "ayuda":
             rows = [
-                [InlineKeyboardButton("Cómo funciona", callback_data="om:noop")],
-                [InlineKeyboardButton("Escribir una consulta", callback_data="om:noop")],
+                [InlineKeyboardButton("ℹ️ Qué hace ContaBot", callback_data="om:que_hace")],
+                [InlineKeyboardButton("💬 Hacer una consulta", callback_data="om:consulta")],
             ]
+        elif page in {"que_hace", "consulta"}:
+            rows = []
         elif page == "administracion":
             rows = [
-                [InlineKeyboardButton("Actualizar mapa de impuestos ARCA", callback_data="oa:arca:start")],
-                [InlineKeyboardButton("Actualizar tabla de bancos BCRA", callback_data="oa:bcra:start")],
+                [InlineKeyboardButton("🧭 Actualizar mapa de impuestos", callback_data="oa:arca:start")],
+                [InlineKeyboardButton("🏦 Actualizar bancos BCRA", callback_data="oa:bcra:start")],
             ]
         else:
             rows = [
                 [
-                    InlineKeyboardButton("Consultar", callback_data="om:consultar"),
-                    InlineKeyboardButton("Preparar / generar", callback_data="om:preparar"),
+                    InlineKeyboardButton("🔎 Consultar", callback_data="om:consultar"),
+                    InlineKeyboardButton("📄 Preparar / generar", callback_data="om:preparar"),
                 ],
                 [
-                    InlineKeyboardButton("Conciliar", callback_data="om:conciliar"),
-                    InlineKeyboardButton("Controlar / analizar", callback_data="om:controlar"),
+                    InlineKeyboardButton("🧰 Herramientas", callback_data="om:herramientas"),
+                    InlineKeyboardButton("❓ Ayuda", callback_data="om:ayuda"),
                 ],
-                [InlineKeyboardButton("Ayuda", callback_data="om:ayuda")],
             ]
             if show_administration:
-                rows.append([InlineKeyboardButton("Administración", callback_data="om:administracion")])
+                rows.append(
+                    [InlineKeyboardButton("⚙️ Administración", callback_data="om:administracion")]
+                )
             return InlineKeyboardMarkup(rows)
 
         rows.append([
             InlineKeyboardButton("‹ Menú", callback_data="om:main"),
-            InlineKeyboardButton("Cerrar", callback_data="om:close"),
+            InlineKeyboardButton("✕ Cerrar", callback_data="om:close"),
         ])
         return InlineKeyboardMarkup(rows)
 
@@ -1411,7 +1424,16 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer()
             await query.edit_message_reply_markup(reply_markup=None)
             return
-        if page not in {"main", "consultar", "preparar", "conciliar", "controlar", "ayuda", "administracion"}:
+        if page not in {
+            "main",
+            "consultar",
+            "preparar",
+            "herramientas",
+            "ayuda",
+            "que_hace",
+            "consulta",
+            "administracion",
+        }:
             await query.answer()
             return
         await query.answer()
