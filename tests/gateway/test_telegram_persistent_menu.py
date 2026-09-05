@@ -34,6 +34,7 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
         adapter = object.__new__(TelegramAdapter)
         adapter._is_user_authorized_from_message = lambda message: True
         adapter._agip_ddjj_flow = SimpleNamespace(text=AsyncMock(return_value=False))
+        adapter._portal_iva_flow = SimpleNamespace(text=AsyncMock(return_value=False))
         adapter._should_process_message = lambda message: False
         adapter._should_observe_unmentioned_group_message = lambda message: False
 
@@ -70,6 +71,7 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
             ],
         )
         adapter._agip_ddjj_flow.text.assert_not_awaited()
+        adapter._portal_iva_flow.text.assert_not_awaited()
 
     asyncio.run(scenario())
 
@@ -123,6 +125,7 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
             lambda text, callback_data: {"text": text, "callback_data": callback_data},
         )
         monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
+        monkeypatch.setattr(adapter_module.PortalIvaFlow, "available", lambda self: True)
         query = SimpleNamespace(
             answer=AsyncMock(),
             message=SimpleNamespace(photo=[SimpleNamespace(file_id="avatar")]),
@@ -146,6 +149,7 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
                         "callback_data": "bx:start",
                     }
                 ],
+                [{"text": "📊 Portal IVA → CSV", "callback_data": "pi:start"}],
                 [
                     {"text": "‹ Menú", "callback_data": "om:main"},
                     {"text": "✕ Cerrar", "callback_data": "om:close"},
@@ -224,3 +228,21 @@ def test_help_menu_offers_real_information_and_free_query_actions(monkeypatch):
     ]
     assert "Escribí tu consulta en el chat." in TelegramAdapter._menu_panel_title("consulta")
     assert "Convierte resúmenes bancarios" in TelegramAdapter._menu_panel_title("que_hace")
+
+
+def test_portal_iva_callback_requires_existing_telegram_authorization():
+    async def scenario():
+        adapter = object.__new__(TelegramAdapter)
+        adapter._is_callback_user_authorized = lambda *args, **kwargs: False
+        adapter._portal_iva_flow = SimpleNamespace(callback=AsyncMock(return_value=True))
+        query = SimpleNamespace(
+            data="pi:start",
+            from_user=SimpleNamespace(id="7", first_name="Test"),
+            message=SimpleNamespace(chat_id="10", chat=SimpleNamespace(type="private"), message_thread_id=None),
+            answer=AsyncMock(),
+        )
+        await adapter._handle_callback_query(SimpleNamespace(callback_query=query), SimpleNamespace())
+        query.answer.assert_awaited_once_with(text="⛔ No estás autorizado para consultar Portal IVA.")
+        adapter._portal_iva_flow.callback.assert_not_awaited()
+
+    asyncio.run(scenario())
