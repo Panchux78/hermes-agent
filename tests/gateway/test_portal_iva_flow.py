@@ -71,16 +71,55 @@ def test_command_is_exact_and_shell_free(tmp_path):
     ]
 
 
-def test_period_accepts_only_year_month():
+def test_period_accepts_only_month_year_and_stores_executor_period(monkeypatch):
     async def scenario():
         flow = PortalIvaFlow()
         adapter = FakeAdapter()
         state = FlowState(user_id="7", nonce="a" * 10, stage="period", slug="cliente", cuit="20123456789")
-        flow.states[flow._key("10", None, "7")] = state
-        assert await flow.text(adapter, _message("2026-13")) is True
-        adapter._bot.send_message.assert_awaited_once()
-        assert state.stage == "period"
+        key = flow._key("10", None, "7")
+        flow.states[key] = state
+
+        def fake_task(coro):
+            coro.close()
+            return SimpleNamespace(add_done_callback=lambda _callback: None)
+
+        monkeypatch.setattr(asyncio, "create_task", fake_task)
+        assert await flow.text(adapter, _message("08/2026")) is True
+        assert state.period == "2026-08"
+        assert state.stage == "running"
+
     asyncio.run(scenario())
+
+
+def test_period_rejects_every_non_month_year_format():
+    async def scenario():
+        for value in ("2026-08", "13/2026", "8/2026", "08/26", "2026"):
+            flow = PortalIvaFlow()
+            adapter = FakeAdapter()
+            state = FlowState(user_id="7", nonce="a" * 10, stage="period", slug="cliente", cuit="20123456789")
+            flow.states[flow._key("10", None, "7")] = state
+            assert await flow.text(adapter, _message(value)) is True
+            assert state.stage == "period"
+            assert state.period is None
+            assert adapter._bot.send_message.await_args.kwargs["text"] == "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
+
+    asyncio.run(scenario())
+
+
+def test_period_prompt_is_month_year_only():
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="client")
+        await flow._select(adapter, "10", None, state, {"id": 1, "nombre": "Uno", "cuit": "20123456789", "slug": "uno"})
+        assert adapter._bot.send_message.await_args.kwargs["text"] == "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
+
+    asyncio.run(scenario())
+
+
+def test_flow_never_exposes_executor_period_format_to_telegram():
+    source = Path("plugins/platforms/telegram/portal_iva_flow.py").read_text(encoding="utf-8")
+    assert "AAAA-MM" not in source
 
 
 def test_search_handles_unique_multiple_and_missing(monkeypatch):

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _CLIENTES_ROOT = Path("/home/pancho/clientes")
 _EXECUTOR = Path("/home/pancho/procedimientos/portal-iva/portal_iva.py")
 _UV = Path("/home/pancho/.hermes/bin/uv")
-_PERIOD = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
+_PERIOD = re.compile(r"(0[1-9]|1[0-2])/[0-9]{4}")
 _LOCK_ROOT = Path("/home/pancho/.local/state/contabot/portal-iva/telegram-locks")
 _RUN_TIMEOUT_SECONDS = 1800
 
@@ -218,10 +218,11 @@ class PortalIvaFlow:
             await self._send(adapter, chat_id, "Portal IVA ya está en ejecución para esta solicitud.", thread_id)
             return True
         if state.stage == "period":
-            period = (message.text or "").strip()
-            if not _PERIOD.fullmatch(period):
-                await self._send(adapter, chat_id, "Ingresá el período exactamente como AAAA-MM.", thread_id)
+            visible_period = (message.text or "").strip()
+            if not _PERIOD.fullmatch(visible_period):
+                await self._send(adapter, chat_id, "Ingresá el período como MM/AAAA. Ejemplo: 08/2026.", thread_id)
                 return True
+            period = f"{visible_period[3:]}-{visible_period[:2]}"
             if key in self.tasks:
                 await self._send(adapter, chat_id, "Ya hay una descarga Portal IVA en curso.", thread_id)
                 return True
@@ -255,7 +256,7 @@ class PortalIvaFlow:
         state.cuit = str(item["cuit"])
         state.nombre = str(item["nombre"])
         state.stage = "period"
-        await self._send(adapter, chat_id, "Ingresá el período exactamente como AAAA-MM.", thread_id)
+        await self._send(adapter, chat_id, "Ingresá el período como MM/AAAA. Ejemplo: 08/2026.", thread_id)
 
     def _command(self, slug: str, period: str) -> list[str]:
         if not self.available():
