@@ -271,7 +271,7 @@ def test_terminate_process_kills_real_child_process_group():
         while time.monotonic() < deadline:
             try:
                 stat = Path(f"/proc/{child_pid}/stat").read_text(encoding="ascii").split()[2]
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 break
             if stat == "Z":
                 break
@@ -286,4 +286,57 @@ def test_terminate_process_kills_real_child_process_group():
 def test_worker_error_is_not_reflected_verbatim_to_telegram():
     assert AgipDdjjFlow._worker_error_message(
         {"error": "traceback con ruta privada /home/example y secreto"}
-    ) == "Consulta AGIP no completada. La evidencia quedó preservada para revisión."
+    ) == "Consulta AGIP no completada por un error técnico."
+
+
+def test_pdf_failure_message_names_period_without_internal_detail():
+    message = AgipDdjjFlow._worker_error_message(
+        {
+            "error_code": "AGIP_DDJJ_PDF_RESPONSE_INVALID",
+            "period": "2026-02",
+            "error": "ruta privada y contenido interno",
+        },
+        evidence_preserved=True,
+    )
+
+    assert "02/2026" in message
+    assert "diagnóstico quedó registrado" in message
+    assert "ruta privada" not in message
+
+
+def test_list_unavailable_has_a_clear_message():
+    message = AgipDdjjFlow._worker_error_message(
+        {"error_code": "AGIP_DDJJ_LIST_UNAVAILABLE"},
+        evidence_preserved=True,
+    )
+
+    assert "AGIP no terminó de cargar el listado de DDJJ" in message
+    assert "diagnóstico quedó registrado" in message
+
+
+def test_failure_manifest_contains_only_allowlisted_fields(tmp_path, monkeypatch):
+    failure_root = tmp_path / "failures"
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.agip_ddjj_flow._FAILURE_ROOT", failure_root
+    )
+
+    path = AgipDdjjFlow._persist_failure(
+        {
+            "error_code": "AGIP_DDJJ_PDF_RESPONSE_INVALID",
+            "period": "2026-02",
+            "response_kind": "html",
+            "error": "secreto que no debe persistirse",
+            "unexpected": "otro secreto",
+        },
+        "2026",
+        1,
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["error_code"] == "AGIP_DDJJ_PDF_RESPONSE_INVALID"
+    assert payload["failed_period"] == "2026-02"
+    assert payload["response_kind"] == "html"
+    assert "error" not in payload
+    assert "unexpected" not in payload
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert failure_root.stat().st_mode & 0o777 == 0o700

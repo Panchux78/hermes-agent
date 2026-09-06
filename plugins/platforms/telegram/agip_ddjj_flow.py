@@ -10,8 +10,10 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,7 @@ except ImportError:  # Windows gateway: keep Telegram importable, hide this Linu
 logger = logging.getLogger(__name__)
 _CLIENTS_ROOT = "/home/pancho/clientes"
 _LOCK_ROOT = Path("/home/pancho/.local/state/contabot/agip-ddjj/telegram-locks")
+_FAILURE_ROOT = Path("/home/pancho/.local/state/contabot/agip-ddjj/failures")
 _STATE_TTL_SECONDS = 600
 _RUN_TIMEOUT_SECONDS = 1800
 _DELIVERY_XLSX = re.compile(
@@ -186,14 +189,63 @@ class AgipDdjjFlow:
         await self._send(adapter, chat_id, text, thread_id=thread_id)
 
     @staticmethod
-    def _worker_error_message(result: dict[str, Any]) -> str:
+    def _worker_error_message(result: dict[str, Any], evidence_preserved: bool = False) -> str:
         """Translate known business outcomes without exposing worker internals."""
-        error = str(result.get("error", ""))
-        if error == "No hay DDJJ para el período solicitado":
-            return "Consulta AGIP no completada: no hay DDJJ para el período solicitado."
-        if error == "Acceso o representación AGIP no disponible":
-            return "Consulta AGIP no completada: el acceso o la representación ya no está disponible."
-        return "Consulta AGIP no completada. La evidencia quedó preservada para revisión."
+        code = str(result.get("error_code", ""))
+        period = str(result.get("period", ""))
+        if code == "AGIP_DDJJ_NOT_FOUND":
+            message = "Consulta AGIP no completada: no hay DDJJ para el período solicitado."
+        elif code == "AGIP_ACCESS_UNAVAILABLE":
+            message = "Consulta AGIP no completada: el acceso o la representación ya no está disponible."
+        elif code == "AGIP_DDJJ_LIST_UNAVAILABLE":
+            message = "Consulta AGIP no completada: AGIP no terminó de cargar el listado de DDJJ."
+        elif code.startswith("AGIP_DDJJ_PDF_") and re.fullmatch(r"\d{4}-\d{2}", period):
+            message = f"Consulta AGIP no completada: AGIP no entregó el PDF de {period[5:7]}/{period[:4]}."
+        else:
+            message = "Consulta AGIP no completada por un error técnico."
+        if evidence_preserved:
+            message += " El diagnóstico quedó registrado para revisión."
+        return message
+
+    @staticmethod
+    def _persist_failure(result: dict[str, Any], period: str, returncode: int | None) -> Path:
+        """Persist only allowlisted diagnostic fields, atomically and mode 0600."""
+        _FAILURE_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if _FAILURE_ROOT.is_symlink() or not _FAILURE_ROOT.is_dir():
+            raise RuntimeError("AGIP_FAILURE_STORE_INVALID")
+        os.chmod(_FAILURE_ROOT, 0o700)
+        payload: dict[str, Any] = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "error_code": str(result.get("error_code", "AGIP_WORKER_RESULT_INVALID")),
+            "requested_period": period,
+            "process_returncode": returncode,
+        }
+        if re.fullmatch(r"\d{4}-\d{2}", str(result.get("period", ""))):
+            payload["failed_period"] = str(result["period"])
+        if str(result.get("response_kind", "")) in {"html", "non_pdf"}:
+            payload["response_kind"] = str(result["response_kind"])
+        status = result.get("http_status")
+        if isinstance(status, int) and 100 <= status <= 599:
+            payload["http_status"] = status
+        name = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex}.json"
+        fd, temporary = tempfile.mkstemp(prefix=".failure-", dir=_FAILURE_ROOT)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=True, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            destination = _FAILURE_ROOT / name
+            os.replace(temporary, destination)
+            return destination
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            Path(temporary).unlink(missing_ok=True)
+            raise
 
     async def start(self, adapter, query, chat_id, thread_id, user_id) -> None:
         key = self._key(chat_id, thread_id, user_id)
@@ -407,11 +459,21 @@ class AgipDdjjFlow:
                     if line.strip().startswith("{")
                 )
             except Exception:
-                result = {"ok": False, "error": "El ejecutor AGIP no devolvió un resultado verificable."}
+                result = {"ok": False, "error_code": "AGIP_WORKER_RESULT_INVALID"}
             if not result.get("ok"):
+                evidence = None
+                try:
+                    evidence = self._persist_failure(result, period, proc.returncode)
+                except Exception as exc:
+                    logger.error("[AGIP-DDJJ] failure evidence error_type=%s", type(exc).__name__)
+                logger.warning(
+                    "[AGIP-DDJJ] worker blocked code=%s evidence=%s",
+                    result.get("error_code", "AGIP_WORKER_RESULT_INVALID"),
+                    str(evidence) if evidence is not None else "unavailable",
+                )
                 await self._finish(
                     adapter, chat_id, thread_id, state,
-                    self._worker_error_message(result),
+                    self._worker_error_message(result, evidence is not None),
                 )
                 return
             xlsx = result.get("xlsx")
