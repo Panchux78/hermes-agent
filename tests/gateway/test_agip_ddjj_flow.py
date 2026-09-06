@@ -317,6 +317,19 @@ def test_list_unavailable_has_a_clear_message():
     assert "diagnóstico quedó registrado" in message
 
 
+def test_esicol_unavailable_is_not_reported_as_represented_selection_failure():
+    message = AgipDdjjFlow._worker_error_message(
+        {
+            "error_code": "AGIP_ESICOL_UNAVAILABLE",
+            "stage": "select_represented",
+        },
+        evidence_preserved=True,
+    )
+
+    assert "e-SICOL no quedó disponible" in message
+    assert "seleccionar el contribuyente representado" not in message
+
+
 def test_unknown_worker_error_uses_structured_stage_without_raw_exception():
     message = AgipDdjjFlow._worker_error_message(
         {
