@@ -68,6 +68,21 @@ def test_visible_cuit_masks_middle_digits():
     assert visible_cuit("20123456789") == "20-******-9"
 
 
+def test_database_queries_scope_agip_to_clave_ciudad(monkeypatch):
+    flow = AgipDdjjFlow()
+    queries = []
+    monkeypatch.setattr(flow, "_query", lambda sql: queries.append(sql) or [])
+
+    flow._search("empresa")
+    flow._represented(1)
+    flow._by_id(2, None)
+    flow._by_id(2, 1)
+
+    assert len(queries) == 4
+    assert all("AGIP - Clave Ciudad" in sql for sql in queries)
+    assert all("e.nombre='AGIP'" not in sql for sql in queries)
+
+
 def test_delivery_accepts_the_v5_consultation_path_and_versions():
     assert is_valid_delivery_path(
         "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/07/consultas/"

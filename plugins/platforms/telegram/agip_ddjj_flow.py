@@ -30,6 +30,7 @@ _CLIENTS_ROOT = "/home/pancho/clientes"
 _LOCK_ROOT = Path("/home/pancho/.local/state/contabot/agip-ddjj/telegram-locks")
 _FAILURE_ROOT = Path("/home/pancho/.local/state/contabot/agip-ddjj/failures")
 _STATE_TTL_SECONDS = 600
+_AGIP_CLAVE_CIUDAD_ENTITY = "AGIP - Clave Ciudad"
 _RUN_TIMEOUT_SECONDS = 1800
 _DELIVERY_XLSX = re.compile(
     rf"^(?:{re.escape(_CLIENTS_ROOT)}/[a-z0-9]+(?:-[a-z0-9]+)*/(?P<cuit_annual>\d{{11}})/agip/"
@@ -108,15 +109,15 @@ class AgipDdjjFlow:
         encoded = self._sql_scalar(term.strip())
         base = f"convert_from(decode('{encoded}','base64'),'UTF8')"
         if contributor_id is None:
-            scope = """
+            scope = f"""
               FROM tbl_contribuyentes c
               JOIN tbl_accesos a ON a.id_contribuyente=c.id_contribuyente AND a.activo
-              JOIN tbl_entidades e ON e.id_entidad=a.id_entidad AND e.nombre='AGIP'
+              JOIN tbl_entidades e ON e.id_entidad=a.id_entidad AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}'
             """
         else:
             scope = f"""
               FROM tbl_representaciones r
-              JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='AGIP' AND r.activo
+              JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}' AND r.activo
               JOIN tbl_contribuyentes c ON c.id_contribuyente=r.id_contribuyente_representado
               WHERE r.id_contribuyente_representante={int(contributor_id)} AND c.activo AND
             """
@@ -339,7 +340,7 @@ class AgipDdjjFlow:
             "SELECT json_build_object('id',c.id_contribuyente,'nombre',c.nombre_legal,"
             "'cuit',c.cuit,'slug',c.slug)::text "
             "FROM tbl_representaciones r "
-            "JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='AGIP' "
+            f"JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}' "
             "JOIN tbl_contribuyentes c ON c.id_contribuyente=r.id_contribuyente_representado "
             f"WHERE r.activo AND c.activo AND r.id_contribuyente_representante={int(contributor_id)} "
             "ORDER BY c.nombre_legal LIMIT 100;"
@@ -348,9 +349,9 @@ class AgipDdjjFlow:
     def _by_id(self, item_id: int, contributor_id: int | None) -> list[dict[str, Any]]:
         scope = ""
         if contributor_id is not None:
-            scope = f"JOIN tbl_representaciones r ON r.id_contribuyente_representado=c.id_contribuyente AND r.id_contribuyente_representante={int(contributor_id)} AND r.activo JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='AGIP'"
+            scope = f"JOIN tbl_representaciones r ON r.id_contribuyente_representado=c.id_contribuyente AND r.id_contribuyente_representante={int(contributor_id)} AND r.activo JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}'"
         else:
-            scope = "JOIN tbl_accesos a ON a.id_contribuyente=c.id_contribuyente AND a.activo JOIN tbl_entidades e ON e.id_entidad=a.id_entidad AND e.nombre='AGIP'"
+            scope = f"JOIN tbl_accesos a ON a.id_contribuyente=c.id_contribuyente AND a.activo JOIN tbl_entidades e ON e.id_entidad=a.id_entidad AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}'"
         return self._query(f"SELECT json_build_object('id',c.id_contribuyente,'nombre',c.nombre_legal,'cuit',c.cuit,'slug',c.slug)::text FROM tbl_contribuyentes c {scope} WHERE c.activo AND c.id_contribuyente={int(item_id)};")
 
     async def callback(self, adapter, query, data: str, chat_id, thread_id, user_id) -> bool:
