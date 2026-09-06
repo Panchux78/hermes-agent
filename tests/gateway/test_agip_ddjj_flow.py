@@ -154,6 +154,9 @@ def test_worker_starts_in_new_session(monkeypatch):
         await flow._run_query(adapter, "10", None, key, state, "2026-08")
 
         assert create.await_args.kwargs["start_new_session"] is True
+        assert create.await_args.args[5] == (
+            "/home/pancho/hermes-workspace/Contabot/scripts/agip-ddjj-worker.py"
+        )
 
     asyncio.run(scenario())
 
@@ -314,6 +317,22 @@ def test_list_unavailable_has_a_clear_message():
     assert "diagnóstico quedó registrado" in message
 
 
+def test_unknown_worker_error_uses_structured_stage_without_raw_exception():
+    message = AgipDdjjFlow._worker_error_message(
+        {
+            "error_code": "AGIP_WORKER_FAILED",
+            "stage": "select_represented",
+            "error_type": "JavascriptException",
+            "error": "traceback privado",
+        },
+        evidence_preserved=True,
+    )
+
+    assert "seleccionar el contribuyente representado" in message
+    assert "JavascriptException" not in message
+    assert "traceback privado" not in message
+
+
 def test_failure_manifest_contains_only_allowlisted_fields(tmp_path, monkeypatch):
     failure_root = tmp_path / "failures"
     monkeypatch.setattr(
@@ -325,6 +344,8 @@ def test_failure_manifest_contains_only_allowlisted_fields(tmp_path, monkeypatch
             "error_code": "AGIP_DDJJ_PDF_RESPONSE_INVALID",
             "period": "2026-02",
             "response_kind": "html",
+            "stage": "build_xlsx",
+            "error_type": "DocumentDownloadError",
             "error": "secreto que no debe persistirse",
             "unexpected": "otro secreto",
         },
@@ -336,6 +357,8 @@ def test_failure_manifest_contains_only_allowlisted_fields(tmp_path, monkeypatch
     assert payload["error_code"] == "AGIP_DDJJ_PDF_RESPONSE_INVALID"
     assert payload["failed_period"] == "2026-02"
     assert payload["response_kind"] == "html"
+    assert payload["stage"] == "build_xlsx"
+    assert payload["error_type"] == "DocumentDownloadError"
     assert "error" not in payload
     assert "unexpected" not in payload
     assert path.stat().st_mode & 0o777 == 0o600

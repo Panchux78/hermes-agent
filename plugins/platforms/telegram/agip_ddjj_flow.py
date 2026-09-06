@@ -202,7 +202,17 @@ class AgipDdjjFlow:
         elif code.startswith("AGIP_DDJJ_PDF_") and re.fullmatch(r"\d{4}-\d{2}", period):
             message = f"Consulta AGIP no completada: AGIP no entregó el PDF de {period[5:7]}/{period[:4]}."
         else:
-            message = "Consulta AGIP no completada por un error técnico."
+            stage = str(result.get("stage", ""))
+            stage_messages = {
+                "start_browser": "Consulta AGIP no completada: no se pudo iniciar el navegador.",
+                "load_login": "Consulta AGIP no completada: no se pudo abrir Clave Ciudad.",
+                "submit_login": "Consulta AGIP no completada: no se pudo completar el acceso a Clave Ciudad.",
+                "select_represented": "Consulta AGIP no completada: no se pudo seleccionar el contribuyente representado.",
+                "open_esicol": "Consulta AGIP no completada: no se pudo abrir e-SICOL.",
+                "load_ddjj_list": "Consulta AGIP no completada: AGIP no terminó de cargar el listado de DDJJ.",
+                "build_xlsx": "Consulta AGIP no completada al obtener o procesar las DDJJ.",
+            }
+            message = stage_messages.get(stage, "Consulta AGIP no completada por un error técnico.")
         if evidence_preserved:
             message += " El diagnóstico quedó registrado para revisión."
         return message
@@ -224,6 +234,16 @@ class AgipDdjjFlow:
             payload["failed_period"] = str(result["period"])
         if str(result.get("response_kind", "")) in {"html", "non_pdf"}:
             payload["response_kind"] = str(result["response_kind"])
+        stage = str(result.get("stage", ""))
+        if stage in {
+            "validate_arguments", "load_access", "resolve_output", "start_browser",
+            "load_login", "submit_login", "select_represented", "open_esicol",
+            "load_ddjj_list", "build_xlsx", "complete",
+        }:
+            payload["stage"] = stage
+        error_type = str(result.get("error_type", ""))
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type):
+            payload["error_type"] = error_type
         status = result.get("http_status")
         if isinstance(status, int) and 100 <= status <= 599:
             payload["http_status"] = status
@@ -430,7 +450,7 @@ class AgipDdjjFlow:
             proc = await asyncio.create_subprocess_exec(
                 "xvfb-run", "-a", "-s", "-screen 0 1440x1100x24 -nolisten tcp",
                 "/home/pancho/hermes-workspace/agip-consulta-2025/.venv-selenium/bin/python",
-                "/home/pancho/hermes-workspace/agip-consulta-2025/agip-ddjj-worker.py",
+                "/home/pancho/hermes-workspace/Contabot/scripts/agip-ddjj-worker.py",
                 str(state.contributor_id), str(state.represented_id), period,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
