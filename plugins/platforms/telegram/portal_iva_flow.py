@@ -365,17 +365,20 @@ class PortalIvaFlow:
         return result
 
     async def _communicate_with_progress(self, proc, state: FlowState) -> tuple[bytes, bytes]:
-        """Consume stderr-only progress without exposing it to Telegram."""
+        """Separate structured progress from the final JSON on either pipe.
+
+        xvfb-run merges the wrapped command's stderr into stdout, so the
+        executor's progress channel can arrive through either stream.
+        """
         if not getattr(proc, "stdout", None) or not getattr(proc, "stderr", None):
             return await proc.communicate()
 
-        async def consume_progress() -> bytes:
+        async def consume(stream) -> bytes:
             captured = bytearray()
             while True:
-                line = await proc.stderr.readline()
+                line = await stream.readline()
                 if not line:
                     return bytes(captured)
-                captured.extend(line)
                 marker = b"PORTAL_IVA_PROGRESS:"
                 if line.startswith(marker):
                     stage = line[len(marker):].decode("ascii", errors="ignore").strip()
@@ -383,9 +386,11 @@ class PortalIvaFlow:
                     if text:
                         state.progress_label = text
                         await self._edit_progress(state, text, keyboard=self._cancel_keyboard(state.nonce))
+                    continue
+                captured.extend(line)
 
-        stdout_task = asyncio.create_task(proc.stdout.read())
-        stderr_task = asyncio.create_task(consume_progress())
+        stdout_task = asyncio.create_task(consume(proc.stdout))
+        stderr_task = asyncio.create_task(consume(proc.stderr))
         await proc.wait()
         return await stdout_task, await stderr_task
 
@@ -416,7 +421,7 @@ class PortalIvaFlow:
         for item in files:
             if not isinstance(item, dict) or str(item.get("libro", "")) not in expected:
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
-            name = str(item.get("csv_name", ""))
+            name = str(item.get("entregable_name", ""))
             if not name or Path(name).name != name or Path(name).suffix.lower() != ".csv":
                 raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
             path = root / name
@@ -462,6 +467,13 @@ class PortalIvaFlow:
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
             raise
+
+    @staticmethod
+    def _safe_error_code(exc: Exception) -> str:
+        code = str(exc)
+        if re.fullmatch(r"PORTAL_IVA_[A-Z0-9_]+", code):
+            return code
+        return type(exc).__name__
 
     @staticmethod
     def _error_message(result: dict[str, Any] | None, fallback: str, operation: str) -> str:
@@ -542,8 +554,14 @@ class PortalIvaFlow:
                 )
                 if not delivery.success:
                     raise RuntimeError("PORTAL_IVA_DELIVERY_FAILED")
-                if getattr(delivery, "delivered_filename", None) != path.name:
-                    raise RuntimeError("PORTAL_IVA_DELIVERY_FILENAME_MISMATCH")
+                delivered_filename = getattr(delivery, "delivered_filename", None)
+                if delivered_filename != path.name:
+                    logger.error(
+                        "[PORTAL-IVA] stage=delivery status=DELIVERY_FILENAME_MISMATCH "
+                        "expected=%r delivered=%r",
+                        path.name,
+                        delivered_filename,
+                    )
             warnings = result.get("advertencias") if isinstance(result.get("advertencias"), list) else []
             suffix = f" Advertencias: {', '.join(str(x) for x in warnings)}." if warnings else ""
             await self._edit_progress(state, f"Portal IVA completado. Ventas y Compras enviadas.{suffix}")
@@ -553,7 +571,11 @@ class PortalIvaFlow:
                 await self._terminate_process(proc)
             raise
         except Exception as exc:
-            logger.error("[PORTAL-IVA] run failed error_type=%s", type(exc).__name__)
+            logger.error(
+                "[PORTAL-IVA] run failed error_type=%s error_code=%s",
+                type(exc).__name__,
+                self._safe_error_code(exc),
+            )
             if not state.cancelled:
                 await self._edit_progress(state, self._error_message(result, f"{state.operation} no se completó.", state.operation))
         finally:

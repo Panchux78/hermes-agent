@@ -17,6 +17,15 @@ class FakeMessage:
         self.edits.append((text, reply_markup))
 
 
+def test_safe_error_code_exposes_only_stable_portal_iva_codes():
+    assert PortalIvaFlow._safe_error_code(
+        RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
+    ) == "PORTAL_IVA_OUTPUT_INCOMPLETE"
+    assert PortalIvaFlow._safe_error_code(
+        RuntimeError("/home/pancho/private/path")
+    ) == "RuntimeError"
+
+
 class FakeProcess:
     def __init__(self, payload, returncode=0):
         self.payload = payload
@@ -166,15 +175,40 @@ def test_delivery_rejects_traversal_and_symlink(tmp_path):
     flow = PortalIvaFlow(clients_root=tmp_path)
     state = FlowState(user_id="7", nonce="a" * 10, stage="running", slug="cliente", cuit="20123456789", period="2026-08")
     result = _result(tmp_path, state)
-    result["archivos"][0]["csv_name"] = "../ventas.csv"
+    result["archivos"][0]["entregable_name"] = "../ventas.csv"
     with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
         flow._deliverables(state.slug, state.cuit, state.period, result)
     result = _result(tmp_path, state)
     target = tmp_path / "cliente" / "20123456789" / "arca" / "2026" / "08" / "consultas"
-    (target / "arca-ventas.csv").unlink()
-    (target / "arca-ventas.csv").symlink_to(tmp_path / "elsewhere.csv")
+    (target / "cliente-portal-iva-ventas.csv").unlink()
+    (target / "cliente-portal-iva-ventas.csv").symlink_to(tmp_path / "elsewhere.csv")
     with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
         flow._deliverables(state.slug, state.cuit, state.period, result)
+
+
+def test_delivery_uses_canonical_deliverable_instead_of_long_official_name(tmp_path):
+    flow = PortalIvaFlow(clients_root=tmp_path)
+    state = FlowState(
+        user_id="7",
+        nonce="a" * 10,
+        stage="running",
+        slug="cliente",
+        cuit="20123456789",
+        period="2026-08",
+    )
+    result = _result(tmp_path, state)
+    target = tmp_path / "cliente" / "20123456789" / "arca" / "2026" / "08" / "consultas"
+    official = "comprobantes_periodo_202608_ventas_20260906_1145 (montos expresados en pesos).csv"
+    assert len(official) > 64
+    (target / official).write_text("cabecera\n", encoding="utf-8")
+    result["archivos"][0]["csv_name"] = official
+
+    deliverables = flow._deliverables(state.slug, state.cuit, state.period, result)
+
+    assert [path.name for path, _, _ in deliverables] == [
+        "cliente-portal-iva-ventas.csv",
+        "cliente-portal-iva-compras.csv",
+    ]
 
 
 def test_stdout_requires_one_json_object():
@@ -183,6 +217,38 @@ def test_stdout_requires_one_json_object():
         PortalIvaFlow._parse_result(b'{"ok":true}\nnoise\n')
     with pytest.raises(RuntimeError, match="STDOUT_INVALID"):
         PortalIvaFlow._parse_result(b'not-json\n')
+
+
+def test_progress_merged_by_xvfb_is_removed_from_stdout_and_reported():
+    async def scenario():
+        stdout = asyncio.StreamReader()
+        stdout.feed_data(
+            b"PORTAL_IVA_PROGRESS:buscar_presentado\n"
+            b"PORTAL_IVA_PROGRESS:descargar_ventas\n"
+            b'{"ok":true,"etapa":"completado"}\n'
+        )
+        stdout.feed_eof()
+        stderr = asyncio.StreamReader()
+        stderr.feed_data(b"uv diagnostic\n")
+        stderr.feed_eof()
+        proc = SimpleNamespace(stdout=stdout, stderr=stderr, wait=AsyncMock(return_value=0))
+        state = FlowState(
+            user_id="7",
+            nonce="a" * 10,
+            stage="running",
+            progress_message=FakeMessage(),
+        )
+
+        raw, captured_stderr = await PortalIvaFlow()._communicate_with_progress(proc, state)
+
+        assert raw == b'{"ok":true,"etapa":"completado"}\n'
+        assert captured_stderr == b"uv diagnostic\n"
+        assert [edit[0] for edit in state.progress_message.edits] == [
+            "Buscando presentación…",
+            "Descargando Libro IVA Ventas…",
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_success_delivers_both_csvs_and_updates_same_message(monkeypatch, tmp_path):
@@ -198,7 +264,7 @@ def test_success_delivers_both_csvs_and_updates_same_message(monkeypatch, tmp_pa
         await flow._run(adapter, "10", None, "10::7", state)
         assert adapter.send_document.await_count == 2
         sent_names = [call.kwargs["file_name"] for call in adapter.send_document.await_args_list]
-        assert sent_names == ["arca-ventas.csv", "arca-compras.csv"]
+        assert sent_names == ["cliente-portal-iva-ventas.csv", "cliente-portal-iva-compras.csv"]
         assert "Ventas y Compras enviadas" in state.progress_message.edits[-1][0]
     asyncio.run(scenario())
 
@@ -210,7 +276,7 @@ def test_progress_messages_match_presented_route_stages():
     assert PortalIvaFlow._progress_text("validar_archivos") == "Validando archivos…"
 
 
-def test_remote_filename_mismatch_does_not_report_delivery_success(monkeypatch, tmp_path):
+def test_remote_filename_mismatch_is_logged_without_aborting_delivery(monkeypatch, tmp_path, caplog):
     async def scenario():
         flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
         flow.executor.touch(); flow.uv.touch()
@@ -222,7 +288,10 @@ def test_remote_filename_mismatch_does_not_report_delivery_success(monkeypatch, 
         payload = json.dumps(_result(tmp_path, state)).encode()
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(payload)))
         await flow._run(adapter, "10", None, "10::7", state)
-        assert "Ventas y Compras enviadas" not in state.progress_message.edits[-1][0]
+        assert adapter.send_document.await_count == 2
+        assert "Ventas y Compras enviadas" in state.progress_message.edits[-1][0]
+        assert caplog.text.count("DELIVERY_FILENAME_MISMATCH") == 2
+        assert "expected='cliente-portal-iva-ventas.csv' delivered='otro.csv'" in caplog.text
 
     asyncio.run(scenario())
 
