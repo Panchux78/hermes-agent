@@ -326,7 +326,8 @@ def test_esicol_unavailable_is_not_reported_as_represented_selection_failure():
         evidence_preserved=True,
     )
 
-    assert "e-SICOL no quedó disponible" in message
+    assert "no muestra e-SICOL habilitado" in message
+    assert "delegación del servicio" in message
     assert "seleccionar el contribuyente representado" not in message
 
 

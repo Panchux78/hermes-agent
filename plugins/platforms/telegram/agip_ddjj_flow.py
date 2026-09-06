@@ -200,7 +200,10 @@ class AgipDdjjFlow:
         elif code == "AGIP_DDJJ_LIST_UNAVAILABLE":
             message = "Consulta AGIP no completada: AGIP no terminó de cargar el listado de DDJJ."
         elif code == "AGIP_ESICOL_UNAVAILABLE":
-            message = "Consulta AGIP no completada: e-SICOL no quedó disponible para el contribuyente seleccionado."
+            message = (
+                "Consulta AGIP no completada: Clave Ciudad no muestra e-SICOL "
+                "habilitado para ese contribuyente. Revisá la delegación del servicio en AGIP."
+            )
         elif code.startswith("AGIP_DDJJ_PDF_") and re.fullmatch(r"\d{4}-\d{2}", period):
             message = f"Consulta AGIP no completada: AGIP no entregó el PDF de {period[5:7]}/{period[:4]}."
         else:
