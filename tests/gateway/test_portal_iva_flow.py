@@ -265,7 +265,43 @@ def test_success_delivers_both_csvs_and_updates_same_message(monkeypatch, tmp_pa
         assert adapter.send_document.await_count == 2
         sent_names = [call.kwargs["file_name"] for call in adapter.send_document.await_args_list]
         assert sent_names == ["cliente-portal-iva-ventas.csv", "cliente-portal-iva-compras.csv"]
-        assert "Ventas y Compras enviadas" in state.progress_message.edits[-1][0]
+        assert state.progress_message.edits[-1][0] == (
+            "Portal IVA completado.\n"
+            "Ventas: sin comprobantes para el período.\n"
+            "Compras: sin comprobantes para el período."
+        )
+    asyncio.run(scenario())
+
+
+def test_completion_translates_empty_book_and_keeps_warning_codes_internal(monkeypatch, tmp_path, caplog):
+    async def scenario():
+        flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
+        flow.executor.touch(); flow.uv.touch()
+        adapter = FakeAdapter()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit="20123456789", period="2026-08", progress_message=FakeMessage())
+        result = _result(tmp_path, state)
+        result["archivos"][1]["filas"] = 34
+        result["advertencias"] = [
+            "IMPORTACION_NUMEROS_NO_PARSEADOS_ventas",
+            "IMPORTACION_NUMEROS_NO_PARSEADOS_compras",
+            "CSV_SIN_FILAS_ventas",
+        ]
+        flow._by_id = lambda _ident: [{"slug": "cliente", "cuit": "20123456789"}]
+        flow._acquire_execution_lock = lambda _key: None
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(json.dumps(result).encode())))
+
+        await flow._run(adapter, "10", None, "10::7", state)
+
+        final_text = state.progress_message.edits[-1][0]
+        assert final_text == (
+            "Portal IVA completado.\n"
+            "Ventas: sin comprobantes para el período.\n"
+            "Compras: 34 comprobantes; archivo enviado."
+        )
+        assert "IMPORTACION_NUMEROS_NO_PARSEADOS" not in final_text
+        assert "CSV_SIN_FILAS" not in final_text
+        assert "IMPORTACION_NUMEROS_NO_PARSEADOS_ventas" in caplog.text
+
     asyncio.run(scenario())
 
 
@@ -289,7 +325,11 @@ def test_remote_filename_mismatch_is_logged_without_aborting_delivery(monkeypatc
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(payload)))
         await flow._run(adapter, "10", None, "10::7", state)
         assert adapter.send_document.await_count == 2
-        assert "Ventas y Compras enviadas" in state.progress_message.edits[-1][0]
+        assert state.progress_message.edits[-1][0] == (
+            "Portal IVA completado.\n"
+            "Ventas: sin comprobantes para el período.\n"
+            "Compras: sin comprobantes para el período."
+        )
         assert caplog.text.count("DELIVERY_FILENAME_MISMATCH") == 2
         assert "expected='cliente-portal-iva-ventas.csv' delivered='otro.csv'" in caplog.text
 

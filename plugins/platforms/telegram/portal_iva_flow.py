@@ -476,6 +476,19 @@ class PortalIvaFlow:
         return type(exc).__name__
 
     @staticmethod
+    def _completion_message(deliverables: list[tuple[Path, int, str]]) -> str:
+        lines = ["Portal IVA completado."]
+        for _, rows, label in deliverables:
+            title = label.title()
+            if rows == 0:
+                lines.append(f"{title}: sin comprobantes para el período.")
+            elif rows == 1:
+                lines.append(f"{title}: 1 comprobante; archivo enviado.")
+            else:
+                lines.append(f"{title}: {rows} comprobantes; archivo enviado.")
+        return "\n".join(lines)
+
+    @staticmethod
     def _error_message(result: dict[str, Any] | None, fallback: str, operation: str) -> str:
         prefix = "Generar CSV de período nuevo" if operation == "generar" else "Descargar CSV presentados"
         reason = str((result or {}).get("motivo", ""))
@@ -563,8 +576,16 @@ class PortalIvaFlow:
                         delivered_filename,
                     )
             warnings = result.get("advertencias") if isinstance(result.get("advertencias"), list) else []
-            suffix = f" Advertencias: {', '.join(str(x) for x in warnings)}." if warnings else ""
-            await self._edit_progress(state, f"Portal IVA completado. Ventas y Compras enviadas.{suffix}")
+            safe_warnings = [
+                str(code) for code in warnings
+                if re.fullmatch(r"[A-Z][A-Za-z0-9_]{0,127}", str(code))
+            ]
+            if safe_warnings:
+                logger.warning(
+                    "[PORTAL-IVA] completed_with_warnings codes=%s",
+                    ",".join(safe_warnings),
+                )
+            await self._edit_progress(state, self._completion_message(deliverables))
         except asyncio.CancelledError:
             state.cancelled = True
             if proc is not None and proc.returncode is None:
