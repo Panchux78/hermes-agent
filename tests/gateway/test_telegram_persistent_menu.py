@@ -65,6 +65,9 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
                     {"text": "📄 Preparar / generar", "callback_data": "om:preparar"},
                 ],
                 [
+                    {"text": "🔐 ARCA", "callback_data": "om:arca"},
+                ],
+                [
                     {"text": "🧰 Herramientas", "callback_data": "om:herramientas"},
                     {"text": "❓ Ayuda", "callback_data": "om:ayuda"},
                 ],
@@ -149,7 +152,6 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
                         "callback_data": "bx:start",
                     }
                 ],
-                [{"text": "📊 Portal IVA → CSV", "callback_data": "pi:start"}],
                 [
                     {"text": "‹ Menú", "callback_data": "om:main"},
                     {"text": "✕ Cerrar", "callback_data": "om:close"},
@@ -159,6 +161,26 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
         query.edit_message_text.assert_not_awaited()
 
     asyncio.run(scenario())
+
+
+def test_arca_portal_iva_submenu_has_exactly_two_operations(monkeypatch):
+    import plugins.platforms.telegram.adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module, "InlineKeyboardButton", lambda text, callback_data: {"text": text, "callback_data": callback_data})
+    monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
+
+    assert TelegramAdapter._menu_panel_keyboard("arca") == [
+        [{"text": "📊 Portal IVA", "callback_data": "om:portal_iva"}],
+        [
+            {"text": "‹ Menú", "callback_data": "om:main"},
+            {"text": "✕ Cerrar", "callback_data": "om:close"},
+        ],
+    ]
+    assert TelegramAdapter._menu_panel_keyboard("portal_iva") == [
+        [{"text": "🧾 Generar CSV de período nuevo", "callback_data": "pi:generar"}],
+        [{"text": "📥 Descargar CSV presentados", "callback_data": "pi:descargar"}],
+        [{"text": "⬅️ Volver a ARCA", "callback_data": "om:arca"}],
+    ]
 
 
 def test_pdf_tools_are_separate_from_accounting_preparation(monkeypatch):

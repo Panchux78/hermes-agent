@@ -40,13 +40,14 @@ class FlowState:
     user_id: str
     nonce: str
     stage: str
+    operation: str = "generar"
     contributor_id: int | None = None
     slug: str | None = None
     cuit: str | None = None
     nombre: str | None = None
     period: str | None = None
     progress_message: Any = None
-    progress_label: str = "Buscando período presentado…"
+    progress_label: str = "Generando CSV de período nuevo…"
     cancelled: bool = False
     created_at: float = field(default_factory=time.monotonic)
 
@@ -78,7 +79,8 @@ class PortalIvaFlow:
     @staticmethod
     def _progress_text(stage: str) -> str | None:
         return {
-            "buscar_presentado": "Buscando período presentado…",
+            "generar": "Generando CSV de período nuevo…",
+            "buscar_presentado": "Buscando presentación…",
             "descargar_ventas": "Descargando Libro IVA Ventas…",
             "descargar_compras": "Descargando Libro IVA Compras…",
             "validar_archivos": "Validando archivos…",
@@ -150,15 +152,20 @@ class PortalIvaFlow:
     def _cancel_keyboard(nonce: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([[InlineKeyboardButton("Cancelar", callback_data=f"pi:cancel:{nonce}")]])
 
-    async def start(self, adapter, query, chat_id: Any, thread_id: Any, user_id: str) -> None:
+    async def start(self, adapter, query, chat_id: Any, thread_id: Any, user_id: str, operation: str) -> None:
+        if operation not in {"generar", "descargar-presentados"}:
+            await query.answer("Operación Portal IVA inválida.")
+            return
         key = self._key(chat_id, thread_id, user_id)
         if key in self.tasks:
             await query.answer("Ya hay una descarga Portal IVA en curso.")
             return
         self.states[key] = FlowState(
-            user_id=user_id, nonce=uuid.uuid4().hex[:10], stage="client", created_at=time.monotonic(),
+            user_id=user_id, nonce=uuid.uuid4().hex[:10], stage="client", operation=operation,
+            progress_label=("Generando CSV de período nuevo…" if operation == "generar" else "Buscando presentación…"),
+            created_at=time.monotonic(),
         )
-        await query.answer("Portal IVA → CSV")
+        await query.answer("Portal IVA")
         await self._send(
             adapter, chat_id, "Ingresá nombre, CUIT o slug del contribuyente.", thread_id,
             self._cancel_keyboard(self.states[key].nonce),
@@ -166,8 +173,12 @@ class PortalIvaFlow:
 
     async def callback(self, adapter, query, data: str, chat_id: Any, thread_id: Any, user_id: str) -> bool:
         key = self._key(chat_id, thread_id, user_id)
+        operation = {"pi:generar": "generar", "pi:descargar": "descargar-presentados"}.get(data)
+        if operation:
+            await self.start(adapter, query, chat_id, thread_id, user_id, operation)
+            return True
         if data == "pi:start":
-            await self.start(adapter, query, chat_id, thread_id, user_id)
+            await query.answer("Elegí una operación desde Portal IVA.")
             return True
         cancel = re.fullmatch(r"pi:cancel:([0-9a-f]{10})", data)
         if cancel:
@@ -238,7 +249,10 @@ class PortalIvaFlow:
                 return True
             state.period = period
             state.stage = "running"
-            state.progress_label = "Buscando período presentado…"
+            state.progress_label = (
+                "Generando CSV de período nuevo…"
+                if state.operation == "generar" else "Buscando presentación…"
+            )
             state.progress_message = await self._send(
                 adapter, chat_id, state.progress_label, thread_id, self._cancel_keyboard(state.nonce),
             )
@@ -269,12 +283,15 @@ class PortalIvaFlow:
         state.stage = "period"
         await self._send(adapter, chat_id, "Ingresá el período como MM/AAAA. Ejemplo: 08/2026.", thread_id)
 
-    def _command(self, slug: str, period: str) -> list[str]:
+    def _command(self, slug: str, period: str, operation: str) -> list[str]:
         if not self.available():
             raise RuntimeError("PORTAL_IVA_RUNTIME_UNAVAILABLE")
+        if operation not in {"generar", "descargar-presentados"}:
+            raise RuntimeError("PORTAL_IVA_OPERATION_INVALID")
         return [
             str(self.uv), "run", "--with", "selenium", "xvfb-run", "-a",
             "python3", str(self.executor), "--cliente", slug, "--periodo", period,
+            "--operacion", operation,
         ]
 
     def _acquire_execution_lock(self, key: str) -> None:
@@ -447,14 +464,15 @@ class PortalIvaFlow:
             raise
 
     @staticmethod
-    def _error_message(result: dict[str, Any] | None, fallback: str) -> str:
+    def _error_message(result: dict[str, Any] | None, fallback: str, operation: str) -> str:
+        prefix = "Generar CSV de período nuevo" if operation == "generar" else "Descargar CSV presentados"
         reason = str((result or {}).get("motivo", ""))
         if reason.startswith("CREDENCIAL_") or "CREDENTIAL" in reason:
-            return "Portal IVA no se completó: ARCA rechazó la credencial."
-        if reason.startswith("PERIODO_NO_DISPONIBLE"):
-            return "Portal IVA no se completó: el período no está disponible."
+            return f"{prefix}: ARCA rechazó la credencial."
+        if reason.startswith(("PERIODO_NO_DISPONIBLE", "PERIODO_NO_PRESENTADO")):
+            return f"{prefix}: el período no está disponible para esta operación."
         if reason:
-            return "Portal IVA no se completó. La evidencia quedó preservada para revisión."
+            return f"{prefix} no se completó. La evidencia quedó preservada para revisión."
         return fallback
 
     async def _run(self, adapter, chat_id: Any, thread_id: Any, key: str, state: FlowState) -> None:
@@ -483,7 +501,7 @@ class PortalIvaFlow:
             self._acquire_execution_lock(execution_key)
             execution_lock_acquired = True
             self.execution_locks[execution_key] = key
-            command = self._command(slug, period)
+            command = self._command(slug, period, state.operation)
             started = time.monotonic()
             proc = await asyncio.create_subprocess_exec(
                 *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True,
@@ -502,7 +520,7 @@ class PortalIvaFlow:
                 return
             result = self._parse_result(raw)
             if proc.returncode != 0 or not result.get("ok"):
-                await self._edit_progress(state, self._error_message(result, "Portal IVA no se completó. La evidencia quedó preservada para revisión."))
+                await self._edit_progress(state, self._error_message(result, f"{state.operation} no se completó.", state.operation))
                 return
             if result.get("etapa") != "completado":
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
@@ -537,7 +555,7 @@ class PortalIvaFlow:
         except Exception as exc:
             logger.error("[PORTAL-IVA] run failed error_type=%s", type(exc).__name__)
             if not state.cancelled:
-                await self._edit_progress(state, self._error_message(result, "Portal IVA no se completó. La evidencia quedó preservada para revisión."))
+                await self._edit_progress(state, self._error_message(result, f"{state.operation} no se completó.", state.operation))
         finally:
             if ticker is not None:
                 ticker.cancel()

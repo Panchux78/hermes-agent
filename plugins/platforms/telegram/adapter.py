@@ -1297,6 +1297,8 @@ class TelegramAdapter(BasePlatformAdapter):
         titles = {
             "main": "¿Qué querés hacer?",
             "consultar": "Consultas disponibles",
+            "arca": "ARCA",
+            "portal_iva": "📊 Portal IVA",
             "preparar": (
                 "Preparar documentos contables\n\n"
                 "Convertí resúmenes bancarios compatibles a Excel. "
@@ -1326,6 +1328,16 @@ class TelegramAdapter(BasePlatformAdapter):
             rows = [
                 [InlineKeyboardButton("🧾 DDJJ de IIBB", callback_data="ad:start")],
             ]
+        elif page == "arca":
+            rows = [
+                [InlineKeyboardButton("📊 Portal IVA", callback_data="om:portal_iva")],
+            ]
+        elif page == "portal_iva":
+            return InlineKeyboardMarkup([
+                [InlineKeyboardButton("🧾 Generar CSV de período nuevo", callback_data="pi:generar")],
+                [InlineKeyboardButton("📥 Descargar CSV presentados", callback_data="pi:descargar")],
+                [InlineKeyboardButton("⬅️ Volver a ARCA", callback_data="om:arca")],
+            ])
         elif page == "preparar":
             rows = [
                 [InlineKeyboardButton("🏦 Resumen bancario → Excel", callback_data="px:start")],
@@ -1336,8 +1348,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 ],
             ]
-            if PortalIvaFlow().available():
-                rows.append([InlineKeyboardButton("📊 Portal IVA → CSV", callback_data="pi:start")])
+
         elif page == "herramientas":
             rows = [
                 [
@@ -1367,6 +1378,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     InlineKeyboardButton("🔎 Consultar", callback_data="om:consultar"),
                     InlineKeyboardButton("📄 Preparar / generar", callback_data="om:preparar"),
                 ],
+                [InlineKeyboardButton("🔐 ARCA", callback_data="om:arca")],
                 [
                     InlineKeyboardButton("🧰 Herramientas", callback_data="om:herramientas"),
                     InlineKeyboardButton("❓ Ayuda", callback_data="om:ayuda"),
@@ -1431,6 +1443,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if page not in {
             "main",
             "consultar",
+            "arca",
+            "portal_iva",
             "preparar",
             "herramientas",
             "ayuda",

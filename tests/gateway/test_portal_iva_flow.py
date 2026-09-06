@@ -71,9 +71,9 @@ def test_command_is_exact_and_shell_free(tmp_path):
     flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
     flow.executor.touch()
     flow.uv.touch()
-    assert flow._command("cliente", "2026-08") == [
+    assert flow._command("cliente", "2026-08", "generar") == [
         str(tmp_path / "uv"), "run", "--with", "selenium", "xvfb-run", "-a",
-        "python3", str(tmp_path / "portal_iva.py"), "--cliente", "cliente", "--periodo", "2026-08",
+        "python3", str(tmp_path / "portal_iva.py"), "--cliente", "cliente", "--periodo", "2026-08", "--operacion", "generar",
     ]
 
 
@@ -133,7 +133,7 @@ def test_search_handles_unique_multiple_and_missing(monkeypatch):
         flow = PortalIvaFlow()
         adapter = FakeAdapter()
         flow._search = lambda term: []
-        await flow.start(adapter, _query("pi:start"), "10", None, "7")
+        await flow.start(adapter, _query("pi:generar"), "10", None, "7", "generar")
         assert await flow.text(adapter, _message("nadie"))
         flow._search = lambda term: [{"id": 1, "nombre": "Uno", "cuit": "20123456789", "slug": "uno"}]
         assert await flow.text(adapter, _message("uno"))
@@ -156,8 +156,8 @@ def test_callback_selection_expires_and_double_start_is_blocked():
         assert await flow.callback(adapter, expired, expired.data, "10", None, "7")
         expired.answer.assert_awaited_once()
         flow.tasks[flow._key("10", None, "7")] = asyncio.current_task()
-        start = _query("pi:start")
-        assert await flow.callback(adapter, start, "pi:start", "10", None, "7")
+        start = _query("pi:generar")
+        assert await flow.callback(adapter, start, "pi:generar", "10", None, "7")
         start.answer.assert_awaited_once_with("Ya hay una descarga Portal IVA en curso.")
     asyncio.run(scenario())
 
@@ -204,7 +204,7 @@ def test_success_delivers_both_csvs_and_updates_same_message(monkeypatch, tmp_pa
 
 
 def test_progress_messages_match_presented_route_stages():
-    assert PortalIvaFlow._progress_text("buscar_presentado") == "Buscando período presentado…"
+    assert PortalIvaFlow._progress_text("buscar_presentado") == "Buscando presentación…"
     assert PortalIvaFlow._progress_text("descargar_ventas") == "Descargando Libro IVA Ventas…"
     assert PortalIvaFlow._progress_text("descargar_compras") == "Descargando Libro IVA Compras…"
     assert PortalIvaFlow._progress_text("validar_archivos") == "Validando archivos…"
@@ -223,6 +223,23 @@ def test_remote_filename_mismatch_does_not_report_delivery_success(monkeypatch, 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(payload)))
         await flow._run(adapter, "10", None, "10::7", state)
         assert "Ventas y Compras enviadas" not in state.progress_message.edits[-1][0]
+
+    asyncio.run(scenario())
+
+
+def test_operation_callbacks_keep_shared_contributor_period_lock():
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        generate = _query("pi:generar")
+        assert await flow.callback(adapter, generate, "pi:generar", "10", None, "7")
+        state = flow.states[flow._key("10", None, "7")]
+        assert state.operation == "generar"
+        key = flow._key("10", None, "7")
+        flow.tasks[key] = asyncio.current_task()
+        download = _query("pi:descargar")
+        assert await flow.callback(adapter, download, "pi:descargar", "10", None, "7")
+        download.answer.assert_awaited_once_with("Ya hay una descarga Portal IVA en curso.")
 
     asyncio.run(scenario())
 
