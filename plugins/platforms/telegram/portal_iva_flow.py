@@ -46,6 +46,7 @@ class FlowState:
     nombre: str | None = None
     period: str | None = None
     progress_message: Any = None
+    progress_label: str = "Buscando período presentado…"
     cancelled: bool = False
     created_at: float = field(default_factory=time.monotonic)
 
@@ -73,6 +74,15 @@ class PortalIvaFlow:
     @staticmethod
     def _visible_cuit(cuit: str) -> str:
         return f"{cuit[:2]}-******-{cuit[-1:]}" if re.fullmatch(r"\d{11}", cuit or "") else "CUIT oculto"
+
+    @staticmethod
+    def _progress_text(stage: str) -> str | None:
+        return {
+            "buscar_presentado": "Buscando período presentado…",
+            "descargar_ventas": "Descargando Libro IVA Ventas…",
+            "descargar_compras": "Descargando Libro IVA Compras…",
+            "validar_archivos": "Validando archivos…",
+        }.get(stage)
 
     @staticmethod
     def _sql_scalar(value: str) -> str:
@@ -228,8 +238,9 @@ class PortalIvaFlow:
                 return True
             state.period = period
             state.stage = "running"
+            state.progress_label = "Buscando período presentado…"
             state.progress_message = await self._send(
-                adapter, chat_id, "Preparando Portal IVA…", thread_id, self._cancel_keyboard(state.nonce),
+                adapter, chat_id, state.progress_label, thread_id, self._cancel_keyboard(state.nonce),
             )
             task = asyncio.create_task(self._run(adapter, chat_id, thread_id, key, state))
             self.tasks[key] = task
@@ -318,7 +329,7 @@ class PortalIvaFlow:
             if state.cancelled:
                 return
             elapsed = int(time.monotonic() - started)
-            await self._edit_progress(state, f"Preparando Portal IVA… {elapsed} s", keyboard=self._cancel_keyboard(state.nonce))
+            await self._edit_progress(state, f"{state.progress_label} {elapsed} s", keyboard=self._cancel_keyboard(state.nonce))
 
     @staticmethod
     def _parse_result(raw: bytes) -> dict[str, Any]:
@@ -335,6 +346,31 @@ class PortalIvaFlow:
         if not isinstance(result, dict):
             raise RuntimeError("PORTAL_IVA_STDOUT_INVALID")
         return result
+
+    async def _communicate_with_progress(self, proc, state: FlowState) -> tuple[bytes, bytes]:
+        """Consume stderr-only progress without exposing it to Telegram."""
+        if not getattr(proc, "stdout", None) or not getattr(proc, "stderr", None):
+            return await proc.communicate()
+
+        async def consume_progress() -> bytes:
+            captured = bytearray()
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    return bytes(captured)
+                captured.extend(line)
+                marker = b"PORTAL_IVA_PROGRESS:"
+                if line.startswith(marker):
+                    stage = line[len(marker):].decode("ascii", errors="ignore").strip()
+                    text = self._progress_text(stage)
+                    if text:
+                        state.progress_label = text
+                        await self._edit_progress(state, text, keyboard=self._cancel_keyboard(state.nonce))
+
+        stdout_task = asyncio.create_task(proc.stdout.read())
+        stderr_task = asyncio.create_task(consume_progress())
+        await proc.wait()
+        return await stdout_task, await stderr_task
 
     def _deliverables(self, slug: str, cuit: str, period: str, result: dict[str, Any]) -> list[tuple[Path, int, str]]:
         if not slug or not cuit or not period:
@@ -363,7 +399,7 @@ class PortalIvaFlow:
         for item in files:
             if not isinstance(item, dict) or str(item.get("libro", "")) not in expected:
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
-            name = str(item.get("entregable_name", ""))
+            name = str(item.get("csv_name", ""))
             if not name or Path(name).name != name or Path(name).suffix.lower() != ".csv":
                 raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
             path = root / name
@@ -450,7 +486,7 @@ class PortalIvaFlow:
             command = self._command(slug, period)
             started = time.monotonic()
             proc = await asyncio.create_subprocess_exec(
-                *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, start_new_session=True,
+                *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True,
             )
             self.processes[key] = proc
             if state.cancelled:
@@ -458,7 +494,7 @@ class PortalIvaFlow:
                 return
             ticker = asyncio.create_task(self._ticker(state, started))
             try:
-                raw, _ = await asyncio.wait_for(proc.communicate(), timeout=_RUN_TIMEOUT_SECONDS)
+                raw, _ = await asyncio.wait_for(self._communicate_with_progress(proc, state), timeout=_RUN_TIMEOUT_SECONDS)
             except TimeoutError:
                 await self._terminate_process(proc)
                 raise RuntimeError("PORTAL_IVA_TIMEOUT")
@@ -470,6 +506,8 @@ class PortalIvaFlow:
                 return
             if result.get("etapa") != "completado":
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
+            state.progress_label = "Validando archivos…"
+            await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
             deliverables = self._deliverables(slug, cuit, period, result)
             if state.cancelled:
                 return
@@ -486,6 +524,8 @@ class PortalIvaFlow:
                 )
                 if not delivery.success:
                     raise RuntimeError("PORTAL_IVA_DELIVERY_FAILED")
+                if getattr(delivery, "delivered_filename", None) != path.name:
+                    raise RuntimeError("PORTAL_IVA_DELIVERY_FILENAME_MISMATCH")
             warnings = result.get("advertencias") if isinstance(result.get("advertencias"), list) else []
             suffix = f" Advertencias: {', '.join(str(x) for x in warnings)}." if warnings else ""
             await self._edit_progress(state, f"Portal IVA completado. Ventas y Compras enviadas.{suffix}")

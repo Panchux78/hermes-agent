@@ -33,7 +33,11 @@ class FakeProcess:
 class FakeAdapter:
     def __init__(self):
         self._bot = SimpleNamespace(send_message=AsyncMock(return_value=FakeMessage()))
-        self.send_document = AsyncMock(return_value=SimpleNamespace(success=True))
+
+        async def send_document(**kwargs):
+            return SimpleNamespace(success=True, delivered_filename=kwargs["file_name"])
+
+        self.send_document = AsyncMock(side_effect=send_document)
 
 
 def _message(text, user_id="7", chat_id="10"):
@@ -55,9 +59,11 @@ def _result(root: Path, state: FlowState, *, complete=True):
     target.mkdir(parents=True, exist_ok=True)
     files = []
     for label in ("ventas", "compras"):
-        name = f"{label}.csv"
-        (target / name).write_text("cabecera\n", encoding="utf-8")
-        files.append({"libro": label, "entregable_name": name, "filas": 0})
+        official = f"arca-{label}.csv"
+        deliverable = f"cliente-portal-iva-{label}.csv"
+        (target / official).write_text("cabecera\n", encoding="utf-8")
+        (target / deliverable).write_text("cabecera\n", encoding="utf-8")
+        files.append({"libro": label, "csv_name": official, "entregable_name": deliverable, "filas": 0})
     return {"ok": True, "etapa": "completado" if complete else "resolver", "archivos": files, "advertencias": ["CSV_SIN_FILAS_ventas"]}
 
 
@@ -160,13 +166,13 @@ def test_delivery_rejects_traversal_and_symlink(tmp_path):
     flow = PortalIvaFlow(clients_root=tmp_path)
     state = FlowState(user_id="7", nonce="a" * 10, stage="running", slug="cliente", cuit="20123456789", period="2026-08")
     result = _result(tmp_path, state)
-    result["archivos"][0]["entregable_name"] = "../ventas.csv"
+    result["archivos"][0]["csv_name"] = "../ventas.csv"
     with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
         flow._deliverables(state.slug, state.cuit, state.period, result)
     result = _result(tmp_path, state)
     target = tmp_path / "cliente" / "20123456789" / "arca" / "2026" / "08" / "consultas"
-    (target / "ventas.csv").unlink()
-    (target / "ventas.csv").symlink_to(tmp_path / "elsewhere.csv")
+    (target / "arca-ventas.csv").unlink()
+    (target / "arca-ventas.csv").symlink_to(tmp_path / "elsewhere.csv")
     with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
         flow._deliverables(state.slug, state.cuit, state.period, result)
 
@@ -191,7 +197,33 @@ def test_success_delivers_both_csvs_and_updates_same_message(monkeypatch, tmp_pa
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(payload)))
         await flow._run(adapter, "10", None, "10::7", state)
         assert adapter.send_document.await_count == 2
+        sent_names = [call.kwargs["file_name"] for call in adapter.send_document.await_args_list]
+        assert sent_names == ["arca-ventas.csv", "arca-compras.csv"]
         assert "Ventas y Compras enviadas" in state.progress_message.edits[-1][0]
+    asyncio.run(scenario())
+
+
+def test_progress_messages_match_presented_route_stages():
+    assert PortalIvaFlow._progress_text("buscar_presentado") == "Buscando período presentado…"
+    assert PortalIvaFlow._progress_text("descargar_ventas") == "Descargando Libro IVA Ventas…"
+    assert PortalIvaFlow._progress_text("descargar_compras") == "Descargando Libro IVA Compras…"
+    assert PortalIvaFlow._progress_text("validar_archivos") == "Validando archivos…"
+
+
+def test_remote_filename_mismatch_does_not_report_delivery_success(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
+        flow.executor.touch(); flow.uv.touch()
+        adapter = FakeAdapter()
+        adapter.send_document = AsyncMock(return_value=SimpleNamespace(success=True, delivered_filename="otro.csv"))
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit="20123456789", period="2026-08", progress_message=FakeMessage())
+        flow._by_id = lambda _ident: [{"slug": "cliente", "cuit": "20123456789"}]
+        flow._acquire_execution_lock = lambda _key: None
+        payload = json.dumps(_result(tmp_path, state)).encode()
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(payload)))
+        await flow._run(adapter, "10", None, "10::7", state)
+        assert "Ventas y Compras enviadas" not in state.progress_message.edits[-1][0]
+
     asyncio.run(scenario())
 
 
