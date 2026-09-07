@@ -1360,14 +1360,16 @@ class TelegramAdapter(BasePlatformAdapter):
     @staticmethod
     def _main_menu_button_label(icon: str, text: str) -> str:
         """Visually align the fixed main-menu labels in Telegram's centered buttons."""
-        right_padding = {
-            "Organismos fiscales": 3,
-            "Bancos": 12,
-            "Herramientas": 8,
-            "Ayuda": 14,
-            "Administración": 7,
-        }.get(text, 0)
-        padding = "\u2800" * right_padding
+        braille_padding, hair_padding = {
+            "Organismos fiscales": (3, 6),
+            "Bancos": (12, 4),
+            "Herramientas": (7, 9),
+            "Ayuda": (14, 2),
+            "Administración": (7, 0),
+        }.get(text, (0, 0))
+        # Hair spaces provide sub-character adjustment. The final braille blanks
+        # keep them away from the trailing edge, where clients may trim spaces.
+        padding = "\u200a" * hair_padding + "\u2800" * braille_padding
         return f"{icon} {text}{padding}"
 
     @staticmethod
