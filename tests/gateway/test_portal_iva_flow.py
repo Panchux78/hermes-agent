@@ -26,11 +26,21 @@ def test_safe_error_code_exposes_only_stable_portal_iva_codes():
     ) == "RuntimeError"
 
 
+def test_captcha_terminal_errors_are_explained_to_the_user():
+    assert PortalIvaFlow._error_message(
+        {"motivo": "CAPTCHA_REINTENTOS_AGOTADOS"}, "fallback", "generar"
+    ) == "Generar CSV de período nuevo: ARCA rechazó tres respuestas de captcha."
+    assert PortalIvaFlow._error_message(
+        {"motivo": "PORTAL_IVA_CAPTCHA_TIMEOUT"}, "fallback", "descargar-presentados"
+    ) == "Descargar CSV presentados: venció el tiempo para responder el captcha."
+
+
 class FakeProcess:
     def __init__(self, payload, returncode=0):
         self.payload = payload
         self.returncode = returncode
         self.pid = 4242
+        self.stdin = FakeStdin()
 
     async def communicate(self):
         return self.payload, b""
@@ -41,12 +51,26 @@ class FakeProcess:
 
 class FakeAdapter:
     def __init__(self):
-        self._bot = SimpleNamespace(send_message=AsyncMock(return_value=FakeMessage()))
+        self._bot = SimpleNamespace(
+            send_message=AsyncMock(return_value=FakeMessage()),
+            send_photo=AsyncMock(),
+        )
 
         async def send_document(**kwargs):
             return SimpleNamespace(success=True, delivered_filename=kwargs["file_name"])
 
         self.send_document = AsyncMock(side_effect=send_document)
+
+
+class FakeStdin:
+    def __init__(self):
+        self.data = bytearray()
+
+    def write(self, data):
+        self.data.extend(data)
+
+    async def drain(self):
+        return None
 
 
 def _message(text, user_id="7", chat_id="10"):
@@ -82,7 +106,7 @@ def test_command_is_exact_and_shell_free(tmp_path):
     flow.uv.touch()
     assert flow._command("cliente", "2026-08", "generar") == [
         str(tmp_path / "uv"), "run", "--with", "selenium", "xvfb-run", "-a",
-        "python3", str(tmp_path / "portal_iva.py"), "--cliente", "cliente", "--periodo", "2026-08", "--operacion", "generar",
+        "python3", str(tmp_path / "portal_iva.py"), "--cliente", "cliente", "--periodo", "2026-08", "--operacion", "generar", "--captcha-stdin",
     ]
 
 
@@ -251,6 +275,99 @@ def test_progress_merged_by_xvfb_is_removed_from_stdout_and_reported():
     asyncio.run(scenario())
 
 
+def test_captcha_is_sent_and_reply_resumes_same_process(tmp_path):
+    async def scenario():
+        nonce = "a" * 16
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        captcha = run_dir / f"captcha-{nonce}.png"
+        captcha.write_bytes(b"valid-image-bytes")
+        captcha.chmod(0o600)
+
+        stdout = asyncio.StreamReader()
+        stdout.feed_data(
+            f'PORTAL_IVA_CAPTCHA:{{"nonce":"{nonce}","path":"{captcha}"}}\n'.encode()
+        )
+        stderr = asyncio.StreamReader()
+        proc = SimpleNamespace(
+            stdout=stdout,
+            stderr=stderr,
+            stdin=FakeStdin(),
+            returncode=0,
+            wait=AsyncMock(return_value=0),
+        )
+        adapter = FakeAdapter()
+        state = FlowState(
+            user_id="7",
+            nonce="b" * 10,
+            stage="running",
+            progress_message=FakeMessage(),
+        )
+        flow = PortalIvaFlow(captcha_root=tmp_path)
+        key = flow._key("10", None, "7")
+        flow.states[key] = state
+
+        communication = asyncio.create_task(
+            flow._communicate_with_progress(
+                proc, state, adapter=adapter, chat_id="10", thread_id=None,
+            )
+        )
+        for _ in range(100):
+            if state.stage == "captcha":
+                break
+            await asyncio.sleep(0)
+        assert state.stage == "captcha"
+        adapter._bot.send_photo.assert_awaited_once()
+        assert await flow.text(adapter, _message("AbC123")) is True
+
+        stdout.feed_data(b'{"ok":true,"etapa":"completado"}\n')
+        stdout.feed_eof()
+        stderr.feed_eof()
+        raw, captured_stderr = await communication
+
+        assert raw == b'{"ok":true,"etapa":"completado"}\n'
+        assert captured_stderr == b""
+        assert json.loads(proc.stdin.data) == {"nonce": nonce, "solution": "AbC123"}
+        assert state.stage == "running"
+        assert state.captcha_response is None
+
+    asyncio.run(scenario())
+
+
+def test_invalid_captcha_reply_does_not_release_waiter():
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="captcha")
+        state.captcha_response = asyncio.get_running_loop().create_future()
+        flow.states[flow._key("10", None, "7")] = state
+
+        assert await flow.text(adapter, _message("abc 123")) is True
+
+        assert not state.captcha_response.done()
+        assert "sólo con esos caracteres" in adapter._bot.send_message.await_args.kwargs["text"]
+
+    asyncio.run(scenario())
+
+
+def test_captcha_path_rejects_escape_and_symlink(tmp_path):
+    flow = PortalIvaFlow(captcha_root=tmp_path)
+    nonce = "a" * 16
+    outside = tmp_path.parent / f"captcha-{nonce}.png"
+    outside.write_bytes(b"image")
+    outside.chmod(0o600)
+    with pytest.raises(RuntimeError, match="CAPTCHA_PATH_INVALID"):
+        flow._validated_captcha_path(str(outside), nonce)
+
+    target = tmp_path / "target.png"
+    target.write_bytes(b"image")
+    target.chmod(0o600)
+    link = tmp_path / f"captcha-{nonce}.png"
+    link.symlink_to(target)
+    with pytest.raises(RuntimeError, match="CAPTCHA_PATH_INVALID"):
+        flow._validated_captcha_path(str(link), nonce)
+
+
 def test_success_delivers_both_csvs_and_updates_same_message(monkeypatch, tmp_path):
     async def scenario():
         flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
@@ -374,7 +491,8 @@ def test_cancel_kills_process_group(monkeypatch):
         flow = PortalIvaFlow()
         adapter = FakeAdapter()
         key = flow._key("10", None, "7")
-        state = FlowState(user_id="7", nonce="a" * 10, stage="running", progress_message=FakeMessage())
+        state = FlowState(user_id="7", nonce="a" * 10, stage="captcha", progress_message=FakeMessage())
+        state.captcha_response = asyncio.get_running_loop().create_future()
         flow.states[key] = state
         flow.processes[key] = FakeProcess(b"", returncode=None)
         killed = []
@@ -383,6 +501,7 @@ def test_cancel_kills_process_group(monkeypatch):
         assert await flow.callback(adapter, query, query.data, "10", None, "7")
         assert killed and killed[0][0] == 4242
         assert state.cancelled is True
+        assert state.captcha_response.result() is None
     asyncio.run(scenario())
 
 
@@ -427,6 +546,25 @@ def test_release_clears_delivering_state():
         task = SimpleNamespace(result=lambda: None)
         flow.tasks[key] = task
         flow._release(key, task)
+        assert key not in flow.states
+        assert key not in flow.tasks
+
+    asyncio.run(scenario())
+
+
+def test_release_unblocks_pending_captcha():
+    async def scenario():
+        flow = PortalIvaFlow()
+        key = flow._key("10", None, "7")
+        state = FlowState(user_id="7", nonce="a" * 10, stage="captcha")
+        state.captcha_response = asyncio.get_running_loop().create_future()
+        flow.states[key] = state
+        task = SimpleNamespace(result=lambda: None)
+        flow.tasks[key] = task
+
+        flow._release(key, task)
+
+        assert state.captcha_response.result() is None
         assert key not in flow.states
         assert key not in flow.tasks
 

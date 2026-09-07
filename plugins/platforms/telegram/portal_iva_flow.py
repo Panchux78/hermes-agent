@@ -32,7 +32,10 @@ _EXECUTOR = Path("/home/pancho/procedimientos/portal-iva/portal_iva.py")
 _UV = Path("/home/pancho/.hermes/bin/uv")
 _PERIOD = re.compile(r"(0[1-9]|1[0-2])/[0-9]{4}")
 _LOCK_ROOT = Path("/home/pancho/.local/state/contabot/portal-iva/telegram-locks")
+_CAPTCHA_ROOT = Path("/home/pancho/.local/state/contabot/portal-iva/runs")
 _RUN_TIMEOUT_SECONDS = 1800
+_CAPTCHA_TIMEOUT_SECONDS = 300
+_CAPTCHA_SOLUTION = re.compile(r"[A-Za-z0-9]{4,20}")
 
 
 @dataclass
@@ -49,16 +52,20 @@ class FlowState:
     progress_message: Any = None
     progress_label: str = "Generando CSV de período nuevo…"
     cancelled: bool = False
+    captcha_nonce: str | None = None
+    captcha_response: asyncio.Future | None = None
     created_at: float = field(default_factory=time.monotonic)
 
 
 class PortalIvaFlow:
     """Privileged Telegram flow; credentials are read only by portal_iva.py."""
 
-    def __init__(self, *, executor: Path = _EXECUTOR, uv: Path = _UV, clients_root: Path = _CLIENTES_ROOT) -> None:
+    def __init__(self, *, executor: Path = _EXECUTOR, uv: Path = _UV,
+                 clients_root: Path = _CLIENTES_ROOT, captcha_root: Path = _CAPTCHA_ROOT) -> None:
         self.executor = Path(executor)
         self.uv = Path(uv)
         self.clients_root = Path(clients_root)
+        self.captcha_root = Path(captcha_root)
         self.states: dict[str, FlowState] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
         self.tasks: dict[str, asyncio.Task] = {}
@@ -191,6 +198,8 @@ class PortalIvaFlow:
                 return True
             await query.answer("Cancelando Portal IVA…")
             state.cancelled = True
+            if state.captcha_response is not None and not state.captcha_response.done():
+                state.captcha_response.set_result(None)
             proc = self.processes.get(key)
             if proc is not None and proc.returncode is None:
                 await self._terminate_process(proc)
@@ -231,9 +240,26 @@ class PortalIvaFlow:
         state = self.states.get(key)
         if not state:
             return False
-        if state.stage != "running" and time.monotonic() - state.created_at > 600:
+        if state.stage not in {"running", "captcha", "delivering"} and time.monotonic() - state.created_at > 600:
             self.states.pop(key, None)
             await self._send(adapter, chat_id, "La solicitud venció. Iniciá Portal IVA nuevamente.", thread_id)
+            return True
+        if state.stage == "captcha":
+            solution = (message.text or "").strip()
+            if not _CAPTCHA_SOLUTION.fullmatch(solution):
+                await self._send(
+                    adapter, chat_id,
+                    "La solución debe tener entre 4 y 20 letras o números. Mirá la imagen y respondé sólo con esos caracteres.",
+                    thread_id,
+                )
+                return True
+            pending = state.captcha_response
+            if pending is None or pending.done():
+                await self._send(adapter, chat_id, "Ese captcha ya no está activo.", thread_id)
+                return True
+            state.progress_label = "Validando captcha…"
+            await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
+            pending.set_result(solution)
             return True
         if state.stage in {"running", "delivering"}:
             await self._send(adapter, chat_id, "Portal IVA ya está en ejecución para esta solicitud.", thread_id)
@@ -291,7 +317,7 @@ class PortalIvaFlow:
         return [
             str(self.uv), "run", "--with", "selenium", "xvfb-run", "-a",
             "python3", str(self.executor), "--cliente", slug, "--periodo", period,
-            "--operacion", operation,
+            "--operacion", operation, "--captcha-stdin",
         ]
 
     def _acquire_execution_lock(self, key: str) -> None:
@@ -364,7 +390,83 @@ class PortalIvaFlow:
             raise RuntimeError("PORTAL_IVA_STDOUT_INVALID")
         return result
 
-    async def _communicate_with_progress(self, proc, state: FlowState) -> tuple[bytes, bytes]:
+    def _validated_captcha_path(self, raw_path: str, nonce: str) -> Path:
+        if not re.fullmatch(r"[0-9a-f]{16}", nonce):
+            raise RuntimeError("PORTAL_IVA_CAPTCHA_REQUEST_INVALID")
+        candidate = Path(raw_path)
+        if not candidate.is_absolute() or candidate.name != f"captcha-{nonce}.png":
+            raise RuntimeError("PORTAL_IVA_CAPTCHA_REQUEST_INVALID")
+        try:
+            root = self.captcha_root.resolve(strict=True)
+            relative = candidate.relative_to(root)
+            cursor = root
+            for part in relative.parts[:-1]:
+                cursor = cursor / part
+                if cursor.is_symlink():
+                    raise RuntimeError("PORTAL_IVA_CAPTCHA_PATH_INVALID")
+            if candidate.is_symlink():
+                raise RuntimeError("PORTAL_IVA_CAPTCHA_PATH_INVALID")
+            resolved = candidate.resolve(strict=True)
+            if not resolved.is_relative_to(root):
+                raise RuntimeError("PORTAL_IVA_CAPTCHA_PATH_INVALID")
+            metadata = resolved.stat()
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("PORTAL_IVA_CAPTCHA_PATH_INVALID") from exc
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid()
+                or metadata.st_mode & 0o077 or not 0 < metadata.st_size <= 1_000_000):
+            raise RuntimeError("PORTAL_IVA_CAPTCHA_PATH_INVALID")
+        return resolved
+
+    async def _answer_captcha(self, adapter, proc, state: FlowState, chat_id: Any,
+                              thread_id: Any, payload: bytes) -> None:
+        if state.captcha_response is not None:
+            raise RuntimeError("PORTAL_IVA_CAPTCHA_REQUEST_DUPLICATE")
+        try:
+            request = json.loads(payload.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("PORTAL_IVA_CAPTCHA_REQUEST_INVALID") from exc
+        if not isinstance(request, dict) or set(request) != {"nonce", "path"}:
+            raise RuntimeError("PORTAL_IVA_CAPTCHA_REQUEST_INVALID")
+        nonce, raw_path = request.get("nonce"), request.get("path")
+        if not isinstance(nonce, str) or not isinstance(raw_path, str):
+            raise RuntimeError("PORTAL_IVA_CAPTCHA_REQUEST_INVALID")
+        captcha_path = self._validated_captcha_path(raw_path, nonce)
+        if proc.stdin is None:
+            raise RuntimeError("PORTAL_IVA_CAPTCHA_STDIN_UNAVAILABLE")
+        state.stage = "captcha"
+        state.captcha_nonce = nonce
+        state.captcha_response = asyncio.get_running_loop().create_future()
+        state.progress_label = "Esperando la solución del captcha…"
+        await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
+        try:
+            descriptor = os.open(captcha_path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as image:
+                kwargs: dict[str, Any] = {
+                    "chat_id": chat_id,
+                    "photo": image,
+                    "caption": "ARCA solicita un captcha. Respondé sólo con los caracteres de la imagen.",
+                    "reply_markup": self._cancel_keyboard(state.nonce),
+                }
+                if thread_id is not None:
+                    kwargs["message_thread_id"] = thread_id
+                await adapter._bot.send_photo(**kwargs)
+            solution = await asyncio.wait_for(state.captcha_response, timeout=_CAPTCHA_TIMEOUT_SECONDS)
+            if state.cancelled or solution is None:
+                raise RuntimeError("PORTAL_IVA_CANCELLED")
+            answer = json.dumps({"nonce": nonce, "solution": solution}, separators=(",", ":")) + "\n"
+            proc.stdin.write(answer.encode("utf-8"))
+            await proc.stdin.drain()
+            state.stage = "running"
+            state.progress_label = "Ingresando a ARCA…"
+            await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
+        except TimeoutError as exc:
+            raise RuntimeError("PORTAL_IVA_CAPTCHA_TIMEOUT") from exc
+        finally:
+            state.captcha_nonce = None
+            state.captcha_response = None
+
+    async def _communicate_with_progress(self, proc, state: FlowState, *, adapter=None,
+                                         chat_id: Any = None, thread_id: Any = None) -> tuple[bytes, bytes]:
         """Separate structured progress from the final JSON on either pipe.
 
         xvfb-run merges the wrapped command's stderr into stdout, so the
@@ -379,6 +481,15 @@ class PortalIvaFlow:
                 line = await stream.readline()
                 if not line:
                     return bytes(captured)
+                captcha_marker = b"PORTAL_IVA_CAPTCHA:"
+                if line.startswith(captcha_marker):
+                    if adapter is None:
+                        raise RuntimeError("PORTAL_IVA_CAPTCHA_CHANNEL_UNAVAILABLE")
+                    await self._answer_captcha(
+                        adapter, proc, state, chat_id, thread_id,
+                        line[len(captcha_marker):].strip(),
+                    )
+                    continue
                 marker = b"PORTAL_IVA_PROGRESS:"
                 if line.startswith(marker):
                     stage = line[len(marker):].decode("ascii", errors="ignore").strip()
@@ -391,8 +502,18 @@ class PortalIvaFlow:
 
         stdout_task = asyncio.create_task(consume(proc.stdout))
         stderr_task = asyncio.create_task(consume(proc.stderr))
-        await proc.wait()
-        return await stdout_task, await stderr_task
+        wait_task = asyncio.create_task(proc.wait())
+        try:
+            stdout, stderr, _ = await asyncio.gather(stdout_task, stderr_task, wait_task)
+            return stdout, stderr
+        except BaseException:
+            if getattr(proc, "returncode", None) is None:
+                await self._terminate_process(proc)
+            for task in (stdout_task, stderr_task, wait_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(stdout_task, stderr_task, wait_task, return_exceptions=True)
+            raise
 
     def _deliverables(self, slug: str, cuit: str, period: str, result: dict[str, Any]) -> list[tuple[Path, int, str]]:
         if not slug or not cuit or not period:
@@ -494,6 +615,10 @@ class PortalIvaFlow:
         reason = str((result or {}).get("motivo", ""))
         if reason.startswith("CREDENCIAL_") or "CREDENTIAL" in reason:
             return f"{prefix}: ARCA rechazó la credencial."
+        if reason == "CAPTCHA_REINTENTOS_AGOTADOS":
+            return f"{prefix}: ARCA rechazó tres respuestas de captcha."
+        if reason in {"PORTAL_IVA_CAPTCHA_TIMEOUT", "CAPTCHA_RESPUESTA_AUSENTE"}:
+            return f"{prefix}: venció el tiempo para responder el captcha."
         if reason.startswith(("PERIODO_NO_DISPONIBLE", "PERIODO_NO_PRESENTADO")):
             return f"{prefix}: el período no está disponible para esta operación."
         if reason:
@@ -529,7 +654,8 @@ class PortalIvaFlow:
             command = self._command(slug, period, state.operation)
             started = time.monotonic()
             proc = await asyncio.create_subprocess_exec(
-                *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True,
+                *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, start_new_session=True,
             )
             self.processes[key] = proc
             if state.cancelled:
@@ -537,7 +663,12 @@ class PortalIvaFlow:
                 return
             ticker = asyncio.create_task(self._ticker(state, started))
             try:
-                raw, _ = await asyncio.wait_for(self._communicate_with_progress(proc, state), timeout=_RUN_TIMEOUT_SECONDS)
+                raw, _ = await asyncio.wait_for(
+                    self._communicate_with_progress(
+                        proc, state, adapter=adapter, chat_id=chat_id, thread_id=thread_id,
+                    ),
+                    timeout=_RUN_TIMEOUT_SECONDS,
+                )
             except TimeoutError:
                 await self._terminate_process(proc)
                 raise RuntimeError("PORTAL_IVA_TIMEOUT")
@@ -598,7 +729,13 @@ class PortalIvaFlow:
                 self._safe_error_code(exc),
             )
             if not state.cancelled:
-                await self._edit_progress(state, self._error_message(result, f"{state.operation} no se completó.", state.operation))
+                error_result = result if result is not None else {"motivo": str(exc)}
+                await self._edit_progress(
+                    state,
+                    self._error_message(
+                        error_result, f"{state.operation} no se completó.", state.operation,
+                    ),
+                )
         finally:
             if ticker is not None:
                 ticker.cancel()
@@ -612,7 +749,9 @@ class PortalIvaFlow:
 
     def _release(self, key: str, task: asyncio.Task) -> None:
         self.tasks.pop(key, None)
-        self.states.pop(key, None)
+        state = self.states.pop(key, None)
+        if state and state.captcha_response is not None and not state.captcha_response.done():
+            state.captcha_response.set_result(None)
         try:
             task.result()
         except asyncio.CancelledError:
