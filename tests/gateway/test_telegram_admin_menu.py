@@ -16,6 +16,8 @@ def test_administration_button_only_appears_for_technical_user(monkeypatch):
 
     assert {button["text"] for row in technical for button in row} >= {"⚙️ Administración"}
     assert "⚙️ Administración" not in {button["text"] for row in ordinary for button in row}
+    assert all(len(row) == 1 for row in technical)
+    assert all(len(row) == 1 for row in ordinary)
 
 
 def test_forged_administration_callback_is_rejected_without_flow(monkeypatch):

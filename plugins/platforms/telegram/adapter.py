@@ -1295,7 +1295,10 @@ class TelegramAdapter(BasePlatformAdapter):
     @staticmethod
     def _menu_panel_title(page: str = "main") -> str:
         titles = {
-            "main": "¿Qué querés hacer?",
+            "main": (
+                "Hola, soy ContaBot, tu asistente de IA contable.\n\n"
+                "¿Qué querés hacer hoy?"
+            ),
             "organismos": (
                 "Organismos fiscales\n\n"
                 "Elegí el organismo con el que necesitás operar."
@@ -1464,6 +1467,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 [InlineKeyboardButton("🏦 Bancos", callback_data="om:bancos")],
                 [
                     InlineKeyboardButton("🧰 Herramientas", callback_data="om:herramientas"),
+                ],
+                [
                     InlineKeyboardButton("❓ Ayuda", callback_data="om:ayuda"),
                 ],
             ]
