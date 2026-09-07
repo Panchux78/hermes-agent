@@ -81,7 +81,7 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
                 ],
                 [
                     {
-                        "text": "❓ Ayuda" + "\u200a" * 2 + "\u2800" * 14,
+                        "text": "❓ " + "\u200a" * 2 + "Ayuda" + "\u2800" * 14,
                         "callback_data": "om:ayuda",
                     },
                 ],

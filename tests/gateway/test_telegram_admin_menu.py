@@ -33,7 +33,7 @@ def test_administration_button_only_appears_for_technical_user(monkeypatch):
         "\u200a" * 3 + "\u2800" * 3,
         "\u200a" * 3 + "\u2800" * 12,
         "\u200a" * 4 + "\u2800" * 7,
-        "\u200a" * 2 + "\u2800" * 14,
+        "\u2800" * 14,
         "\u200a" + "\u2800" * 7,
     ]
 
