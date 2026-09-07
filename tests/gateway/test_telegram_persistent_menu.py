@@ -69,19 +69,19 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
                 ],
                 [
                     {
-                        "text": "🏦 Bancos" + "\u00a0" * 13,
+                        "text": "🏦 Bancos" + "\u2800" * 13,
                         "callback_data": "om:bancos",
                     },
                 ],
                 [
                     {
-                        "text": "🧰 Herramientas" + "\u00a0" * 7,
+                        "text": "🧰 Herramientas" + "\u2800" * 7,
                         "callback_data": "om:herramientas",
                     },
                 ],
                 [
                     {
-                        "text": "❓ Ayuda" + "\u00a0" * 14,
+                        "text": "❓ Ayuda" + "\u2800" * 14,
                         "callback_data": "om:ayuda",
                     },
                 ],

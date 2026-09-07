@@ -15,10 +15,10 @@ def test_administration_button_only_appears_for_technical_user(monkeypatch):
     ordinary = TelegramAdapter._menu_panel_keyboard("main", show_administration=False)
 
     technical_labels = {
-        button["text"].rstrip("\u00a0") for row in technical for button in row
+        button["text"].rstrip("\u2800") for row in technical for button in row
     }
     ordinary_labels = {
-        button["text"].rstrip("\u00a0") for row in ordinary for button in row
+        button["text"].rstrip("\u2800") for row in ordinary for button in row
     }
 
     assert "⚙️ Administración" in technical_labels
@@ -69,6 +69,6 @@ def test_technical_user_returns_to_main_menu_with_administration(monkeypatch):
         await adapter._handle_callback_query(SimpleNamespace(callback_query=query), SimpleNamespace())
         keyboard = query.edit_message_text.call_args.kwargs["reply_markup"]
         assert "⚙️ Administración" in {
-            button["text"].rstrip("\u00a0") for row in keyboard for button in row
+            button["text"].rstrip("\u2800") for row in keyboard for button in row
         }
     asyncio.run(scenario())
