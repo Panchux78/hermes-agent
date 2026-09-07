@@ -1360,20 +1360,17 @@ class TelegramAdapter(BasePlatformAdapter):
     @staticmethod
     def _main_menu_button_label(icon: str, text: str) -> str:
         """Visually align the fixed main-menu labels in Telegram's centered buttons."""
-        braille_padding, trailing_hair_padding, inner_hair_padding = {
-            "Organismos fiscales": (3, 3, 0),
-            "Bancos": (12, 3, 0),
-            "Herramientas": (7, 4, 0),
-            "Ayuda": (14, 0, 2),
-            "Administración": (7, 1, 0),
-        }.get(text, (0, 0, 0))
+        braille_padding, hair_padding = {
+            "Organismos fiscales": (3, 3),
+            "Bancos": (12, 3),
+            "Herramientas": (7, 4),
+            "Ayuda": (14, 0),
+            "Administración": (7, 1),
+        }.get(text, (0, 0))
         # Hair spaces provide sub-character adjustment. The final braille blanks
         # keep them away from the trailing edge, where clients may trim spaces.
-        inner_padding = "\u200a" * inner_hair_padding
-        trailing_padding = (
-            "\u200a" * trailing_hair_padding + "\u2800" * braille_padding
-        )
-        return f"{icon} {inner_padding}{text}{trailing_padding}"
+        padding = "\u200a" * hair_padding + "\u2800" * braille_padding
+        return f"{icon} {text}{padding}"
 
     @staticmethod
     def _menu_panel_keyboard(page: str = "main", *, show_administration: bool = False):
@@ -1501,7 +1498,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 ],
                 [
                     InlineKeyboardButton(
-                        TelegramAdapter._main_menu_button_label("❓", "Ayuda"),
+                        TelegramAdapter._main_menu_button_label("ℹ️", "Ayuda"),
                         callback_data="om:ayuda",
                     ),
                 ],
