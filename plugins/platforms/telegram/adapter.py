@@ -1359,9 +1359,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _main_menu_button_label(icon: str, text: str) -> str:
-        """Right-pad a main-menu label so Telegram centers every row alike."""
-        padded_text = text.ljust(len("Organismos fiscales"), "\u2800")
-        return f"{icon} {padded_text}"
+        """Visually align the fixed main-menu labels in Telegram's centered buttons."""
+        right_padding = {
+            "Organismos fiscales": 3,
+            "Bancos": 12,
+            "Herramientas": 8,
+            "Ayuda": 14,
+            "Administración": 7,
+        }.get(text, 0)
+        padding = "\u2800" * right_padding
+        return f"{icon} {text}{padding}"
 
     @staticmethod
     def _menu_panel_keyboard(page: str = "main", *, show_administration: bool = False):

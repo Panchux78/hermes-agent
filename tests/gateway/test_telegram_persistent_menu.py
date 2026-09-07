@@ -63,19 +63,19 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
             reply_markup=[
                 [
                     {
-                        "text": "🏛️ Organismos fiscales",
+                        "text": "🏛️ Organismos fiscales" + "\u2800" * 3,
                         "callback_data": "om:organismos",
                     },
                 ],
                 [
                     {
-                        "text": "🏦 Bancos" + "\u2800" * 13,
+                        "text": "🏦 Bancos" + "\u2800" * 12,
                         "callback_data": "om:bancos",
                     },
                 ],
                 [
                     {
-                        "text": "🧰 Herramientas" + "\u2800" * 7,
+                        "text": "🧰 Herramientas" + "\u2800" * 8,
                         "callback_data": "om:herramientas",
                     },
                 ],

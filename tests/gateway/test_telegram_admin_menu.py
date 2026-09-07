@@ -25,11 +25,11 @@ def test_administration_button_only_appears_for_technical_user(monkeypatch):
     assert "⚙️ Administración" not in ordinary_labels
     assert all(len(row) == 1 for row in technical)
     assert all(len(row) == 1 for row in ordinary)
-    assert {
-        len(button["text"].split(" ", 1)[1])
+    assert [
+        len(button["text"]) - len(button["text"].rstrip("\u2800"))
         for row in technical
         for button in row
-    } == {len("Organismos fiscales")}
+    ] == [3, 12, 8, 14, 7]
 
 
 def test_forged_administration_callback_is_rejected_without_flow(monkeypatch):
