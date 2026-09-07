@@ -1358,6 +1358,12 @@ class TelegramAdapter(BasePlatformAdapter):
         return titles.get(page, titles["main"])
 
     @staticmethod
+    def _main_menu_button_label(icon: str, text: str) -> str:
+        """Right-pad a main-menu label so Telegram centers every row alike."""
+        padded_text = text.ljust(len("Organismos fiscales"), "\u00a0")
+        return f"{icon} {padded_text}"
+
+    @staticmethod
     def _menu_panel_keyboard(page: str = "main", *, show_administration: bool = False):
         """Return one page of the operational-menu mockup."""
         back_label = "‹ Menú"
@@ -1461,20 +1467,43 @@ class TelegramAdapter(BasePlatformAdapter):
             rows = [
                 [
                     InlineKeyboardButton(
-                        "🏛️ Organismos fiscales", callback_data="om:organismos"
+                        TelegramAdapter._main_menu_button_label(
+                            "🏛️", "Organismos fiscales"
+                        ),
+                        callback_data="om:organismos",
                     ),
                 ],
-                [InlineKeyboardButton("🏦 Bancos", callback_data="om:bancos")],
                 [
-                    InlineKeyboardButton("🧰 Herramientas", callback_data="om:herramientas"),
+                    InlineKeyboardButton(
+                        TelegramAdapter._main_menu_button_label("🏦", "Bancos"),
+                        callback_data="om:bancos",
+                    )
                 ],
                 [
-                    InlineKeyboardButton("❓ Ayuda", callback_data="om:ayuda"),
+                    InlineKeyboardButton(
+                        TelegramAdapter._main_menu_button_label(
+                            "🧰", "Herramientas"
+                        ),
+                        callback_data="om:herramientas",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        TelegramAdapter._main_menu_button_label("❓", "Ayuda"),
+                        callback_data="om:ayuda",
+                    ),
                 ],
             ]
             if show_administration:
                 rows.append(
-                    [InlineKeyboardButton("⚙️ Administración", callback_data="om:administracion")]
+                    [
+                        InlineKeyboardButton(
+                            TelegramAdapter._main_menu_button_label(
+                                "⚙️", "Administración"
+                            ),
+                            callback_data="om:administracion",
+                        )
+                    ]
                 )
             return InlineKeyboardMarkup(rows)
 
