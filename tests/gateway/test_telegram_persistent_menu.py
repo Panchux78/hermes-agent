@@ -61,11 +61,13 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
             "¿Qué querés hacer?",
             reply_markup=[
                 [
-                    {"text": "🔎 Consultar", "callback_data": "om:consultar"},
-                    {"text": "📄 Preparar / generar", "callback_data": "om:preparar"},
+                    {
+                        "text": "🏛️ Organismos fiscales",
+                        "callback_data": "om:organismos",
+                    },
                 ],
                 [
-                    {"text": "🔐 ARCA", "callback_data": "om:arca"},
+                    {"text": "🏦 Bancos", "callback_data": "om:bancos"},
                 ],
                 [
                     {"text": "🧰 Herramientas", "callback_data": "om:herramientas"},
@@ -79,7 +81,7 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
     asyncio.run(scenario())
 
 
-def test_consult_menu_page_shows_only_the_functional_action(monkeypatch):
+def test_organisms_menu_separates_tax_authorities(monkeypatch):
     async def scenario():
         import plugins.platforms.telegram.adapter as adapter_module
 
@@ -92,7 +94,7 @@ def test_consult_menu_page_shows_only_the_functional_action(monkeypatch):
         monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
 
         query = SimpleNamespace(
-            data="om:consultar",
+            data="om:organismos",
             from_user=SimpleNamespace(first_name="Test"),
             message=SimpleNamespace(chat_id=1, chat=SimpleNamespace(type="private")),
             answer=AsyncMock(),
@@ -104,9 +106,13 @@ def test_consult_menu_page_shows_only_the_functional_action(monkeypatch):
 
         query.answer.assert_awaited_once_with()
         query.edit_message_text.assert_awaited_once_with(
-            "Consultas disponibles",
+            "Organismos fiscales\n\nElegí el organismo con el que necesitás operar.",
             reply_markup=[
-                [{"text": "🧾 DDJJ de IIBB", "callback_data": "ad:start"}],
+                [
+                    {"text": "ARCA", "callback_data": "om:arca"},
+                    {"text": "AGIP", "callback_data": "om:agip"},
+                ],
+                [{"text": "ARBA · Próximamente", "callback_data": "om:arba"}],
                 [
                     {"text": "‹ Menú", "callback_data": "om:main"},
                     {"text": "✕ Cerrar", "callback_data": "om:close"},
@@ -136,11 +142,11 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
             edit_message_text=AsyncMock(),
         )
 
-        await adapter._handle_operational_menu_callback(query, "om:preparar")
+        await adapter._handle_operational_menu_callback(query, "om:bancos")
 
         query.edit_message_caption.assert_awaited_once_with(
             caption=(
-                "Preparar documentos contables\n\n"
+                "Bancos\n\n"
                 "Convertí resúmenes bancarios compatibles a Excel. "
                 "No convierte PDFs generales."
             ),
@@ -163,24 +169,70 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_arca_portal_iva_submenu_has_exactly_two_operations(monkeypatch):
+def test_each_tax_authority_separates_query_prepare_and_present(monkeypatch):
     import plugins.platforms.telegram.adapter as adapter_module
 
     monkeypatch.setattr(adapter_module, "InlineKeyboardButton", lambda text, callback_data: {"text": text, "callback_data": callback_data})
     monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
 
-    assert TelegramAdapter._menu_panel_keyboard("arca") == [
-        [{"text": "📊 Portal IVA", "callback_data": "om:portal_iva"}],
-        [
-            {"text": "‹ Menú", "callback_data": "om:main"},
-            {"text": "✕ Cerrar", "callback_data": "om:close"},
-        ],
+    for authority in ("arca", "agip", "arba"):
+        assert TelegramAdapter._menu_panel_keyboard(authority) == [
+            [
+                {
+                    "text": "🔎 Consultar",
+                    "callback_data": f"om:{authority}_consultar",
+                },
+                {
+                    "text": "🧾 Preparar",
+                    "callback_data": f"om:{authority}_preparar",
+                },
+            ],
+            [
+                {
+                    "text": "📤 Presentar",
+                    "callback_data": f"om:{authority}_presentar",
+                }
+            ],
+            [
+                {"text": "‹ Organismos", "callback_data": "om:organismos"},
+                {"text": "✕ Cerrar", "callback_data": "om:close"},
+            ],
+        ]
+
+
+def test_implemented_tax_actions_reuse_existing_flows(monkeypatch):
+    import plugins.platforms.telegram.adapter as adapter_module
+
+    monkeypatch.setattr(
+        adapter_module,
+        "InlineKeyboardButton",
+        lambda text, callback_data: {"text": text, "callback_data": callback_data},
+    )
+    monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
+
+    assert TelegramAdapter._menu_panel_keyboard("arca_consultar")[0] == [
+        {"text": "📥 CSV de períodos presentados", "callback_data": "pi:descargar"}
     ]
-    assert TelegramAdapter._menu_panel_keyboard("portal_iva") == [
-        [{"text": "🧾 Generar CSV de período nuevo", "callback_data": "pi:generar"}],
-        [{"text": "📥 Descargar CSV presentados", "callback_data": "pi:descargar"}],
-        [{"text": "⬅️ Volver a ARCA", "callback_data": "om:arca"}],
+    assert TelegramAdapter._menu_panel_keyboard("arca_preparar")[0] == [
+        {"text": "🧾 Preparar período nuevo", "callback_data": "pi:generar"}
     ]
+    assert TelegramAdapter._menu_panel_keyboard("agip_consultar")[0] == [
+        {"text": "🧾 DDJJ de IIBB", "callback_data": "ad:start"}
+    ]
+
+    for page in (
+        "arca_presentar",
+        "agip_preparar",
+        "agip_presentar",
+        "arba_consultar",
+        "arba_preparar",
+        "arba_presentar",
+    ):
+        assert all(
+            button["callback_data"].startswith("om:")
+            for row in TelegramAdapter._menu_panel_keyboard(page)
+            for button in row
+        )
 
 
 def test_pdf_tools_are_separate_from_accounting_preparation(monkeypatch):
@@ -194,7 +246,7 @@ def test_pdf_tools_are_separate_from_accounting_preparation(monkeypatch):
     monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
 
     tools = TelegramAdapter._menu_panel_keyboard("herramientas")
-    preparation = TelegramAdapter._menu_panel_keyboard("preparar")
+    banks = TelegramAdapter._menu_panel_keyboard("bancos")
 
     assert tools == [
         [{"text": "🔒 Proteger PDF", "callback_data": "ps:protect:start"}],
@@ -206,7 +258,7 @@ def test_pdf_tools_are_separate_from_accounting_preparation(monkeypatch):
     ]
     assert all(
         not button["callback_data"].startswith("ps:")
-        for row in preparation
+        for row in banks
         for button in row
     )
 
@@ -221,7 +273,25 @@ def test_operational_menu_has_no_placeholder_actions(monkeypatch):
     )
     monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
 
-    for page in ("main", "consultar", "preparar", "herramientas", "ayuda"):
+    for page in (
+        "main",
+        "organismos",
+        "arca",
+        "agip",
+        "arba",
+        "arca_consultar",
+        "arca_preparar",
+        "arca_presentar",
+        "agip_consultar",
+        "agip_preparar",
+        "agip_presentar",
+        "arba_consultar",
+        "arba_preparar",
+        "arba_presentar",
+        "bancos",
+        "herramientas",
+        "ayuda",
+    ):
         keyboard = TelegramAdapter._menu_panel_keyboard(page)
         assert all(
             button["callback_data"] != "om:noop"

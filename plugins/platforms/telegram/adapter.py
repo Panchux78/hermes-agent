@@ -1296,25 +1296,58 @@ class TelegramAdapter(BasePlatformAdapter):
     def _menu_panel_title(page: str = "main") -> str:
         titles = {
             "main": "¿Qué querés hacer?",
-            "consultar": "Consultas disponibles",
-            "arca": "ARCA",
-            "portal_iva": "📊 Portal IVA",
-            "preparar": (
-                "Preparar documentos contables\n\n"
+            "organismos": (
+                "Organismos fiscales\n\n"
+                "Elegí el organismo con el que necesitás operar."
+            ),
+            "arca": "ARCA\n\nElegí qué necesitás hacer.",
+            "agip": "AGIP\n\nElegí qué necesitás hacer.",
+            "arba": "ARBA\n\nElegí qué necesitás hacer.",
+            "arca_consultar": "ARCA · Consultar",
+            "arca_preparar": "ARCA · Preparar",
+            "arca_presentar": (
+                "ARCA · Presentar\n\n"
+                "Todavía no hay presentaciones habilitadas en ContaBot."
+            ),
+            "agip_consultar": "AGIP · Consultar",
+            "agip_preparar": (
+                "AGIP · Preparar\n\n"
+                "Todavía no hay funciones de preparación habilitadas en ContaBot."
+            ),
+            "agip_presentar": (
+                "AGIP · Presentar\n\n"
+                "Todavía no hay presentaciones habilitadas en ContaBot."
+            ),
+            "arba_consultar": (
+                "ARBA · Consultar\n\n"
+                "Todavía no hay consultas ARBA habilitadas en ContaBot."
+            ),
+            "arba_preparar": (
+                "ARBA · Preparar\n\n"
+                "Todavía no hay funciones de preparación ARBA habilitadas en ContaBot."
+            ),
+            "arba_presentar": (
+                "ARBA · Presentar\n\n"
+                "Todavía no hay presentaciones ARBA habilitadas en ContaBot."
+            ),
+            "bancos": (
+                "Bancos\n\n"
                 "Convertí resúmenes bancarios compatibles a Excel. "
                 "No convierte PDFs generales."
             ),
             "herramientas": (
-                "Herramientas PDF\n\n"
+                "Herramientas\n\n"
                 "Protegé o desbloqueá archivos PDF. Estas opciones no generan Excel."
             ),
             "ayuda": "¿Con qué necesitás ayuda?",
             "que_hace": (
                 "Qué hace ContaBot\n\n"
-                "• Consulta DDJJ de IIBB.\n"
+                "• Consulta DDJJ de IIBB en AGIP.\n"
+                "• Consulta y prepara información de Portal IVA en ARCA.\n"
                 "• Convierte resúmenes bancarios compatibles a Excel.\n"
                 "• Procesa lotes de resúmenes bancarios.\n"
-                "• Protege y desbloquea archivos PDF."
+                "• Protege y desbloquea archivos PDF.\n\n"
+                "Las presentaciones fiscales todavía no están habilitadas."
             ),
             "consulta": "Hacer una consulta\n\nEscribí tu consulta en el chat.",
             "administracion": "Administración — acceso restringido",
@@ -1324,21 +1357,70 @@ class TelegramAdapter(BasePlatformAdapter):
     @staticmethod
     def _menu_panel_keyboard(page: str = "main", *, show_administration: bool = False):
         """Return one page of the operational-menu mockup."""
-        if page == "consultar":
+        back_label = "‹ Menú"
+        back_page = "main"
+
+        if page == "organismos":
+            rows = [
+                [
+                    InlineKeyboardButton("ARCA", callback_data="om:arca"),
+                    InlineKeyboardButton("AGIP", callback_data="om:agip"),
+                ],
+                [InlineKeyboardButton("ARBA · Próximamente", callback_data="om:arba")],
+            ]
+        elif page in {"arca", "agip", "arba"}:
+            rows = [
+                [
+                    InlineKeyboardButton(
+                        "🔎 Consultar", callback_data=f"om:{page}_consultar"
+                    ),
+                    InlineKeyboardButton(
+                        "🧾 Preparar", callback_data=f"om:{page}_preparar"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "📤 Presentar", callback_data=f"om:{page}_presentar"
+                    )
+                ],
+            ]
+            back_label = "‹ Organismos"
+            back_page = "organismos"
+        elif page == "arca_consultar":
+            rows = [
+                [
+                    InlineKeyboardButton(
+                        "📥 CSV de períodos presentados", callback_data="pi:descargar"
+                    )
+                ],
+            ]
+            back_label = "‹ ARCA"
+            back_page = "arca"
+        elif page == "arca_preparar":
+            rows = [
+                [InlineKeyboardButton("🧾 Preparar período nuevo", callback_data="pi:generar")],
+            ]
+            back_label = "‹ ARCA"
+            back_page = "arca"
+        elif page == "agip_consultar":
             rows = [
                 [InlineKeyboardButton("🧾 DDJJ de IIBB", callback_data="ad:start")],
             ]
-        elif page == "arca":
-            rows = [
-                [InlineKeyboardButton("📊 Portal IVA", callback_data="om:portal_iva")],
-            ]
-        elif page == "portal_iva":
-            return InlineKeyboardMarkup([
-                [InlineKeyboardButton("🧾 Generar CSV de período nuevo", callback_data="pi:generar")],
-                [InlineKeyboardButton("📥 Descargar CSV presentados", callback_data="pi:descargar")],
-                [InlineKeyboardButton("⬅️ Volver a ARCA", callback_data="om:arca")],
-            ])
-        elif page == "preparar":
+            back_label = "‹ AGIP"
+            back_page = "agip"
+        elif page in {
+            "arca_presentar",
+            "agip_preparar",
+            "agip_presentar",
+            "arba_consultar",
+            "arba_preparar",
+            "arba_presentar",
+        }:
+            rows = []
+            authority = page.split("_", 1)[0]
+            back_label = f"‹ {authority.upper()}"
+            back_page = authority
+        elif page == "bancos":
             rows = [
                 [InlineKeyboardButton("🏦 Resumen bancario → Excel", callback_data="px:start")],
                 [
@@ -1375,10 +1457,11 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             rows = [
                 [
-                    InlineKeyboardButton("🔎 Consultar", callback_data="om:consultar"),
-                    InlineKeyboardButton("📄 Preparar / generar", callback_data="om:preparar"),
+                    InlineKeyboardButton(
+                        "🏛️ Organismos fiscales", callback_data="om:organismos"
+                    ),
                 ],
-                [InlineKeyboardButton("🔐 ARCA", callback_data="om:arca")],
+                [InlineKeyboardButton("🏦 Bancos", callback_data="om:bancos")],
                 [
                     InlineKeyboardButton("🧰 Herramientas", callback_data="om:herramientas"),
                     InlineKeyboardButton("❓ Ayuda", callback_data="om:ayuda"),
@@ -1391,7 +1474,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return InlineKeyboardMarkup(rows)
 
         rows.append([
-            InlineKeyboardButton("‹ Menú", callback_data="om:main"),
+            InlineKeyboardButton(back_label, callback_data=f"om:{back_page}"),
             InlineKeyboardButton("✕ Cerrar", callback_data="om:close"),
         ])
         return InlineKeyboardMarkup(rows)
@@ -1433,6 +1516,11 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_operational_menu_callback(self, query, data: str) -> None:
         """Navigate the non-operative menu mockup without starting a workflow."""
         page = data.removeprefix("om:")
+        page = {
+            "consultar": "agip_consultar",
+            "preparar": "bancos",
+            "portal_iva": "arca",
+        }.get(page, page)
         if page == "noop":
             await query.answer(text="Maqueta: esta acción todavía no está disponible.")
             return
@@ -1442,10 +1530,20 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if page not in {
             "main",
-            "consultar",
+            "organismos",
             "arca",
-            "portal_iva",
-            "preparar",
+            "agip",
+            "arba",
+            "arca_consultar",
+            "arca_preparar",
+            "arca_presentar",
+            "agip_consultar",
+            "agip_preparar",
+            "agip_presentar",
+            "arba_consultar",
+            "arba_preparar",
+            "arba_presentar",
+            "bancos",
             "herramientas",
             "ayuda",
             "que_hace",
