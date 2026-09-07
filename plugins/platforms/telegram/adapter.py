@@ -1296,7 +1296,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _menu_panel_title(page: str = "main") -> str:
         titles = {
             "main": (
-                "Hola, soy ContaBot, tu asistente de IA contable.\n\n"
+                "Hola, soy ContaBot, tu asistente de IA contable.\n"
                 "¿Qué querés hacer hoy?"
             ),
             "organismos": (

@@ -58,7 +58,7 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
             sticker=TelegramAdapter._menu_avatar_sticker_path(),
         )
         message.reply_text.assert_awaited_once_with(
-            "Hola, soy ContaBot, tu asistente de IA contable.\n\n"
+            "Hola, soy ContaBot, tu asistente de IA contable.\n"
             "¿Qué querés hacer hoy?",
             reply_markup=[
                 [
