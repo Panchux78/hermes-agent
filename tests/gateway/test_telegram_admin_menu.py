@@ -21,8 +21,8 @@ def test_administration_button_only_appears_for_technical_user(monkeypatch):
         button["text"].rstrip("\u200a\u2800") for row in ordinary for button in row
     }
 
-    assert "⚙️ Administración" in technical_labels
-    assert "⚙️ Administración" not in ordinary_labels
+    assert "⚙️  Administración" in technical_labels
+    assert "⚙️  Administración" not in ordinary_labels
     assert all(len(row) == 1 for row in technical)
     assert all(len(row) == 1 for row in ordinary)
     assert [
@@ -74,7 +74,7 @@ def test_technical_user_returns_to_main_menu_with_administration(monkeypatch):
         )
         await adapter._handle_callback_query(SimpleNamespace(callback_query=query), SimpleNamespace())
         keyboard = query.edit_message_text.call_args.kwargs["reply_markup"]
-        assert "⚙️ Administración" in {
+        assert "⚙️  Administración" in {
             button["text"].rstrip("\u200a\u2800") for row in keyboard for button in row
         }
     asyncio.run(scenario())

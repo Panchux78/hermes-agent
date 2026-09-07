@@ -63,25 +63,25 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
             reply_markup=[
                 [
                     {
-                        "text": "🏛️ Organismos fiscales" + "\u200a" * 3 + "\u2800" * 3,
+                        "text": "🏛️  Organismos fiscales" + "\u200a" * 3 + "\u2800" * 3,
                         "callback_data": "om:organismos",
                     },
                 ],
                 [
                     {
-                        "text": "🏦 Bancos" + "\u200a" * 3 + "\u2800" * 12,
+                        "text": "🏦  Bancos" + "\u200a" * 3 + "\u2800" * 12,
                         "callback_data": "om:bancos",
                     },
                 ],
                 [
                     {
-                        "text": "🧰 Herramientas" + "\u200a" * 4 + "\u2800" * 7,
+                        "text": "🧰  Herramientas" + "\u200a" * 4 + "\u2800" * 7,
                         "callback_data": "om:herramientas",
                     },
                 ],
                 [
                     {
-                        "text": "ℹ️ Ayuda" + "\u2800" * 14,
+                        "text": "ℹ️  Ayuda" + "\u2800" * 14,
                         "callback_data": "om:ayuda",
                     },
                 ],

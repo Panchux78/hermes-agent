@@ -1370,7 +1370,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Hair spaces provide sub-character adjustment. The final braille blanks
         # keep them away from the trailing edge, where clients may trim spaces.
         padding = "\u200a" * hair_padding + "\u2800" * braille_padding
-        return f"{icon} {text}{padding}"
+        return f"{icon}  {text}{padding}"
 
     @staticmethod
     def _menu_panel_keyboard(page: str = "main", *, show_administration: bool = False):
