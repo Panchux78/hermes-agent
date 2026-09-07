@@ -318,6 +318,7 @@ def test_captcha_is_sent_and_reply_resumes_same_process(tmp_path):
             await asyncio.sleep(0)
         assert state.stage == "captcha"
         adapter._bot.send_photo.assert_awaited_once()
+        assert state.progress_message.edits == []
         assert await flow.text(adapter, _message("AbC123")) is True
 
         stdout.feed_data(b'{"ok":true,"etapa":"completado"}\n')

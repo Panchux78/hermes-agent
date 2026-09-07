@@ -437,7 +437,6 @@ class PortalIvaFlow:
         state.captcha_nonce = nonce
         state.captcha_response = asyncio.get_running_loop().create_future()
         state.progress_label = "Esperando la solución del captcha…"
-        await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
         try:
             descriptor = os.open(captcha_path, os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(descriptor, "rb") as image:
