@@ -74,13 +74,44 @@ def test_database_queries_scope_agip_to_clave_ciudad(monkeypatch):
     monkeypatch.setattr(flow, "_query", lambda sql: queries.append(sql) or [])
 
     flow._search("empresa")
-    flow._represented(1)
-    flow._by_id(2, None)
-    flow._by_id(2, 1)
+    flow._by_id(2)
 
-    assert len(queries) == 4
+    assert len(queries) == 2
     assert all("AGIP - Clave Ciudad" in sql for sql in queries)
     assert all("e.nombre='AGIP'" not in sql for sql in queries)
+    assert all("id_contribuyente_representado=c.id_contribuyente" in sql for sql in queries)
+    assert all("representative_id" in sql for sql in queries)
+
+
+def test_searching_represented_contributor_resolves_unique_credential_holder(monkeypatch):
+    async def scenario():
+        flow = AgipDdjjFlow()
+        adapter = FakeAdapter()
+        key = flow._key("10", None, "7")
+        flow.states[key] = FlowState(
+            user_id="7", nonce="a" * 10, stage="contributor"
+        )
+        monkeypatch.setattr(
+            flow,
+            "_search",
+            lambda _term: [{
+                "id": 102,
+                "nombre": "Cliente representado",
+                "cuit": "30123456789",
+                "slug": "cliente-representado",
+                "representative_id": 3,
+            }],
+        )
+
+        assert await flow.text(adapter, _message("cliente representado")) is True
+
+        state = flow.states[key]
+        assert state.stage == "period"
+        assert state.contributor_id == 3
+        assert state.represented_id == 102
+        assert "período" in adapter._bot.send_message.await_args.kwargs["text"]
+
+    asyncio.run(scenario())
 
 
 def test_delivery_accepts_the_v5_consultation_path_and_versions():

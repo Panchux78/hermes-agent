@@ -105,26 +105,36 @@ class AgipDdjjFlow:
             raise RuntimeError("No se pudo consultar la base canónica")
         return [json.loads(line) for line in run.stdout.splitlines() if line.strip()]
 
-    def _search(self, term: str, contributor_id: int | None = None) -> list[dict[str, Any]]:
+    def _search(self, term: str) -> list[dict[str, Any]]:
         encoded = self._sql_scalar(term.strip())
         base = f"convert_from(decode('{encoded}','base64'),'UTF8')"
-        if contributor_id is None:
-            scope = f"""
-              FROM tbl_contribuyentes c
-              JOIN tbl_accesos a ON a.id_contribuyente=c.id_contribuyente AND a.activo
-              JOIN tbl_entidades e ON e.id_entidad=a.id_entidad AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}'
-            """
-        else:
-            scope = f"""
-              FROM tbl_representaciones r
-              JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}' AND r.activo
-              JOIN tbl_contribuyentes c ON c.id_contribuyente=r.id_contribuyente_representado
-              WHERE r.id_contribuyente_representante={int(contributor_id)} AND c.activo AND
-            """
-        where = f"(lower(c.nombre_legal) LIKE '%'||lower({base})||'%' OR c.slug=lower({base}) OR c.cuit=regexp_replace({base},'[^0-9]','','g'))"
-        if contributor_id is None:
-            where = "WHERE c.activo AND " + where
-        sql = f"SELECT json_build_object('id',c.id_contribuyente,'nombre',c.nombre_legal,'cuit',c.cuit,'slug',c.slug)::text {scope} {where} ORDER BY c.nombre_legal LIMIT 12;"
+        where = (
+            f"(lower(c.nombre_legal) LIKE '%'||lower({base})||'%' "
+            f"OR c.slug=lower({base}) "
+            f"OR c.cuit=regexp_replace({base},'[^0-9]','','g'))"
+        )
+        sql = f"""
+            SELECT json_build_object(
+                'id',c.id_contribuyente,'nombre',c.nombre_legal,
+                'cuit',c.cuit,'slug',c.slug,
+                'representative_id',min(r.id_contribuyente_representante)
+            )::text
+            FROM tbl_contribuyentes c
+            JOIN tbl_representaciones r
+              ON r.id_contribuyente_representado=c.id_contribuyente AND r.activo
+            JOIN tbl_entidades e
+              ON e.id_entidad=r.id_entidad
+             AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}' AND e.activo
+            JOIN tbl_contribuyentes holder
+              ON holder.id_contribuyente=r.id_contribuyente_representante AND holder.activo
+            JOIN tbl_accesos a
+              ON a.id_entidad=e.id_entidad
+             AND a.id_contribuyente=holder.id_contribuyente AND a.activo
+            WHERE c.activo AND {where}
+            GROUP BY c.id_contribuyente,c.nombre_legal,c.cuit,c.slug
+            HAVING count(DISTINCT r.id_contribuyente_representante)=1
+            ORDER BY c.nombre_legal LIMIT 12;
+        """
         return self._query(sql)
 
     async def _send(self, adapter, chat_id, text: str, keyboard=None, thread_id=None):
@@ -321,38 +331,39 @@ class AgipDdjjFlow:
             self.tasks[key] = task
             task.add_done_callback(lambda done: self._release(key, done))
             return True
-        candidates = self._search(message.text, state.contributor_id if state.stage == "represented" else None)
+        candidates = self._search(message.text)
         if not candidates:
-            label = "representado" if state.stage == "represented" else "contribuyente"
-            await self._send(adapter, chat_id, f"No hay {label} AGIP activo que coincida. Probá con nombre, CUIT o slug.", thread_id=thread_id)
+            await self._send(adapter, chat_id, "No hay un contribuyente AGIP activo con una única Clave Ciudad válida que coincida. Probá con nombre, CUIT o slug.", thread_id=thread_id)
             return True
         if len(candidates) == 1:
             await self._select(adapter, chat_id, thread_id, user_id, state, candidates[0])
             return True
-        kind = "r" if state.stage == "represented" else "c"
-        rows = [[InlineKeyboardButton(f"{x['nombre']} — {visible_cuit(x['cuit'])}", callback_data=f"ad:{kind}:{state.nonce}:{x['id']}")] for x in candidates]
+        rows = [[InlineKeyboardButton(f"{x['nombre']} — {visible_cuit(x['cuit'])}", callback_data=f"ad:c:{state.nonce}:{x['id']}")] for x in candidates]
         await self._send(adapter, chat_id, "Elegí una opción:", InlineKeyboardMarkup(rows), thread_id)
         return True
 
-    def _represented(self, contributor_id: int) -> list[dict[str, Any]]:
-        """All AGIP represented contributors for the selected credential holder."""
-        return self._query(
-            "SELECT json_build_object('id',c.id_contribuyente,'nombre',c.nombre_legal,"
-            "'cuit',c.cuit,'slug',c.slug)::text "
-            "FROM tbl_representaciones r "
-            f"JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}' "
-            "JOIN tbl_contribuyentes c ON c.id_contribuyente=r.id_contribuyente_representado "
-            f"WHERE r.activo AND c.activo AND r.id_contribuyente_representante={int(contributor_id)} "
-            "ORDER BY c.nombre_legal LIMIT 100;"
-        )
-
-    def _by_id(self, item_id: int, contributor_id: int | None) -> list[dict[str, Any]]:
-        scope = ""
-        if contributor_id is not None:
-            scope = f"JOIN tbl_representaciones r ON r.id_contribuyente_representado=c.id_contribuyente AND r.id_contribuyente_representante={int(contributor_id)} AND r.activo JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}'"
-        else:
-            scope = f"JOIN tbl_accesos a ON a.id_contribuyente=c.id_contribuyente AND a.activo JOIN tbl_entidades e ON e.id_entidad=a.id_entidad AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}'"
-        return self._query(f"SELECT json_build_object('id',c.id_contribuyente,'nombre',c.nombre_legal,'cuit',c.cuit,'slug',c.slug)::text FROM tbl_contribuyentes c {scope} WHERE c.activo AND c.id_contribuyente={int(item_id)};")
+    def _by_id(self, item_id: int) -> list[dict[str, Any]]:
+        return self._query(f"""
+            SELECT json_build_object(
+                'id',c.id_contribuyente,'nombre',c.nombre_legal,
+                'cuit',c.cuit,'slug',c.slug,
+                'representative_id',min(r.id_contribuyente_representante)
+            )::text
+            FROM tbl_contribuyentes c
+            JOIN tbl_representaciones r
+              ON r.id_contribuyente_representado=c.id_contribuyente AND r.activo
+            JOIN tbl_entidades e
+              ON e.id_entidad=r.id_entidad
+             AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}' AND e.activo
+            JOIN tbl_contribuyentes holder
+              ON holder.id_contribuyente=r.id_contribuyente_representante AND holder.activo
+            JOIN tbl_accesos a
+              ON a.id_entidad=e.id_entidad
+             AND a.id_contribuyente=holder.id_contribuyente AND a.activo
+            WHERE c.activo AND c.id_contribuyente={int(item_id)}
+            GROUP BY c.id_contribuyente,c.nombre_legal,c.cuit,c.slug
+            HAVING count(DISTINCT r.id_contribuyente_representante)=1;
+        """)
 
     async def callback(self, adapter, query, data: str, chat_id, thread_id, user_id) -> bool:
         key = self._key(chat_id, thread_id, user_id)
@@ -375,24 +386,7 @@ class AgipDdjjFlow:
                 "Consulta AGIP cancelada. No se entregó ningún archivo.",
             )
             return True
-        same = re.fullmatch(r"ad:s:([0-9a-f]{10})", data)
-        if same:
-            state = self.states.get(key)
-            if state and self._expired(state):
-                self.states.pop(key, None)
-                await query.answer("Esta selección venció. Iniciá una consulta nueva.")
-                return True
-            if not state or state.nonce != same.group(1) or state.stage != "represented" or state.contributor_id is None:
-                await query.answer("Esta selección venció. Iniciá una consulta nueva.")
-                return True
-            found = self._by_id(state.contributor_id, state.contributor_id)
-            if not found:
-                await query.answer("El contribuyente no está habilitado como representado AGIP.")
-                return True
-            await query.answer("Mismo CUIT seleccionado")
-            await self._select(adapter, chat_id, thread_id, user_id, state, found[0])
-            return True
-        m = re.fullmatch(r"ad:([cr]):([0-9a-f]{10}):(\d+)", data)
+        m = re.fullmatch(r"ad:c:([0-9a-f]{10}):(\d+)", data)
         if not m:
             return False
         state = self.states.get(key)
@@ -400,10 +394,10 @@ class AgipDdjjFlow:
             self.states.pop(key, None)
             await query.answer("Esta selección venció. Iniciá una consulta nueva.")
             return True
-        if not state or state.nonce != m.group(2) or (m.group(1) == "c") != (state.stage == "contributor"):
+        if not state or state.nonce != m.group(1) or state.stage != "contributor":
             await query.answer("Esta selección venció. Iniciá una consulta nueva.")
             return True
-        found = self._by_id(int(m.group(3)), state.contributor_id if state.stage == "represented" else None)
+        found = self._by_id(int(m.group(2)))
         if not found:
             await query.answer("La opción ya no está disponible.")
             return True
@@ -413,25 +407,16 @@ class AgipDdjjFlow:
 
     async def _select(self, adapter, chat_id, thread_id, user_id, state, row) -> None:
         if state.stage == "contributor":
-            state.contributor_id = int(row['id']); state.stage = "represented"
-            represented = self._represented(state.contributor_id)
-            if not represented:
-                raise RuntimeError("El contribuyente no tiene representados AGIP activos")
-            buttons = [
-                [InlineKeyboardButton(
-                    f"{item['nombre']} — {visible_cuit(item['cuit'])}",
-                    callback_data=f"ad:r:{state.nonce}:{item['id']}",
-                )]
-                for item in represented
-            ]
+            state.contributor_id = int(row["representative_id"])
+            state.represented_id = int(row["id"])
+            state.stage = "period"
             await self._send(
                 adapter, chat_id,
-                "Elegí el representado AGIP:",
-                InlineKeyboardMarkup(buttons), thread_id,
+                "Ingresá el período o fecha: AAAA, AAAAMM, AAAA-MM o DD/MM/AAAA.",
+                thread_id=thread_id,
             )
             return
-        state.represented_id = int(row['id']); state.stage = "period"
-        await self._send(adapter, chat_id, "Ingresá el período o fecha: AAAA, AAAAMM, AAAA-MM o DD/MM/AAAA.", thread_id=thread_id)
+        raise RuntimeError("AGIP_STATE_INVALID")
 
     async def _run_query(self, adapter, chat_id, thread_id, key: str, state: FlowState, period: str) -> None:
         execution_key: str | None = None
