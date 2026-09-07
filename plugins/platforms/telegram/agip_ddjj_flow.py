@@ -33,17 +33,17 @@ _STATE_TTL_SECONDS = 600
 _AGIP_CLAVE_CIUDAD_ENTITY = "AGIP - Clave Ciudad"
 _RUN_TIMEOUT_SECONDS = 1800
 _DELIVERY_XLSX = re.compile(
-    rf"^(?:{re.escape(_CLIENTS_ROOT)}/[a-z0-9]+(?:-[a-z0-9]+)*/(?P<cuit_annual>\d{{11}})/agip/"
-    r"(?P<year_annual>\d{4})/anual/consultas/(?P=cuit_annual)-ddjj-iibb-agip-"
+    rf"^(?:{re.escape(_CLIENTS_ROOT)}/(?P<slug_annual>[a-z0-9]+(?:-[a-z0-9]+)*)/(?P<cuit_annual>\d{{11}})/agip/"
+    r"(?P<year_annual>\d{4})/anual/consultas/(?P=slug_annual)-ddjj-iibb-agip-"
     r"(?P=year_annual)(?:-v\d{2})?\.xlsx|"
-    rf"{re.escape(_CLIENTS_ROOT)}/[a-z0-9]+(?:-[a-z0-9]+)*/(?P<cuit_monthly>\d{{11}})/agip/"
-    r"(?P<year_monthly>\d{4})/(?P<month>0[1-9]|1[0-2])/consultas/(?P=cuit_monthly)-"
+    rf"{re.escape(_CLIENTS_ROOT)}/(?P<slug_monthly>[a-z0-9]+(?:-[a-z0-9]+)*)/(?P<cuit_monthly>\d{{11}})/agip/"
+    r"(?P<year_monthly>\d{4})/(?P<month>0[1-9]|1[0-2])/consultas/(?P=slug_monthly)-"
     r"ddjj-iibb-agip-(?P=year_monthly)-(?P=month)(?:-v\d{2})?\.xlsx)$"
 )
 
 
 def is_valid_delivery_path(path: str) -> bool:
-    """Accept only a v5 AGIP consultation XLSX for the represented CUIT."""
+    """Accept only an AGIP consultation XLSX named for its represented slug."""
     return bool(_DELIVERY_XLSX.fullmatch(path or ""))
 
 

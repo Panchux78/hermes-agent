@@ -117,11 +117,19 @@ def test_searching_represented_contributor_resolves_unique_credential_holder(mon
 def test_delivery_accepts_the_v5_consultation_path_and_versions():
     assert is_valid_delivery_path(
         "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/07/consultas/"
-        "30712345678-ddjj-iibb-agip-2026-07.xlsx"
+        "vgs-st-srl-ddjj-iibb-agip-2026-07.xlsx"
     )
     assert is_valid_delivery_path(
         "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/anual/consultas/"
-        "30712345678-ddjj-iibb-agip-2026-v02.xlsx"
+        "vgs-st-srl-ddjj-iibb-agip-2026-v02.xlsx"
+    )
+    assert not is_valid_delivery_path(
+        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/07/consultas/"
+        "otro-cliente-ddjj-iibb-agip-2026-07.xlsx"
+    )
+    assert not is_valid_delivery_path(
+        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/07/consultas/"
+        "30712345678-ddjj-iibb-agip-2026-07.xlsx"
     )
     assert not is_valid_delivery_path(
         "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/2026-07/ddjj-vep/"
