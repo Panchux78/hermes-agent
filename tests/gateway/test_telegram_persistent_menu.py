@@ -120,11 +120,9 @@ def test_organisms_menu_separates_tax_authorities(monkeypatch):
         query.edit_message_text.assert_awaited_once_with(
             "Organismos fiscales\n\nElegí el organismo con el que necesitás operar.",
             reply_markup=[
-                [
-                    {"text": "ARCA", "callback_data": "om:arca"},
-                    {"text": "AGIP", "callback_data": "om:agip"},
-                ],
-                [{"text": "ARBA · Próximamente", "callback_data": "om:arba"}],
+                [{"text": "🇦🇷 ARCA", "callback_data": "om:arca"}],
+                [{"text": "🏙️ AGIP", "callback_data": "om:agip"}],
+                [{"text": "🏞️ ARBA · Próximamente", "callback_data": "om:arba"}],
                 [
                     {"text": "‹ Menú", "callback_data": "om:main"},
                     {"text": "✕ Cerrar", "callback_data": "om:close"},
