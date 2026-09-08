@@ -6,7 +6,13 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.admin_maintenance_flow import AdminMaintenanceFlow
 from plugins.platforms.telegram.agip_ddjj_flow import AgipDdjjFlow
 from plugins.platforms.telegram.batch_pdf_xlsx_flow import BatchPdfXlsxFlow
-from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.menu_buttons import (
+    BRAILLE_PATTERN_BLANK,
+    HAIR_SPACE,
+    MENU_ALIGNMENT_PADDING,
+    aligned_menu_label,
+    menu_label,
+)
 from plugins.platforms.telegram.pdf_security_flow import PdfSecurityFlow
 from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
 
@@ -65,6 +71,20 @@ def test_menu_label_uses_exactly_two_ascii_spaces():
         menu_label("🔎", " Consultar")
 
 
+def test_aligned_menu_label_only_appends_declared_presentation_characters():
+    assert aligned_menu_label("arca", "🧾", "Preparar") == (
+        "🧾  Preparar" + HAIR_SPACE * 2
+    )
+    assert aligned_menu_label("unknown", "🔎", "Consultar") == "🔎  Consultar"
+    for (page, text), (braille, hair) in MENU_ALIGNMENT_PADDING.items():
+        label = aligned_menu_label(page, "X", text)
+        assert label == (
+            menu_label("X", text)
+            + HAIR_SPACE * hair
+            + BRAILLE_PATTERN_BLANK * braille
+        )
+
+
 def test_operational_submenus_stack_actions_and_share_only_navigation(monkeypatch):
     import plugins.platforms.telegram.adapter as module
 
@@ -94,7 +114,7 @@ def test_operational_submenus_stack_actions_and_share_only_navigation(monkeypatc
         _assert_safe_callbacks(rows)
 
 
-def test_main_menu_is_only_keyboard_with_alignment_padding(monkeypatch):
+def test_alignment_padding_is_restricted_to_declared_fixed_buttons(monkeypatch):
     import plugins.platforms.telegram.adapter as module
 
     _as_dict_markup(monkeypatch, module)
@@ -103,13 +123,40 @@ def test_main_menu_is_only_keyboard_with_alignment_padding(monkeypatch):
     _assert_contract_labels(main)
     assert all("\u200a" in row[0]["text"] or "\u2800" in row[0]["text"] for row in main)
 
-    for page in ("organismos", "arca", "bancos", "herramientas", "ayuda", "administracion"):
-        rows = TelegramAdapter._menu_panel_keyboard(page, show_administration=True)
-        assert all(
-            "\u200a" not in button["text"] and "\u2800" not in button["text"]
-            for row in rows
-            for button in row
+    fixed_keyboards = {
+        page: _rows(TelegramAdapter._menu_panel_keyboard(page, show_administration=True))
+        for page in (
+            "main", "organismos", "arca", "agip", "arba", "bancos",
+            "herramientas", "ayuda", "administracion",
         )
+    }
+    fixed_keyboards.update({
+        "pdf_consentimiento": _rows(PdfSecurityFlow._unlock_consent_keyboard("n")),
+        "admin_confirmacion": _rows(AdminMaintenanceFlow._confirmation_keyboard("bcra", "n")),
+        "lote_confirmacion": _rows(BatchPdfXlsxFlow._confirmation_keyboard("batch")),
+    })
+
+    used = set()
+    for page, rows in fixed_keyboards.items():
+        for row in rows:
+            for button in row:
+                label = button["text"]
+                visible = label.rstrip(HAIR_SPACE + BRAILLE_PATTERN_BLANK)
+                icon, text = visible.split("  ", 1)
+                has_padding = visible != label
+                if has_padding:
+                    assert (page, text) in MENU_ALIGNMENT_PADDING
+                    assert label == aligned_menu_label(page, icon, text)
+                    used.add((page, text))
+                if button["callback_data"].startswith("om:") and text in {
+                    "Menú", "Organismos", "Cerrar",
+                }:
+                    assert not has_padding
+
+    flow_pages = {"pdf_consentimiento", "admin_confirmacion", "lote_confirmacion"}
+    assert used == {
+        key for key in MENU_ALIGNMENT_PADDING if key[0] not in flow_pages
+    }
 
 
 def test_business_flow_keyboards_follow_icons_spacing_and_rows(monkeypatch):
@@ -147,12 +194,13 @@ def test_business_flow_keyboards_follow_icons_spacing_and_rows(monkeypatch):
 
     assert [row[0]["text"] for row in keyboards[0]] == [
         "✅  Acepto y continuar",
-        "❌  Cancelar",
+        "❌  Cancelar" + BRAILLE_PATTERN_BLANK * 7,
     ]
     assert [row[0]["text"] for row in keyboards[1]] == [
         "✅  Confirmar actualización",
-        "❌  Cancelar",
+        "❌  Cancelar" + HAIR_SPACE + BRAILLE_PATTERN_BLANK * 10,
     ]
     assert keyboards[3][0][0]["text"] == "✅  Procesar lote"
+    assert keyboards[3][1][0]["text"] == "❌  Cancelar" + BRAILLE_PATTERN_BLANK * 3
     assert keyboards[5][0][0]["text"].startswith("👤  Empresa — ")
     assert keyboards[7][0][0]["text"].startswith("👤  Empresa — ")

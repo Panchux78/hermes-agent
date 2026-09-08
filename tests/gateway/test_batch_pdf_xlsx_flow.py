@@ -38,7 +38,7 @@ def test_start_requests_zip_and_inspection_offers_process_cancel(monkeypatch, tm
         markup = prompt.edit_text.await_args.kwargs["reply_markup"]
         assert [[button["text"] for button in row] for row in markup] == [
             ["✅  Procesar lote"],
-            ["❌  Cancelar"],
+            ["❌  Cancelar" + "\u2800" * 3],
         ]
         callbacks = [button["callback_data"] for row in markup for button in row]
         assert callbacks == ["bx:p:abc", "bx:c:abc"]

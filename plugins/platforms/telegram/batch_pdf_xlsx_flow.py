@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 
 from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
 
@@ -230,5 +230,5 @@ class BatchPdfXlsxFlow:
     def _confirmation_keyboard(batch_id: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton(menu_label("✅", "Procesar lote"), callback_data=f"bx:p:{batch_id}")],
-            [InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"bx:c:{batch_id}")],
+            [InlineKeyboardButton(aligned_menu_label("lote_confirmacion", "❌", "Cancelar"), callback_data=f"bx:c:{batch_id}")],
         ])

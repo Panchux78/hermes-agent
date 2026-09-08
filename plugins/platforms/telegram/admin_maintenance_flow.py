@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 
 
 _CONTABOT = Path("/home/pancho/hermes-workspace/Contabot")
@@ -336,5 +336,5 @@ class AdminMaintenanceFlow:
 
         return InlineKeyboardMarkup([
             [InlineKeyboardButton(menu_label("✅", "Confirmar actualización"), callback_data=f"oa:{kind}:confirm:{nonce}")],
-            [InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"oa:{kind}:cancel:{nonce}")],
+            [InlineKeyboardButton(aligned_menu_label("admin_confirmacion", "❌", "Cancelar"), callback_data=f"oa:{kind}:cancel:{nonce}")],
         ])

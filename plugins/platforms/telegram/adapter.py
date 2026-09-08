@@ -23,7 +23,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
-from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 
 logger = logging.getLogger(__name__)
 
@@ -1360,21 +1360,6 @@ class TelegramAdapter(BasePlatformAdapter):
         return titles.get(page, titles["main"])
 
     @staticmethod
-    def _main_menu_button_label(icon: str, text: str) -> str:
-        """Visually align the fixed main-menu labels in Telegram's centered buttons."""
-        braille_padding, hair_padding = {
-            "Organismos fiscales": (3, 3),
-            "Bancos": (12, 3),
-            "Herramientas": (7, 4),
-            "Ayuda": (14, 0),
-            "Administración": (7, 1),
-        }.get(text, (0, 0))
-        # Hair spaces provide sub-character adjustment. The final braille blanks
-        # keep them away from the trailing edge, where clients may trim spaces.
-        padding = "\u200a" * hair_padding + "\u2800" * braille_padding
-        return f"{menu_label(icon, text)}{padding}"
-
-    @staticmethod
     def _menu_panel_keyboard(page: str = "main", *, show_administration: bool = False):
         """Return one page of the operational-menu mockup."""
         back_label = menu_label("‹", "Menú")
@@ -1382,25 +1367,25 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if page == "organismos":
             rows = [
-                [InlineKeyboardButton(menu_label("🏛️", "ARCA"), callback_data="om:arca")],
-                [InlineKeyboardButton(menu_label("💵", "AGIP"), callback_data="om:agip")],
-                [InlineKeyboardButton(menu_label("🪙", "ARBA"), callback_data="om:arba")],
+                [InlineKeyboardButton(aligned_menu_label(page, "🏛️", "ARCA"), callback_data="om:arca")],
+                [InlineKeyboardButton(aligned_menu_label(page, "💵", "AGIP"), callback_data="om:agip")],
+                [InlineKeyboardButton(aligned_menu_label(page, "🪙", "ARBA"), callback_data="om:arba")],
             ]
         elif page in {"arca", "agip", "arba"}:
             rows = [
                 [
                     InlineKeyboardButton(
-                        menu_label("🔎", "Consultar"), callback_data=f"om:{page}_consultar"
+                        aligned_menu_label(page, "🔎", "Consultar"), callback_data=f"om:{page}_consultar"
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        menu_label("🧾", "Preparar"), callback_data=f"om:{page}_preparar"
+                        aligned_menu_label(page, "🧾", "Preparar"), callback_data=f"om:{page}_preparar"
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        menu_label("📤", "Presentar"), callback_data=f"om:{page}_presentar"
+                        aligned_menu_label(page, "📤", "Presentar"), callback_data=f"om:{page}_presentar"
                     )
                 ],
             ]
@@ -1442,10 +1427,10 @@ class TelegramAdapter(BasePlatformAdapter):
             back_page = authority
         elif page == "bancos":
             rows = [
-                [InlineKeyboardButton(menu_label("🏦", "Resumen bancario → Excel"), callback_data="px:start")],
+                [InlineKeyboardButton(aligned_menu_label(page, "🏦", "Resumen bancario → Excel"), callback_data="px:start")],
                 [
                     InlineKeyboardButton(
-                        menu_label("📦", "Lote de resúmenes bancarios → Excel"),
+                        aligned_menu_label(page, "📦", "Lote de resúmenes bancarios → Excel"),
                         callback_data="bx:start",
                     )
                 ],
@@ -1454,53 +1439,49 @@ class TelegramAdapter(BasePlatformAdapter):
         elif page == "herramientas":
             rows = [
                 [
-                    InlineKeyboardButton(menu_label("🔒", "Proteger PDF"), callback_data="ps:protect:start"),
+                    InlineKeyboardButton(aligned_menu_label(page, "🔒", "Proteger PDF"), callback_data="ps:protect:start"),
                 ],
                 [
                     InlineKeyboardButton(
-                        menu_label("🔓", "Desbloquear PDF"), callback_data="ps:unlock:start"
+                        aligned_menu_label(page, "🔓", "Desbloquear PDF"), callback_data="ps:unlock:start"
                     ),
                 ],
             ]
         elif page == "ayuda":
             rows = [
-                [InlineKeyboardButton(menu_label("ℹ️", "Qué hace ContaBot"), callback_data="om:que_hace")],
-                [InlineKeyboardButton(menu_label("💬", "Hacer una consulta"), callback_data="om:consulta")],
+                [InlineKeyboardButton(aligned_menu_label(page, "ℹ️", "Qué hace ContaBot"), callback_data="om:que_hace")],
+                [InlineKeyboardButton(aligned_menu_label(page, "💬", "Hacer una consulta"), callback_data="om:consulta")],
             ]
         elif page in {"que_hace", "consulta"}:
             rows = []
         elif page == "administracion":
             rows = [
-                [InlineKeyboardButton(menu_label("🧭", "Actualizar mapa de impuestos"), callback_data="oa:arca:start")],
-                [InlineKeyboardButton(menu_label("🏦", "Actualizar bancos BCRA"), callback_data="oa:bcra:start")],
+                [InlineKeyboardButton(aligned_menu_label(page, "🧭", "Actualizar mapa de impuestos"), callback_data="oa:arca:start")],
+                [InlineKeyboardButton(aligned_menu_label(page, "🏦", "Actualizar bancos BCRA"), callback_data="oa:bcra:start")],
             ]
         else:
             rows = [
                 [
                     InlineKeyboardButton(
-                        TelegramAdapter._main_menu_button_label(
-                            "🏛️", "Organismos fiscales"
-                        ),
+                        aligned_menu_label("main", "🏛️", "Organismos fiscales"),
                         callback_data="om:organismos",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        TelegramAdapter._main_menu_button_label("🏦", "Bancos"),
+                        aligned_menu_label("main", "🏦", "Bancos"),
                         callback_data="om:bancos",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        TelegramAdapter._main_menu_button_label(
-                            "🧰", "Herramientas"
-                        ),
+                        aligned_menu_label("main", "🧰", "Herramientas"),
                         callback_data="om:herramientas",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        TelegramAdapter._main_menu_button_label("ℹ️", "Ayuda"),
+                        aligned_menu_label("main", "ℹ️", "Ayuda"),
                         callback_data="om:ayuda",
                     ),
                 ],
@@ -1509,9 +1490,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 rows.append(
                     [
                         InlineKeyboardButton(
-                            TelegramAdapter._main_menu_button_label(
-                                "⚙️", "Administración"
-                            ),
+                            aligned_menu_label("main", "⚙️", "Administración"),
                             callback_data="om:administracion",
                         )
                     ]

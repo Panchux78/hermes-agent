@@ -123,7 +123,7 @@ def test_organisms_menu_separates_tax_authorities(monkeypatch):
             "Organismos fiscales\n\nElegí el organismo con el que necesitás operar.",
             reply_markup=[
                 [{"text": "🏛️  ARCA", "callback_data": "om:arca"}],
-                [{"text": "💵  AGIP", "callback_data": "om:agip"}],
+                [{"text": "💵  AGIP" + "\u200a" * 2, "callback_data": "om:agip"}],
                 [{"text": "🪙  ARBA", "callback_data": "om:arba"}],
                 [
                     {"text": "‹  Menú", "callback_data": "om:main"},
@@ -163,7 +163,7 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
                 "No convierte PDFs generales."
             ),
             reply_markup=[
-                [{"text": "🏦  Resumen bancario → Excel", "callback_data": "px:start"}],
+                [{"text": "🏦  Resumen bancario → Excel" + "\u200a" * 2 + "\u2800" * 7, "callback_data": "px:start"}],
                 [
                     {
                         "text": "📦  Lote de resúmenes bancarios → Excel",
@@ -197,7 +197,7 @@ def test_each_tax_authority_separates_query_prepare_and_present(monkeypatch):
             ],
             [
                 {
-                    "text": "🧾  Preparar",
+                    "text": "🧾  Preparar" + "\u200a" * 2,
                     "callback_data": f"om:{authority}_preparar",
                 },
             ],
@@ -263,7 +263,7 @@ def test_pdf_tools_are_separate_from_accounting_preparation(monkeypatch):
     banks = TelegramAdapter._menu_panel_keyboard("bancos")
 
     assert tools == [
-        [{"text": "🔒  Proteger PDF", "callback_data": "ps:protect:start"}],
+        [{"text": "🔒  Proteger PDF" + "\u2800" * 3, "callback_data": "ps:protect:start"}],
         [{"text": "🔓  Desbloquear PDF", "callback_data": "ps:unlock:start"}],
         [
             {"text": "‹  Menú", "callback_data": "om:main"},
@@ -326,7 +326,7 @@ def test_help_menu_offers_real_information_and_free_query_actions(monkeypatch):
 
     assert TelegramAdapter._menu_panel_keyboard("ayuda") == [
         [{"text": "ℹ️  Qué hace ContaBot", "callback_data": "om:que_hace"}],
-        [{"text": "💬  Hacer una consulta", "callback_data": "om:consulta"}],
+        [{"text": "💬  Hacer una consulta" + "\u200a", "callback_data": "om:consulta"}],
         [
             {"text": "‹  Menú", "callback_data": "om:main"},
             {"text": "✕  Cerrar", "callback_data": "om:close"},

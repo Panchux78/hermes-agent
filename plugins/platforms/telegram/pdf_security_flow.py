@@ -15,7 +15,7 @@ from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 
 logger = logging.getLogger(__name__)
 
@@ -552,6 +552,6 @@ class PdfSecurityFlow:
         return InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton(menu_label("✅", "Acepto y continuar"), callback_data=f"ps:unlock:accept:{nonce}")],
-                [InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"ps:cancel:{nonce}")],
+                [InlineKeyboardButton(aligned_menu_label("pdf_consentimiento", "❌", "Cancelar"), callback_data=f"ps:cancel:{nonce}")],
             ]
         )
