@@ -23,6 +23,8 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
+from plugins.platforms.telegram.menu_buttons import menu_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -1278,7 +1280,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _persistent_menu_keyboard():
         """Return the one-button reply keyboard that opens the inline menu."""
         return ReplyKeyboardMarkup(
-            [[KeyboardButton("☰ Menú")]],
+            [[KeyboardButton(menu_label("☰", "Menú"))]],
             resize_keyboard=True,
             is_persistent=True,
         )
@@ -1287,7 +1289,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _persistent_menu_reply_markup() -> Dict[str, Any]:
         """Return raw Bot API reply-keyboard markup used by sendRichMessage."""
         return {
-            "keyboard": [[{"text": "☰ Menú"}],],
+            "keyboard": [[{"text": menu_label("☰", "Menú")}],],
             "resize_keyboard": True,
             "is_persistent": True,
         }
@@ -1370,61 +1372,61 @@ class TelegramAdapter(BasePlatformAdapter):
         # Hair spaces provide sub-character adjustment. The final braille blanks
         # keep them away from the trailing edge, where clients may trim spaces.
         padding = "\u200a" * hair_padding + "\u2800" * braille_padding
-        return f"{icon}  {text}{padding}"
+        return f"{menu_label(icon, text)}{padding}"
 
     @staticmethod
     def _menu_panel_keyboard(page: str = "main", *, show_administration: bool = False):
         """Return one page of the operational-menu mockup."""
-        back_label = "‹ Menú"
+        back_label = menu_label("‹", "Menú")
         back_page = "main"
 
         if page == "organismos":
             rows = [
-                [InlineKeyboardButton("🏛️  ARCA", callback_data="om:arca")],
-                [InlineKeyboardButton("💵  AGIP", callback_data="om:agip")],
-                [InlineKeyboardButton("🪙  ARBA", callback_data="om:arba")],
+                [InlineKeyboardButton(menu_label("🏛️", "ARCA"), callback_data="om:arca")],
+                [InlineKeyboardButton(menu_label("💵", "AGIP"), callback_data="om:agip")],
+                [InlineKeyboardButton(menu_label("🪙", "ARBA"), callback_data="om:arba")],
             ]
         elif page in {"arca", "agip", "arba"}:
             rows = [
                 [
                     InlineKeyboardButton(
-                        "🔎 Consultar", callback_data=f"om:{page}_consultar"
+                        menu_label("🔎", "Consultar"), callback_data=f"om:{page}_consultar"
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "🧾 Preparar", callback_data=f"om:{page}_preparar"
+                        menu_label("🧾", "Preparar"), callback_data=f"om:{page}_preparar"
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "📤 Presentar", callback_data=f"om:{page}_presentar"
+                        menu_label("📤", "Presentar"), callback_data=f"om:{page}_presentar"
                     )
                 ],
             ]
-            back_label = "‹ Organismos"
+            back_label = menu_label("‹", "Organismos")
             back_page = "organismos"
         elif page == "arca_consultar":
             rows = [
                 [
                     InlineKeyboardButton(
-                        "📥 CSV de períodos presentados", callback_data="pi:descargar"
+                        menu_label("📥", "CSV de períodos presentados"), callback_data="pi:descargar"
                     )
                 ],
             ]
-            back_label = "‹ ARCA"
+            back_label = menu_label("‹", "ARCA")
             back_page = "arca"
         elif page == "arca_preparar":
             rows = [
-                [InlineKeyboardButton("🧾 Preparar período nuevo", callback_data="pi:generar")],
+                [InlineKeyboardButton(menu_label("🧾", "Preparar período nuevo"), callback_data="pi:generar")],
             ]
-            back_label = "‹ ARCA"
+            back_label = menu_label("‹", "ARCA")
             back_page = "arca"
         elif page == "agip_consultar":
             rows = [
-                [InlineKeyboardButton("🧾 DDJJ de IIBB", callback_data="ad:start")],
+                [InlineKeyboardButton(menu_label("🧾", "DDJJ de IIBB"), callback_data="ad:start")],
             ]
-            back_label = "‹ AGIP"
+            back_label = menu_label("‹", "AGIP")
             back_page = "agip"
         elif page in {
             "arca_presentar",
@@ -1436,14 +1438,14 @@ class TelegramAdapter(BasePlatformAdapter):
         }:
             rows = []
             authority = page.split("_", 1)[0]
-            back_label = f"‹ {authority.upper()}"
+            back_label = menu_label("‹", authority.upper())
             back_page = authority
         elif page == "bancos":
             rows = [
-                [InlineKeyboardButton("🏦 Resumen bancario → Excel", callback_data="px:start")],
+                [InlineKeyboardButton(menu_label("🏦", "Resumen bancario → Excel"), callback_data="px:start")],
                 [
                     InlineKeyboardButton(
-                        "📦 Lote de resúmenes bancarios → Excel",
+                        menu_label("📦", "Lote de resúmenes bancarios → Excel"),
                         callback_data="bx:start",
                     )
                 ],
@@ -1452,25 +1454,25 @@ class TelegramAdapter(BasePlatformAdapter):
         elif page == "herramientas":
             rows = [
                 [
-                    InlineKeyboardButton("🔒 Proteger PDF", callback_data="ps:protect:start"),
+                    InlineKeyboardButton(menu_label("🔒", "Proteger PDF"), callback_data="ps:protect:start"),
                 ],
                 [
                     InlineKeyboardButton(
-                        "🔓 Desbloquear PDF", callback_data="ps:unlock:start"
+                        menu_label("🔓", "Desbloquear PDF"), callback_data="ps:unlock:start"
                     ),
                 ],
             ]
         elif page == "ayuda":
             rows = [
-                [InlineKeyboardButton("ℹ️ Qué hace ContaBot", callback_data="om:que_hace")],
-                [InlineKeyboardButton("💬 Hacer una consulta", callback_data="om:consulta")],
+                [InlineKeyboardButton(menu_label("ℹ️", "Qué hace ContaBot"), callback_data="om:que_hace")],
+                [InlineKeyboardButton(menu_label("💬", "Hacer una consulta"), callback_data="om:consulta")],
             ]
         elif page in {"que_hace", "consulta"}:
             rows = []
         elif page == "administracion":
             rows = [
-                [InlineKeyboardButton("🧭 Actualizar mapa de impuestos", callback_data="oa:arca:start")],
-                [InlineKeyboardButton("🏦 Actualizar bancos BCRA", callback_data="oa:bcra:start")],
+                [InlineKeyboardButton(menu_label("🧭", "Actualizar mapa de impuestos"), callback_data="oa:arca:start")],
+                [InlineKeyboardButton(menu_label("🏦", "Actualizar bancos BCRA"), callback_data="oa:bcra:start")],
             ]
         else:
             rows = [
@@ -1518,7 +1520,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         rows.append([
             InlineKeyboardButton(back_label, callback_data=f"om:{back_page}"),
-            InlineKeyboardButton("✕ Cerrar", callback_data="om:close"),
+            InlineKeyboardButton(menu_label("✕", "Cerrar"), callback_data="om:close"),
         ])
         return InlineKeyboardMarkup(rows)
 
@@ -10074,7 +10076,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
-        if msg.text == "☰ Menú":
+        if msg.text in {"☰ Menú", menu_label("☰", "Menú")}:
             await self._reply_operational_menu(msg, context.bot)
             return
         if await self._pdf_security_flow.text(self, msg):

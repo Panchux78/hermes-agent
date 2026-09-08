@@ -20,6 +20,8 @@ from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from plugins.platforms.telegram.menu_buttons import menu_label
+
 try:
     import fcntl
 except ImportError:  # Windows gateway: keep Telegram importable, hide this Linux-only feature.
@@ -146,8 +148,18 @@ class AgipDdjjFlow:
     @staticmethod
     def _cancel_keyboard(nonce: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Cancelar", callback_data=f"ad:cancel:{nonce}")]]
+            [[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"ad:cancel:{nonce}")]]
         )
+
+    @staticmethod
+    def _candidate_keyboard(candidates: list[dict[str, Any]], nonce: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                menu_label("👤", f"{candidate['nombre']} — {visible_cuit(candidate['cuit'])}"),
+                callback_data=f"ad:c:{nonce}:{candidate['id']}",
+            )]
+            for candidate in candidates
+        ])
 
     @staticmethod
     def _expired(state: FlowState) -> bool:
@@ -338,8 +350,7 @@ class AgipDdjjFlow:
         if len(candidates) == 1:
             await self._select(adapter, chat_id, thread_id, user_id, state, candidates[0])
             return True
-        rows = [[InlineKeyboardButton(f"{x['nombre']} — {visible_cuit(x['cuit'])}", callback_data=f"ad:c:{state.nonce}:{x['id']}")] for x in candidates]
-        await self._send(adapter, chat_id, "Elegí una opción:", InlineKeyboardMarkup(rows), thread_id)
+        await self._send(adapter, chat_id, "Elegí una opción:", self._candidate_keyboard(candidates, state.nonce), thread_id)
         return True
 
     def _by_id(self, item_id: int) -> list[dict[str, Any]]:

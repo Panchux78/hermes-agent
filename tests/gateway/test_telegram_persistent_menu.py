@@ -3,13 +3,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from PIL import Image
+import pytest
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def test_rich_reply_markup_is_one_persistent_menu_trigger():
     assert TelegramAdapter._persistent_menu_reply_markup() == {
-        "keyboard": [[{"text": "☰ Menú"}]],
+        "keyboard": [[{"text": "☰  Menú"}]],
         "resize_keyboard": True,
         "is_persistent": True,
     }
@@ -27,7 +28,8 @@ def test_menu_avatar_sticker_is_a_transparent_circle():
         assert rgba.getchannel("A").getbbox() == (32, 32, 480, 480)
 
 
-def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(monkeypatch):
+@pytest.mark.parametrize("trigger", ["☰ Menú", "☰  Menú"])
+def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(monkeypatch, trigger):
     async def scenario():
         import plugins.platforms.telegram.adapter as adapter_module
 
@@ -46,7 +48,7 @@ def test_menu_trigger_sends_the_inline_panel_without_dispatching_an_agent_turn(m
         monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
 
         message = SimpleNamespace(
-            text="☰ Menú",
+            text=trigger,
             reply_sticker=AsyncMock(return_value=SimpleNamespace(sticker=None)),
             reply_text=AsyncMock(),
         )
@@ -124,8 +126,8 @@ def test_organisms_menu_separates_tax_authorities(monkeypatch):
                 [{"text": "💵  AGIP", "callback_data": "om:agip"}],
                 [{"text": "🪙  ARBA", "callback_data": "om:arba"}],
                 [
-                    {"text": "‹ Menú", "callback_data": "om:main"},
-                    {"text": "✕ Cerrar", "callback_data": "om:close"},
+                    {"text": "‹  Menú", "callback_data": "om:main"},
+                    {"text": "✕  Cerrar", "callback_data": "om:close"},
                 ],
             ],
         )
@@ -161,16 +163,16 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
                 "No convierte PDFs generales."
             ),
             reply_markup=[
-                [{"text": "🏦 Resumen bancario → Excel", "callback_data": "px:start"}],
+                [{"text": "🏦  Resumen bancario → Excel", "callback_data": "px:start"}],
                 [
                     {
-                        "text": "📦 Lote de resúmenes bancarios → Excel",
+                        "text": "📦  Lote de resúmenes bancarios → Excel",
                         "callback_data": "bx:start",
                     }
                 ],
                 [
-                    {"text": "‹ Menú", "callback_data": "om:main"},
-                    {"text": "✕ Cerrar", "callback_data": "om:close"},
+                    {"text": "‹  Menú", "callback_data": "om:main"},
+                    {"text": "✕  Cerrar", "callback_data": "om:close"},
                 ],
             ],
         )
@@ -189,25 +191,25 @@ def test_each_tax_authority_separates_query_prepare_and_present(monkeypatch):
         assert TelegramAdapter._menu_panel_keyboard(authority) == [
             [
                 {
-                    "text": "🔎 Consultar",
+                    "text": "🔎  Consultar",
                     "callback_data": f"om:{authority}_consultar",
                 }
             ],
             [
                 {
-                    "text": "🧾 Preparar",
+                    "text": "🧾  Preparar",
                     "callback_data": f"om:{authority}_preparar",
                 },
             ],
             [
                 {
-                    "text": "📤 Presentar",
+                    "text": "📤  Presentar",
                     "callback_data": f"om:{authority}_presentar",
                 }
             ],
             [
-                {"text": "‹ Organismos", "callback_data": "om:organismos"},
-                {"text": "✕ Cerrar", "callback_data": "om:close"},
+                {"text": "‹  Organismos", "callback_data": "om:organismos"},
+                {"text": "✕  Cerrar", "callback_data": "om:close"},
             ],
         ]
 
@@ -223,13 +225,13 @@ def test_implemented_tax_actions_reuse_existing_flows(monkeypatch):
     monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
 
     assert TelegramAdapter._menu_panel_keyboard("arca_consultar")[0] == [
-        {"text": "📥 CSV de períodos presentados", "callback_data": "pi:descargar"}
+        {"text": "📥  CSV de períodos presentados", "callback_data": "pi:descargar"}
     ]
     assert TelegramAdapter._menu_panel_keyboard("arca_preparar")[0] == [
-        {"text": "🧾 Preparar período nuevo", "callback_data": "pi:generar"}
+        {"text": "🧾  Preparar período nuevo", "callback_data": "pi:generar"}
     ]
     assert TelegramAdapter._menu_panel_keyboard("agip_consultar")[0] == [
-        {"text": "🧾 DDJJ de IIBB", "callback_data": "ad:start"}
+        {"text": "🧾  DDJJ de IIBB", "callback_data": "ad:start"}
     ]
 
     for page in (
@@ -261,11 +263,11 @@ def test_pdf_tools_are_separate_from_accounting_preparation(monkeypatch):
     banks = TelegramAdapter._menu_panel_keyboard("bancos")
 
     assert tools == [
-        [{"text": "🔒 Proteger PDF", "callback_data": "ps:protect:start"}],
-        [{"text": "🔓 Desbloquear PDF", "callback_data": "ps:unlock:start"}],
+        [{"text": "🔒  Proteger PDF", "callback_data": "ps:protect:start"}],
+        [{"text": "🔓  Desbloquear PDF", "callback_data": "ps:unlock:start"}],
         [
-            {"text": "‹ Menú", "callback_data": "om:main"},
-            {"text": "✕ Cerrar", "callback_data": "om:close"},
+            {"text": "‹  Menú", "callback_data": "om:main"},
+            {"text": "✕  Cerrar", "callback_data": "om:close"},
         ],
     ]
     assert all(
@@ -323,11 +325,11 @@ def test_help_menu_offers_real_information_and_free_query_actions(monkeypatch):
     monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
 
     assert TelegramAdapter._menu_panel_keyboard("ayuda") == [
-        [{"text": "ℹ️ Qué hace ContaBot", "callback_data": "om:que_hace"}],
-        [{"text": "💬 Hacer una consulta", "callback_data": "om:consulta"}],
+        [{"text": "ℹ️  Qué hace ContaBot", "callback_data": "om:que_hace"}],
+        [{"text": "💬  Hacer una consulta", "callback_data": "om:consulta"}],
         [
-            {"text": "‹ Menú", "callback_data": "om:main"},
-            {"text": "✕ Cerrar", "callback_data": "om:close"},
+            {"text": "‹  Menú", "callback_data": "om:main"},
+            {"text": "✕  Cerrar", "callback_data": "om:close"},
         ],
     ]
     assert "Escribí tu consulta en el chat." in TelegramAdapter._menu_panel_title("consulta")

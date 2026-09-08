@@ -21,6 +21,8 @@ from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from plugins.platforms.telegram.menu_buttons import menu_label
+
 try:
     import fcntl
 except ImportError:  # Windows gateway: keep Telegram importable, hide this Linux-only feature.
@@ -157,7 +159,17 @@ class PortalIvaFlow:
 
     @staticmethod
     def _cancel_keyboard(nonce: str) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup([[InlineKeyboardButton("Cancelar", callback_data=f"pi:cancel:{nonce}")]])
+        return InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"pi:cancel:{nonce}")]])
+
+    @staticmethod
+    def _candidate_keyboard(candidates: list[dict[str, Any]], nonce: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                menu_label("👤", f"{candidate['nombre']} — {PortalIvaFlow._visible_cuit(candidate['cuit'])}"),
+                callback_data=f"pi:select:{nonce}:{candidate['id']}",
+            )]
+            for candidate in candidates
+        ])
 
     async def start(self, adapter, query, chat_id: Any, thread_id: Any, user_id: str, operation: str) -> None:
         if operation not in {"generar", "descargar-presentados"}:
@@ -297,8 +309,7 @@ class PortalIvaFlow:
         if len(candidates) == 1:
             await self._select(adapter, chat_id, thread_id, state, candidates[0])
             return True
-        rows = [[InlineKeyboardButton(f"{item['nombre']} — {self._visible_cuit(item['cuit'])}", callback_data=f"pi:select:{state.nonce}:{item['id']}")] for item in candidates]
-        await self._send(adapter, chat_id, "Elegí un contribuyente:", thread_id, InlineKeyboardMarkup(rows))
+        await self._send(adapter, chat_id, "Elegí un contribuyente:", thread_id, self._candidate_keyboard(candidates, state.nonce))
         return True
 
     async def _select(self, adapter, chat_id: Any, thread_id: Any, state: FlowState, item: dict[str, Any]) -> None:

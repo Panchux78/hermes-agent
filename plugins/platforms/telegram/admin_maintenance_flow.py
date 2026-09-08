@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from plugins.platforms.telegram.menu_buttons import menu_label
+
 
 _CONTABOT = Path("/home/pancho/hermes-workspace/Contabot")
 _ARCA_REBUILD = _CONTABOT / "skills/accounting/arca-catalogos/scripts/reconstruir_mapa_impuestos_arca.py"
@@ -160,9 +162,8 @@ class AdminMaintenanceFlow:
                 return True
             kind = "arca" if data == "oa:arca:start" else "bcra"
             await query.answer("Preparando candidato…")
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             text = "Actualizando mapa de impuestos. Puede tardar varios minutos. Te voy informando el progreso." if kind == "arca" else "Consultando el padrón oficial BCRA. Puede tardar unos minutos. Te voy informando el progreso."
-            progress = await self._send(adapter, chat_id, text, InlineKeyboardMarkup([[InlineKeyboardButton("Cancelar actualización", callback_data="oa:cancelrun")]]), thread_id)
+            progress = await self._send(adapter, chat_id, text, self._cancel_run_keyboard(), thread_id)
             task = asyncio.create_task(self._prepare(adapter, chat_id, thread_id, user_id, kind, getattr(progress, "message_id", None)))
             self._tasks[key] = task
             self._operations[key] = ("actualización del mapa ARCA" if kind == "arca" else "consulta del padrón BCRA", datetime.now(timezone.utc))
@@ -228,11 +229,7 @@ class AdminMaintenanceFlow:
                 "bajas": sum(diffs[part]["removed"] for part in diffs),
                 "modificaciones": sum(diffs[part]["modified"] for part in diffs),
             }
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("Confirmar actualización", callback_data=f"oa:arca:confirm:{nonce}"),
-                InlineKeyboardButton("Cancelar", callback_data=f"oa:arca:cancel:{nonce}"),
-            ]])
+            keyboard = self._confirmation_keyboard("arca", nonce)
             await self._progress(adapter, chat_id, progress_message_id, f"Mapa de impuestos: altas {summary['altas']}, bajas {summary['bajas']}, modificaciones {summary['modificaciones']}.", keyboard, thread_id)
         except Exception:
             if run_dir.exists() and not run_dir.is_symlink():
@@ -261,11 +258,7 @@ class AdminMaintenanceFlow:
             self._candidates[self._key(chat_id, thread_id, user_id)] = CandidateState(
                 "bcra", nonce, candidate, report, self._sha256(candidate), self._sha256(current), datetime.now(timezone.utc)
             )
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("Confirmar actualización", callback_data=f"oa:bcra:confirm:{nonce}"),
-                InlineKeyboardButton("Cancelar", callback_data=f"oa:bcra:cancel:{nonce}"),
-            ]])
+            keyboard = self._confirmation_keyboard("bcra", nonce)
             summary = f"{comparison['nuevos']} bancos nuevos, {comparison['vinculaciones']} vinculaciones existentes, {comparison['reapariciones']} reapariciones, {comparison['ausentes']} ausentes, {comparison['modificaciones']} modificaciones"
             await self._progress(adapter, chat_id, progress_message_id, f"Candidato BCRA preparado: {summary}.", keyboard, thread_id)
         except Exception:
@@ -328,3 +321,20 @@ class AdminMaintenanceFlow:
             return
         await self._run(sys.executable, str(_BCRA_UPDATE), "apply", "--candidate", str(state.candidate), *(item for pair in fields.items() for item in pair))
         await self._send(adapter, chat_id, "Padrón BCRA actualizado.", thread_id=thread_id)
+
+    @staticmethod
+    def _cancel_run_keyboard():
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(menu_label("❌", "Cancelar actualización"), callback_data="oa:cancelrun")
+        ]])
+
+    @staticmethod
+    def _confirmation_keyboard(kind: str, nonce: str):
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(menu_label("✅", "Confirmar actualización"), callback_data=f"oa:{kind}:confirm:{nonce}")],
+            [InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"oa:{kind}:cancel:{nonce}")],
+        ])

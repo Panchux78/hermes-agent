@@ -15,6 +15,8 @@ from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from plugins.platforms.telegram.menu_buttons import menu_label
+
 logger = logging.getLogger(__name__)
 
 _PDF_MIME = "application/pdf"
@@ -381,12 +383,7 @@ class PdfSecurityFlow:
             self._drop(key)
             nonce = uuid.uuid4().hex[:10]
             self.states[key] = PdfSecurityState("unlock", "consent", nonce, time.monotonic())
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton("Acepto y continuar", callback_data=f"ps:unlock:accept:{nonce}")],
-                    [InlineKeyboardButton("Cancelar", callback_data=f"ps:cancel:{nonce}")],
-                ]
-            )
+            keyboard = self._unlock_consent_keyboard(nonce)
             await query.answer("Desbloquear PDF")
             await self._send(
                 adapter,
@@ -549,3 +546,12 @@ class PdfSecurityFlow:
         )
         if not result.success:
             raise PdfSecurityError("DELIVERY_FAILED", "Telegram no confirmó la entrega del PDF.")
+
+    @staticmethod
+    def _unlock_consent_keyboard(nonce: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(menu_label("✅", "Acepto y continuar"), callback_data=f"ps:unlock:accept:{nonce}")],
+                [InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"ps:cancel:{nonce}")],
+            ]
+        )

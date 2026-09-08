@@ -15,6 +15,8 @@ from typing import Any, Awaitable, Callable
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from plugins.platforms.telegram.menu_buttons import menu_label
+
 from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
 
 logger = logging.getLogger(__name__)
@@ -220,6 +222,13 @@ class BatchPdfXlsxFlow:
             if repeated:
                 lines.append(f"Advertencia: hay más de un PDF para {', '.join(str(value) for value in repeated)}")
         batch_id = str(result["batch_id"])
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Procesar", callback_data=f"bx:p:{batch_id}"), InlineKeyboardButton("Cancelar", callback_data=f"bx:c:{batch_id}")]])
+        keyboard = self._confirmation_keyboard(batch_id)
         await progress_message.edit_text("\n".join(lines), reply_markup=keyboard)
         return True
+
+    @staticmethod
+    def _confirmation_keyboard(batch_id: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(menu_label("✅", "Procesar lote"), callback_data=f"bx:p:{batch_id}")],
+            [InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"bx:c:{batch_id}")],
+        ])
