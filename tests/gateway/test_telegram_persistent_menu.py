@@ -191,7 +191,9 @@ def test_each_tax_authority_separates_query_prepare_and_present(monkeypatch):
                 {
                     "text": "🔎 Consultar",
                     "callback_data": f"om:{authority}_consultar",
-                },
+                }
+            ],
+            [
                 {
                     "text": "🧾 Preparar",
                     "callback_data": f"om:{authority}_preparar",

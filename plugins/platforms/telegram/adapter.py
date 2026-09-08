@@ -1389,10 +1389,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 [
                     InlineKeyboardButton(
                         "🔎 Consultar", callback_data=f"om:{page}_consultar"
-                    ),
+                    )
+                ],
+                [
                     InlineKeyboardButton(
                         "🧾 Preparar", callback_data=f"om:{page}_preparar"
-                    ),
+                    )
                 ],
                 [
                     InlineKeyboardButton(
