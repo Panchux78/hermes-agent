@@ -121,8 +121,8 @@ def test_organisms_menu_separates_tax_authorities(monkeypatch):
             "Organismos fiscales\n\nElegí el organismo con el que necesitás operar.",
             reply_markup=[
                 [{"text": "🏛️  ARCA", "callback_data": "om:arca"}],
-                [{"text": "🌆  AGIP", "callback_data": "om:agip"}],
-                [{"text": "🌾  ARBA", "callback_data": "om:arba"}],
+                [{"text": "💵  AGIP", "callback_data": "om:agip"}],
+                [{"text": "🪙  ARBA", "callback_data": "om:arba"}],
                 [
                     {"text": "‹ Menú", "callback_data": "om:main"},
                     {"text": "✕ Cerrar", "callback_data": "om:close"},

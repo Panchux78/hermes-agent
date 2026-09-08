@@ -1381,8 +1381,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if page == "organismos":
             rows = [
                 [InlineKeyboardButton("🏛️  ARCA", callback_data="om:arca")],
-                [InlineKeyboardButton("🌆  AGIP", callback_data="om:agip")],
-                [InlineKeyboardButton("🌾  ARBA", callback_data="om:arba")],
+                [InlineKeyboardButton("💵  AGIP", callback_data="om:agip")],
+                [InlineKeyboardButton("🪙  ARBA", callback_data="om:arba")],
             ]
         elif page in {"arca", "agip", "arba"}:
             rows = [
