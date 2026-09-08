@@ -618,6 +618,13 @@ class PortalIvaFlow:
             return f"{prefix}: ARCA rechazó tres respuestas de captcha."
         if reason in {"PORTAL_IVA_CAPTCHA_TIMEOUT", "CAPTCHA_RESPUESTA_AUSENTE"}:
             return f"{prefix}: venció el tiempo para responder el captcha."
+        missing_presented = re.fullmatch(r"PERIODO_NO_PRESENTADO_(\d{4})-(0[1-9]|1[0-2])", reason)
+        if missing_presented and operation == "descargar-presentados":
+            year, month = missing_presented.groups()
+            return (
+                f"{prefix}: el período {month}/{year} no figura como presentado en ARCA. "
+                "Si todavía no fue presentado, usá “Generar CSV de período nuevo”."
+            )
         if reason.startswith(("PERIODO_NO_DISPONIBLE", "PERIODO_NO_PRESENTADO")):
             return f"{prefix}: el período no está disponible para esta operación."
         if reason:
@@ -675,7 +682,13 @@ class PortalIvaFlow:
                 return
             result = self._parse_result(raw)
             if proc.returncode != 0 or not result.get("ok"):
-                await self._edit_progress(state, self._error_message(result, f"{state.operation} no se completó.", state.operation))
+                failure_message = self._error_message(
+                    result, f"{state.operation} no se completó.", state.operation,
+                )
+                await self._edit_progress(state, failure_message)
+                # A terminal outcome must create a fresh, visible notification.
+                # Editing an older progress message alone is easy to miss in Telegram.
+                await self._send(adapter, chat_id, failure_message, thread_id)
                 return
             if result.get("etapa") != "completado":
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")

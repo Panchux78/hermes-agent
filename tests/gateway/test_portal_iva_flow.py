@@ -35,6 +35,17 @@ def test_captcha_terminal_errors_are_explained_to_the_user():
     ) == "Descargar CSV presentados: venció el tiempo para responder el captcha."
 
 
+def test_missing_presented_period_is_explained_and_suggests_the_correct_action():
+    assert PortalIvaFlow._error_message(
+        {"motivo": "PERIODO_NO_PRESENTADO_2026-08"},
+        "fallback",
+        "descargar-presentados",
+    ) == (
+        "Descargar CSV presentados: el período 08/2026 no figura como presentado en ARCA. "
+        "Si todavía no fue presentado, usá “Generar CSV de período nuevo”."
+    )
+
+
 class FakeProcess:
     def __init__(self, payload, returncode=0):
         self.payload = payload
@@ -484,6 +495,38 @@ def test_incomplete_output_and_exit_one_do_not_deliver(monkeypatch, tmp_path):
         await flow._run(adapter, "10", None, "10::7", state)
         assert adapter.send_document.await_count == 0
         assert "rechazó la credencial" in state.progress_message.edits[-1][0]
+    asyncio.run(scenario())
+
+
+def test_terminal_failure_sends_a_new_visible_message(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
+        flow.executor.touch(); flow.uv.touch()
+        adapter = FakeAdapter()
+        state = FlowState(
+            user_id="7", nonce="a" * 10, stage="running", contributor_id=1,
+            slug="cliente", cuit="20123456789", period="2026-08",
+            progress_message=FakeMessage(), operation="descargar-presentados",
+        )
+        blocked = {"ok": False, "motivo": "PERIODO_NO_PRESENTADO_2026-08"}
+        flow._by_id = lambda _ident: [{"slug": "cliente", "cuit": "20123456789"}]
+        flow._acquire_execution_lock = lambda _key: None
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            AsyncMock(return_value=FakeProcess(json.dumps(blocked).encode(), returncode=1)),
+        )
+
+        await flow._run(adapter, "10", None, "10::7", state)
+
+        assert adapter.send_document.await_count == 0
+        expected = (
+            "Descargar CSV presentados: el período 08/2026 no figura como presentado en ARCA. "
+            "Si todavía no fue presentado, usá “Generar CSV de período nuevo”."
+        )
+        assert state.progress_message.edits[-1][0] == expected
+        assert adapter._bot.send_message.await_args.kwargs["text"] == expected
+
     asyncio.run(scenario())
 
 
