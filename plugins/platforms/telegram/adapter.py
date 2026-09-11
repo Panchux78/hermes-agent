@@ -428,6 +428,8 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         extra = self.config.extra
+        from plugins.platforms.telegram.operational_menu import build_operational_menu
+        self._operational_menu = build_operational_menu(extra)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
         self._webhook_mode: bool = False
@@ -4263,6 +4265,9 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             return
         data = query.data
         cb = self._callback_ctx(query)
+        menu = getattr(self, "_operational_menu", None)
+        if menu and await menu.callback(self, query, cb):
+            return
         if data.startswith("wa:"):
             await self._handle_wisdom_agent_callback(query, data)
             return
@@ -4777,7 +4782,9 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
                 msg = await self._send_media(
                     getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
                     reset_media=lambda: f.seek(0), **build_kwargs(f))
-            return SendResult(success=True, message_id=str(msg.message_id))
+            document = getattr(msg, "document", None) if media_key == "document" else None
+            raw = {"document": {"file_name": document.file_name}} if document is not None else None
+            return SendResult(success=True, message_id=str(msg.message_id), raw_response=raw)
         except Exception as e:
             return await on_error(e)
 
@@ -5752,6 +5759,9 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
+        menu = getattr(self, "_operational_menu", None)
+        if menu and await menu.text(self, msg):
+            return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
         await self._ensure_forum_commands(update.message)
@@ -5768,6 +5778,12 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             self._log_blocked_user(msg)
             return
         await self._ensure_forum_commands(msg)
+        menu = getattr(self, "_operational_menu", None)
+        command = msg.text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+        if menu and msg.chat.type == "private" and command in {"/start", "/menu"}:
+            await menu.open(msg)
+            if command == "/menu":
+                return
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
         # A >4096-char command paste arrives as a near-limit COMMAND chunk plus TEXT continuations; dispatching
         # immediately would orphan them. Near-limit commands go through text batching.
@@ -6053,6 +6069,9 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
+            return
+        menu = getattr(self, "_operational_menu", None)
+        if menu and await menu.document(self, msg):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
