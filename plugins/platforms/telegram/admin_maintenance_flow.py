@@ -17,12 +17,12 @@ from typing import Any
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 
 
-_CONTABOT = Path("/home/pancho/hermes-workspace/Contabot")
+_CONTABOT = Path.home() / "hermes-workspace/Contabot"
 _ARCA_REBUILD = _CONTABOT / "skills/accounting/arca-catalogos/scripts/reconstruir_mapa_impuestos_arca.py"
 _ARCA_COMPARE = _CONTABOT / "skills/accounting/arca-catalogos/scripts/comparar_mapa_impuestos_arca.py"
 _BCRA_UPDATE = _CONTABOT / "database/scripts/actualizar_bancos_bcra.py"
-_ARCA_CURRENT = Path("/home/pancho/hermes-workspace/vectux.com/root/mapa_impuestos.json")
-_STATE_ROOT = Path("/home/pancho/.local/state/contabot/admin")
+_ARCA_CURRENT = Path.home() / "hermes-workspace/vectux.com/root/mapa_impuestos.json"
+_STATE_ROOT = Path.home() / ".local/state/contabot/admin"
 
 
 @dataclass

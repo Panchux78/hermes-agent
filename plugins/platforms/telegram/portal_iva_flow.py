@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from hermes_constants import get_hermes_home
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -29,12 +30,12 @@ except ImportError:  # Windows gateway: keep Telegram importable, hide this Linu
     fcntl = None
 
 logger = logging.getLogger(__name__)
-_CLIENTES_ROOT = Path("/home/pancho/clientes")
-_EXECUTOR = Path("/home/pancho/procedimientos/portal-iva/portal_iva.py")
-_UV = Path("/home/pancho/.hermes/bin/uv")
+_CLIENTES_ROOT = Path.home() / "clientes"
+_EXECUTOR = Path.home() / "procedimientos/portal-iva/portal_iva.py"
+_UV = get_hermes_home() / "bin/uv"
 _PERIOD = re.compile(r"(0[1-9]|1[0-2])/[0-9]{4}")
-_LOCK_ROOT = Path("/home/pancho/.local/state/contabot/portal-iva/telegram-locks")
-_CAPTCHA_ROOT = Path("/home/pancho/.local/state/contabot/portal-iva/runs")
+_LOCK_ROOT = Path.home() / ".local/state/contabot/portal-iva/telegram-locks"
+_CAPTCHA_ROOT = Path.home() / ".local/state/contabot/portal-iva/runs"
 _RUN_TIMEOUT_SECONDS = 1800
 _CAPTCHA_TIMEOUT_SECONDS = 300
 _CAPTCHA_SOLUTION = re.compile(r"[A-Za-z0-9]{4,20}")

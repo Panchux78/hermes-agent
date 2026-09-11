@@ -28,9 +28,9 @@ except ImportError:  # Windows gateway: keep Telegram importable, hide this Linu
     fcntl = None
 
 logger = logging.getLogger(__name__)
-_CLIENTS_ROOT = "/home/pancho/clientes"
-_LOCK_ROOT = Path("/home/pancho/.local/state/contabot/agip-ddjj/telegram-locks")
-_FAILURE_ROOT = Path("/home/pancho/.local/state/contabot/agip-ddjj/failures")
+_CLIENTS_ROOT = str(Path.home() / "clientes")
+_LOCK_ROOT = Path.home() / ".local/state/contabot/agip-ddjj/telegram-locks"
+_FAILURE_ROOT = Path.home() / ".local/state/contabot/agip-ddjj/failures"
 _STATE_TTL_SECONDS = 600
 _AGIP_CLAVE_CIUDAD_ENTITY = "AGIP - Clave Ciudad"
 _RUN_TIMEOUT_SECONDS = 1800
@@ -451,8 +451,8 @@ class AgipDdjjFlow:
             # The worker receives only opaque internal IDs and reads credentials locally.
             proc = await asyncio.create_subprocess_exec(
                 "xvfb-run", "-a", "-s", "-screen 0 1440x1100x24 -nolisten tcp",
-                "/home/pancho/hermes-workspace/agip-consulta-2025/.venv-selenium/bin/python",
-                "/home/pancho/hermes-workspace/Contabot/scripts/agip-ddjj-worker.py",
+                str(Path.home() / "hermes-workspace/agip-consulta-2025/.venv-selenium/bin/python"),
+                str(Path.home() / "hermes-workspace/Contabot/scripts/agip-ddjj-worker.py"),
                 str(state.contributor_id), str(state.represented_id), period,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,

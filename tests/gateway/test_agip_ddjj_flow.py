@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from plugins.platforms.telegram.agip_ddjj_flow import (
+    _CLIENTS_ROOT,
     AgipDdjjFlow,
     FlowState,
     is_valid_delivery_path,
@@ -116,23 +117,23 @@ def test_searching_represented_contributor_resolves_unique_credential_holder(mon
 
 def test_delivery_accepts_the_v5_consultation_path_and_versions():
     assert is_valid_delivery_path(
-        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/07/consultas/"
+        f"{_CLIENTS_ROOT}/vgs-st-srl/30712345678/agip/2026/07/consultas/"
         "vgs-st-srl-ddjj-iibb-agip-2026-07.xlsx"
     )
     assert is_valid_delivery_path(
-        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/anual/consultas/"
+        f"{_CLIENTS_ROOT}/vgs-st-srl/30712345678/agip/2026/anual/consultas/"
         "vgs-st-srl-ddjj-iibb-agip-2026-v02.xlsx"
     )
     assert not is_valid_delivery_path(
-        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/07/consultas/"
+        f"{_CLIENTS_ROOT}/vgs-st-srl/30712345678/agip/2026/07/consultas/"
         "otro-cliente-ddjj-iibb-agip-2026-07.xlsx"
     )
     assert not is_valid_delivery_path(
-        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/07/consultas/"
+        f"{_CLIENTS_ROOT}/vgs-st-srl/30712345678/agip/2026/07/consultas/"
         "30712345678-ddjj-iibb-agip-2026-07.xlsx"
     )
     assert not is_valid_delivery_path(
-        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/2026-07/ddjj-vep/"
+        f"{_CLIENTS_ROOT}/vgs-st-srl/30712345678/agip/2026/2026-07/ddjj-vep/"
         "2026-08-14__ddjj-iibb-periodo-2026-07.xlsx"
     )
 
@@ -209,7 +210,7 @@ def test_worker_starts_in_new_session(monkeypatch):
 
         assert create.await_args.kwargs["start_new_session"] is True
         assert create.await_args.args[5] == (
-            "/home/pancho/hermes-workspace/Contabot/scripts/agip-ddjj-worker.py"
+            str(Path.home() / "hermes-workspace/Contabot/scripts/agip-ddjj-worker.py")
         )
 
     asyncio.run(scenario())

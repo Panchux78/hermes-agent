@@ -12,10 +12,11 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
-_DEFAULT_PROJECT_DIR = Path("/home/pancho/hermes-workspace/conversion-documentos-contables-xlsx")
-_DEFAULT_ROUTER_PROJECT_DIR = Path("/home/pancho/hermes-workspace/Contabot")
+_DEFAULT_PROJECT_DIR = Path.home() / "hermes-workspace/conversion-documentos-contables-xlsx"
+_DEFAULT_ROUTER_PROJECT_DIR = Path.home() / "hermes-workspace/Contabot"
 _MAX_PDF_BYTES = 5_000_000
 
 
@@ -48,7 +49,7 @@ class PdfXlsxFlow:
         self.requests: dict[str, PdfXlsxRequest] = {}
         self.input_cache_dir = Path(os.getenv(
             "CONTA_PDF_XLSX_INPUT_CACHE_DIR",
-            "/home/pancho/.hermes/cache/pdf-xlsx-inputs",
+            str(get_hermes_home() / "cache/pdf-xlsx-inputs"),
         ))
         self.document_timeout_seconds = self._positive_float(
             os.getenv("CONTA_PDF_XLSX_DOCUMENT_TIMEOUT_SECONDS"), 3600.0
@@ -226,7 +227,7 @@ class PdfXlsxFlow:
         return output, result
 
     def _router_command(self, source: Path) -> list[str]:
-        hermes_home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes")))
+        hermes_home = get_hermes_home()
         uv = hermes_home / "bin" / "uv"
         if not uv.is_file():
             raise RuntimeError("ROUTER_RUNTIME_UNAVAILABLE")
