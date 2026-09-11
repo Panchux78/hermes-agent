@@ -13,6 +13,33 @@ from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
 from plugins.platforms.telegram.agip_ddjj_flow import AgipDdjjFlow
 
 
+@pytest.mark.parametrize("flow_type", [AgipDdjjFlow, PortalIvaFlow])
+def test_lookup_uses_restricted_shared_profile(flow_type, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    monkeypatch.setenv("CONTABOT_DB_PROFILE", "/private/profile.json")
+    helper = Mock(return_value=(["psql", "--dbname=lea_test", "--username=lea_catalog"], {"PGPASSFILE": "/private/local"}))
+    monkeypatch.setitem(sys.modules, "contabot_pg", SimpleNamespace(psql_invocation=helper))
+    run = Mock(return_value=SimpleNamespace(returncode=0, stdout='{"id":1}\n'))
+    monkeypatch.setattr(subprocess, "run", run)
+    assert flow_type()._query("SELECT 1") == [{"id": 1}]
+    helper.assert_called_once_with("lookup")
+    assert "sudo" not in run.call_args.args[0]
+    assert "--username=lea_catalog" in run.call_args.args[0]
+
+
+def test_bad_database_profile_does_not_run_any_process(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    monkeypatch.setenv("CONTABOT_DB_PROFILE", "")
+    monkeypatch.setitem(sys.modules, "contabot_pg", SimpleNamespace(psql_invocation=Mock(side_effect=RuntimeError("CONTABOT_DB_CONFIGURATION_INVALID"))))
+    run = Mock()
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="CONTABOT_DB"):
+        PortalIvaFlow()._query("SELECT 1")
+    run.assert_not_called()
+
+
 def test_adapter_distributes_deployment_without_changing_identity(tmp_path):
     project = tmp_path / "repos/contabot"
     executor = tmp_path / "repos/procedimientos/portal-iva/portal_iva.py"

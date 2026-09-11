@@ -23,7 +23,7 @@ from plugins.platforms.telegram.contabot_deployment import pdf_python_command
 
 logger = logging.getLogger(__name__)
 _PROJECT = Path.home() / "hermes-workspace/Contabot"
-_BATCH_ROOT = Path.home() / "clientes/_recepcion_lotes"
+_BATCH_ROOT = Path(os.environ.get("CONTABOT_CLIENTES_ROOT", str(Path.home() / "clientes"))) / "_recepcion_lotes"
 _MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 
 

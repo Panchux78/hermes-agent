@@ -30,7 +30,9 @@ except ImportError:  # Windows gateway: keep Telegram importable, hide this Linu
 from plugins.platforms.telegram.contabot_deployment import checked_python
 
 logger = logging.getLogger(__name__)
-_CLIENTS_ROOT = str(Path.home() / "clientes")
+_CLIENTS_ROOT = os.environ.get("CONTABOT_CLIENTES_ROOT", str(Path.home() / "clientes"))
+if not Path(_CLIENTS_ROOT).is_absolute() or ".." in Path(_CLIENTS_ROOT).parts:
+    raise ValueError("CONTABOT_CLIENTES_ROOT_INVALID")
 _LOCK_ROOT = Path.home() / ".local/state/contabot/agip-ddjj/telegram-locks"
 _FAILURE_ROOT = Path.home() / ".local/state/contabot/agip-ddjj/failures"
 _STATE_TTL_SECONDS = 600
@@ -108,9 +110,15 @@ class AgipDdjjFlow:
         return base64.b64encode(value.encode()).decode()
 
     def _query(self, sql: str) -> list[dict[str, Any]]:
+        command = ["sudo", "-n", "-u", "postgres", "psql", "--dbname=contabot"]
+        environment = None
+        if "CONTABOT_DB_PROFILE" in os.environ:
+            from contabot_pg import psql_invocation
+            command, environment = psql_invocation("lookup")
         run = subprocess.run(
-            ["sudo", "-n", "-u", "postgres", "psql", "--dbname=contabot", "-At", "-c", sql],
+            [*command, "-At", "-c", sql],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False,
+            env=environment,
         )
         if run.returncode:
             raise RuntimeError("No se pudo consultar la base canónica")

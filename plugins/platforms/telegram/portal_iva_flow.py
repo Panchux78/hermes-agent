@@ -31,7 +31,9 @@ except ImportError:  # Windows gateway: keep Telegram importable, hide this Linu
     fcntl = None
 
 logger = logging.getLogger(__name__)
-_CLIENTES_ROOT = Path.home() / "clientes"
+_CLIENTES_ROOT = Path(os.environ.get("CONTABOT_CLIENTES_ROOT", str(Path.home() / "clientes")))
+if not _CLIENTES_ROOT.is_absolute() or ".." in _CLIENTES_ROOT.parts:
+    raise ValueError("CONTABOT_CLIENTES_ROOT_INVALID")
 _EXECUTOR = Path.home() / "procedimientos/portal-iva/portal_iva.py"
 _UV = get_hermes_home() / "bin/uv"
 _PERIOD = re.compile(r"(0[1-9]|1[0-2])/[0-9]{4}")
@@ -114,9 +116,15 @@ class PortalIvaFlow:
         return await adapter._bot.send_message(**kwargs)
 
     def _query(self, sql: str) -> list[dict[str, Any]]:
+        command = ["sudo", "-n", "-u", "postgres", "psql", "--dbname=contabot"]
+        environment = None
+        if "CONTABOT_DB_PROFILE" in os.environ:
+            from contabot_pg import psql_invocation
+            command, environment = psql_invocation("lookup")
         run = subprocess.run(
-            ["sudo", "-n", "-u", "postgres", "psql", "--dbname=contabot", "-At", "-c", sql],
+            [*command, "-At", "-c", sql],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False,
+            env=environment,
         )
         if run.returncode:
             raise RuntimeError("PORTAL_IVA_DATABASE_UNAVAILABLE")
