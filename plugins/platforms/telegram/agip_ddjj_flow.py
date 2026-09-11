@@ -27,6 +27,8 @@ try:
 except ImportError:  # Windows gateway: keep Telegram importable, hide this Linux-only feature.
     fcntl = None
 
+from plugins.platforms.telegram.contabot_deployment import checked_python
+
 logger = logging.getLogger(__name__)
 _CLIENTS_ROOT = str(Path.home() / "clientes")
 _LOCK_ROOT = Path.home() / ".local/state/contabot/agip-ddjj/telegram-locks"
@@ -83,12 +85,19 @@ class FlowState:
 
 class AgipDdjjFlow:
     """Inline flow; credentials remain in PostgreSQL and never leave the host."""
-    def __init__(self) -> None:
+    def __init__(self, *, worker: Path | None = None, runtime_python: Path | None = None) -> None:
+        self.worker = Path(worker) if worker is not None else Path.home() / "hermes-workspace/Contabot/scripts/agip-ddjj-worker.py"
+        self.runtime_python = Path(runtime_python) if runtime_python is not None else None
         self.states: dict[str, FlowState] = {}
         self.tasks: dict[str, asyncio.Task] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
         self.execution_locks: dict[str, str] = {}
         self.execution_lock_fds: dict[str, int] = {}
+
+    def _worker_command(self, contributor_id: int, represented_id: int, period: str) -> list[str]:
+        python = checked_python(self.runtime_python) if self.runtime_python is not None else str(Path.home() / "hermes-workspace/agip-consulta-2025/.venv-selenium/bin/python")
+        return ["xvfb-run", "-a", "-s", "-screen 0 1440x1100x24 -nolisten tcp",
+                python, str(self.worker), str(contributor_id), str(represented_id), period]
 
     @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
@@ -450,10 +459,7 @@ class AgipDdjjFlow:
 
             # The worker receives only opaque internal IDs and reads credentials locally.
             proc = await asyncio.create_subprocess_exec(
-                "xvfb-run", "-a", "-s", "-screen 0 1440x1100x24 -nolisten tcp",
-                str(Path.home() / "hermes-workspace/agip-consulta-2025/.venv-selenium/bin/python"),
-                str(Path.home() / "hermes-workspace/Contabot/scripts/agip-ddjj-worker.py"),
-                str(state.contributor_id), str(state.represented_id), period,
+                *self._worker_command(state.contributor_id, state.represented_id, period),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
             )

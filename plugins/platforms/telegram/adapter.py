@@ -327,6 +327,7 @@ from plugins.platforms.telegram.batch_pdf_xlsx_flow import BatchPdfXlsxFlow
 from plugins.platforms.telegram.pdf_security_flow import PdfSecurityFlow
 from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
 from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
+from plugins.platforms.telegram.contabot_deployment import deployment_paths
 from utils import atomic_replace, env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -755,12 +756,23 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
-        self._agip_ddjj_flow = AgipDdjjFlow()
-        self._admin_maintenance_flow = AdminMaintenanceFlow()
-        self._batch_pdf_xlsx_flow = BatchPdfXlsxFlow()
+        paths = deployment_paths(config.extra)
+        runtime = paths.get("runtime_python")
+        project = paths.get("project_dir")
+        self._agip_ddjj_flow = AgipDdjjFlow(
+            worker=project / "scripts/agip-ddjj-worker.py" if project is not None else None,
+            runtime_python=runtime,
+        )
+        self._admin_maintenance_flow = AdminMaintenanceFlow(
+            project_dir=project, runtime_python=runtime, arca_map=paths.get("arca_map"),
+        )
+        self._batch_pdf_xlsx_flow = BatchPdfXlsxFlow(project_dir=project, runtime_python=runtime)
         self._pdf_security_flow = PdfSecurityFlow()
-        self._pdf_xlsx_flow = PdfXlsxFlow()
-        self._portal_iva_flow = PortalIvaFlow()
+        self._pdf_xlsx_flow = PdfXlsxFlow(router_project_dir=project, runtime_python=runtime)
+        self._portal_iva_flow = PortalIvaFlow(
+            runtime_python=runtime,
+            **({"executor": paths["portal_iva_executor"]} if "portal_iva_executor" in paths else {}),
+        )
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'

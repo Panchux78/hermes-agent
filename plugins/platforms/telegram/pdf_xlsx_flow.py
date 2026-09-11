@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from hermes_constants import get_hermes_home
+from plugins.platforms.telegram.contabot_deployment import pdf_python_command
 
 logger = logging.getLogger(__name__)
 _DEFAULT_PROJECT_DIR = Path.home() / "hermes-workspace/conversion-documentos-contables-xlsx"
@@ -38,9 +39,11 @@ class ConversionFailure(RuntimeError):
 class PdfXlsxFlow:
     """One pending PDF→XLSX conversion per authorized Telegram sender."""
 
-    def __init__(self, project_dir: Path = _DEFAULT_PROJECT_DIR) -> None:
+    def __init__(self, project_dir: Path = _DEFAULT_PROJECT_DIR, *,
+                 router_project_dir: Path | None = None, runtime_python: Path | None = None) -> None:
         self.project_dir = Path(project_dir)
-        router_project_dir = os.getenv("CONTA_PDF_ROUTER_PROJECT_DIR")
+        self.runtime_python = Path(runtime_python) if runtime_python is not None else None
+        router_project_dir = router_project_dir or os.getenv("CONTA_PDF_ROUTER_PROJECT_DIR")
         self.router_project_dir = (
             Path(router_project_dir)
             if router_project_dir
@@ -227,12 +230,7 @@ class PdfXlsxFlow:
         return output, result
 
     def _router_command(self, source: Path) -> list[str]:
-        hermes_home = get_hermes_home()
-        uv = hermes_home / "bin" / "uv"
-        if not uv.is_file():
-            raise RuntimeError("ROUTER_RUNTIME_UNAVAILABLE")
-        return [
-            str(uv), "run", "--with", "pdfplumber", "--with", "openpyxl", "python3",
+        return pdf_python_command(self.runtime_python, "ROUTER_RUNTIME_UNAVAILABLE") + [
             "skills/accounting/pdf-contable-router/scripts/router.py", "ingest",
             "--input", str(source),
         ]

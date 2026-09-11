@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
+from plugins.platforms.telegram.contabot_deployment import checked_python
 
 
 _CONTABOT = Path.home() / "hermes-workspace/Contabot"
@@ -39,11 +40,26 @@ class CandidateState:
 class AdminMaintenanceFlow:
     """Private, technical-user-only candidate/confirm workflows."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, project_dir: Path | None = None, runtime_python: Path | None = None,
+                 arca_map: Path | None = None) -> None:
+        self.project_dir = Path(project_dir) if project_dir is not None else None
+        self.runtime_python = Path(runtime_python) if runtime_python is not None else None
+        self._configured_arca_map = Path(arca_map) if arca_map is not None else None
         self._tasks: dict[str, asyncio.Task] = {}
         self._operations: dict[str, tuple[str, datetime]] = {}
         self._progress_messages: dict[str, Any] = {}
         self._candidates: dict[str, CandidateState] = {}
+
+    @property
+    def arca_current(self) -> Path:
+        return self._configured_arca_map if self._configured_arca_map is not None else _ARCA_CURRENT
+
+    @property
+    def python_executable(self) -> str:
+        return checked_python(self.runtime_python) if self.runtime_python is not None else sys.executable
+
+    def _script(self, default: Path) -> Path:
+        return self.project_dir / default.relative_to(_CONTABOT) if self.project_dir is not None else default
 
     @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
@@ -212,8 +228,8 @@ class AdminMaintenanceFlow:
             report = run_dir / "comparacion.json"
             async def progress_cb(done, total):
                 await self._progress(adapter, chat_id, progress_message_id, f"ARCA: {done} de {total} impuestos procesados.", thread_id=thread_id)
-            await self._run(sys.executable, str(_ARCA_REBUILD), str(candidate), progress=progress_cb)
-            comparison = await self._run(sys.executable, str(_ARCA_COMPARE), str(_ARCA_CURRENT), str(candidate), str(report))
+            await self._run(self.python_executable, str(self._script(_ARCA_REBUILD)), str(candidate), progress=progress_cb)
+            comparison = await self._run(self.python_executable, str(self._script(_ARCA_COMPARE)), str(self.arca_current), str(candidate), str(report))
             diffs = comparison["diffs"]
             changed = any(diffs[part][field] for part in diffs for field in diffs[part])
             if not changed:
@@ -222,7 +238,7 @@ class AdminMaintenanceFlow:
                 return
             nonce = uuid.uuid4().hex[:16]
             self._candidates[self._key(chat_id, thread_id, user_id)] = CandidateState(
-                "arca", nonce, candidate, report, self._sha256(candidate), self._sha256(_ARCA_CURRENT), datetime.now(timezone.utc)
+                "arca", nonce, candidate, report, self._sha256(candidate), self._sha256(self.arca_current), datetime.now(timezone.utc)
             )
             summary = {
                 "altas": sum(diffs[part]["added"] for part in diffs),
@@ -244,12 +260,12 @@ class AdminMaintenanceFlow:
             report = run_dir / "comparacion.json"
             async def progress_cb(done, total):
                 await self._progress(adapter, chat_id, progress_message_id, f"BCRA: {done} de {total} entidades consultadas.", thread_id=thread_id)
-            result = await self._run(sys.executable, str(_BCRA_UPDATE), "candidate", "--output", str(candidate), progress=progress_cb)
+            result = await self._run(self.python_executable, str(self._script(_BCRA_UPDATE)), "candidate", "--output", str(candidate), progress=progress_cb)
             if result.get("count", 0) <= 0:
                 raise RuntimeError("bcra_candidate_empty")
             config = self._catalog_args()
-            await self._run(sys.executable, str(_BCRA_UPDATE), "snapshot", "--output", str(current), "--period", result["periodo_bcra"], *config)
-            comparison = await self._run(sys.executable, str(_BCRA_UPDATE), "compare", "--current", str(current), "--candidate", str(candidate), "--output", str(report))
+            await self._run(self.python_executable, str(self._script(_BCRA_UPDATE)), "snapshot", "--output", str(current), "--period", result["periodo_bcra"], *config)
+            comparison = await self._run(self.python_executable, str(self._script(_BCRA_UPDATE)), "compare", "--current", str(current), "--candidate", str(candidate), "--output", str(report))
             if not any(comparison[key] for key in ("nuevos", "vinculaciones", "ausentes", "reapariciones", "modificaciones")):
                 shutil.rmtree(run_dir)
                 await self._progress(adapter, chat_id, progress_message_id, "El padrón BCRA no tiene cambios.", thread_id=thread_id)
@@ -280,17 +296,17 @@ class AdminMaintenanceFlow:
         return tuple(item for pair in fields.items() for item in pair)
 
     async def _promote_arca(self, adapter, chat_id, thread_id, state: CandidateState) -> None:
-        if self._sha256(state.candidate) != state.candidate_sha256 or self._sha256(_ARCA_CURRENT) != state.current_sha256:
+        if self._sha256(state.candidate) != state.candidate_sha256 or self._sha256(self.arca_current) != state.current_sha256:
             raise RuntimeError("arca_candidate_or_current_changed")
-        backup = _ARCA_CURRENT.with_name(f"{_ARCA_CURRENT.name}.backup-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
-        temporary = _ARCA_CURRENT.with_name(f".{_ARCA_CURRENT.name}.{uuid.uuid4().hex}.tmp")
+        backup = self.arca_current.with_name(f"{self.arca_current.name}.backup-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+        temporary = self.arca_current.with_name(f".{self.arca_current.name}.{uuid.uuid4().hex}.tmp")
         try:
-            shutil.copyfile(_ARCA_CURRENT, backup)
+            shutil.copyfile(self.arca_current, backup)
             os.chmod(backup, 0o600)
             shutil.copyfile(state.candidate, temporary)
             os.chmod(temporary, 0o600)
-            os.replace(temporary, _ARCA_CURRENT)
-            os.chmod(_ARCA_CURRENT, 0o600)
+            os.replace(temporary, self.arca_current)
+            os.chmod(self.arca_current, 0o600)
         finally:
             if temporary.exists():
                 temporary.unlink()
@@ -299,7 +315,7 @@ class AdminMaintenanceFlow:
     async def _snapshot_bcra(self, state: CandidateState) -> str:
         current = state.candidate.parent / "bancos-confirmacion.json"
         period = json.loads(state.candidate.read_text(encoding="utf-8"))["periodo_bcra"]
-        await self._run(sys.executable, str(_BCRA_UPDATE), "snapshot", "--output", str(current), "--period", period, *self._catalog_args())
+        await self._run(self.python_executable, str(self._script(_BCRA_UPDATE)), "snapshot", "--output", str(current), "--period", period, *self._catalog_args())
         return self._sha256(current)
 
     async def _apply_bcra(self, adapter, chat_id, thread_id, state: CandidateState) -> None:
@@ -319,7 +335,7 @@ class AdminMaintenanceFlow:
         if not all(fields.values()):
             await self._send(adapter, chat_id, "La identidad de escritura BCRA no está configurada.", thread_id=thread_id)
             return
-        await self._run(sys.executable, str(_BCRA_UPDATE), "apply", "--candidate", str(state.candidate), *(item for pair in fields.items() for item in pair))
+        await self._run(self.python_executable, str(self._script(_BCRA_UPDATE)), "apply", "--candidate", str(state.candidate), *(item for pair in fields.items() for item in pair))
         await self._send(adapter, chat_id, "Padrón BCRA actualizado.", thread_id=thread_id)
 
     @staticmethod

@@ -18,10 +18,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 
 from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
+from hermes_constants import get_hermes_home
+from plugins.platforms.telegram.contabot_deployment import pdf_python_command
 
 logger = logging.getLogger(__name__)
-_PROJECT = Path("/home/pancho/hermes-workspace/Contabot")
-_BATCH_ROOT = Path("/home/pancho/clientes/_recepcion_lotes")
+_PROJECT = Path.home() / "hermes-workspace/Contabot"
+_BATCH_ROOT = Path.home() / "clientes/_recepcion_lotes"
 _MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 
 
@@ -31,10 +33,11 @@ class BatchUploadRequest:
 
 
 class BatchPdfXlsxFlow:
-    def __init__(self, project_dir: Path = _PROJECT) -> None:
-        self.project_dir = Path(os.getenv("CONTA_PDF_ROUTER_PROJECT_DIR", str(project_dir)))
+    def __init__(self, project_dir: Path | None = None, *, runtime_python: Path | None = None) -> None:
+        self.project_dir = Path(project_dir) if project_dir is not None else Path(os.getenv("CONTA_PDF_ROUTER_PROJECT_DIR", str(_PROJECT)))
+        self.runtime_python = Path(runtime_python) if runtime_python is not None else None
         self.batch_root = Path(os.getenv("CONTABOT_BATCH_ROOT", str(_BATCH_ROOT)))
-        self.input_cache = Path(os.getenv("CONTABOT_BATCH_INPUT_CACHE_DIR", "/home/pancho/.hermes/cache/batch-pdf-xlsx-inputs"))
+        self.input_cache = Path(os.getenv("CONTABOT_BATCH_INPUT_CACHE_DIR", str(get_hermes_home() / "cache/batch-pdf-xlsx-inputs")))
         self.requests: dict[str, BatchUploadRequest] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
 
@@ -52,10 +55,7 @@ class BatchPdfXlsxFlow:
         return await adapter._bot.send_message(**kwargs)
 
     def _command(self, action: str, *arguments: str) -> list[str]:
-        uv = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))) / "bin" / "uv"
-        if not uv.is_file():
-            raise RuntimeError("batch_router_runtime_unavailable")
-        return [str(uv), "run", "--with", "pdfplumber", "--with", "openpyxl", "python3", "skills/accounting/pdf-contable-router/scripts/router.py", action, *arguments]
+        return pdf_python_command(self.runtime_python, "batch_router_runtime_unavailable") + ["skills/accounting/pdf-contable-router/scripts/router.py", action, *arguments]
 
     async def _run(self, key: str, command: list[str], progress: Callable[[str], Awaitable[None]] | None = None) -> dict[str, Any]:
         proc = await asyncio.create_subprocess_exec(*command, cwd=str(self.project_dir), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)

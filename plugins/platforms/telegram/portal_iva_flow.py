@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from hermes_constants import get_hermes_home
+from plugins.platforms.telegram.contabot_deployment import checked_python
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -64,8 +65,10 @@ class PortalIvaFlow:
     """Privileged Telegram flow; credentials are read only by portal_iva.py."""
 
     def __init__(self, *, executor: Path = _EXECUTOR, uv: Path = _UV,
-                 clients_root: Path = _CLIENTES_ROOT, captcha_root: Path = _CAPTCHA_ROOT) -> None:
+                 clients_root: Path = _CLIENTES_ROOT, captcha_root: Path = _CAPTCHA_ROOT,
+                 runtime_python: Path | None = None) -> None:
         self.executor = Path(executor)
+        self.runtime_python = Path(runtime_python) if runtime_python is not None else None
         self.uv = Path(uv)
         self.clients_root = Path(clients_root)
         self.captcha_root = Path(captcha_root)
@@ -76,7 +79,8 @@ class PortalIvaFlow:
         self.execution_lock_fds: dict[str, int] = {}
 
     def available(self) -> bool:
-        return fcntl is not None and self.executor.is_file() and self.uv.is_file() and self.clients_root.is_dir()
+        runtime = self.runtime_python if self.runtime_python is not None else self.uv
+        return fcntl is not None and self.executor.is_file() and runtime.is_file() and self.clients_root.is_dir()
 
     @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
@@ -326,10 +330,13 @@ class PortalIvaFlow:
             raise RuntimeError("PORTAL_IVA_RUNTIME_UNAVAILABLE")
         if operation not in {"generar", "descargar-presentados"}:
             raise RuntimeError("PORTAL_IVA_OPERATION_INVALID")
+        arguments = [str(self.executor), "--cliente", slug, "--periodo", period,
+                     "--operacion", operation, "--captcha-stdin"]
+        if self.runtime_python is not None:
+            return ["xvfb-run", "-a", checked_python(self.runtime_python), "-B", *arguments]
         return [
             str(self.uv), "run", "--with", "selenium", "xvfb-run", "-a",
-            "python3", str(self.executor), "--cliente", slug, "--periodo", period,
-            "--operacion", operation, "--captcha-stdin",
+            "python3", *arguments,
         ]
 
     def _acquire_execution_lock(self, key: str) -> None:
