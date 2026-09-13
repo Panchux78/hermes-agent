@@ -1,7 +1,7 @@
 """CCMA/SCT entry flows recovered from Lea's previous fiscal keyboard.
 
 Credential selection stays local; SCT runs directly, CCMA passes an opaque
-selection to its existing skill. This module does not register slash commands.
+selection to its local runner. Neither flow dispatches an agent turn.
 """
 from __future__ import annotations
 import asyncio
@@ -15,7 +15,6 @@ import sys
 import time
 from pathlib import Path as _Path
 from typing import Dict, Optional
-from gateway.platforms.base import MessageType
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from plugins.platforms.telegram.menu_buttons import menu_label
 
@@ -55,8 +54,6 @@ class FiscalQueryFlow:
         self._adapter = adapter
         self.send = adapter.send
         self.send_document = adapter.send_document
-        self.handle_message = adapter.handle_message
-        self._build_message_event = adapter._build_message_event
         self._background_tasks = adapter._background_tasks
 
     def _cancel_keyboard(self, state):
@@ -317,6 +314,25 @@ class FiscalQueryFlow:
         }
 
 
+    async def _start_ccma_dispatch(self, **kwargs):
+        from plugins.platforms.telegram.ccma_dispatch import run_ccma
+        key = kwargs['state_key']
+        if key in self._sct_dispatch_tasks and not self._sct_dispatch_tasks[key].done():
+            await self.send(kwargs['chat_id'], 'Ya hay una consulta en curso.')
+            return
+        await self.send(kwargs['chat_id'], 'Consulta CCMA iniciada. Consultando ARCA para el período solicitado…')
+        task = asyncio.create_task(run_ccma(self, **kwargs))
+        self._sct_dispatch_tasks[key] = task
+        self._background_tasks.add(task)
+        def done(finished):
+            self._background_tasks.discard(finished)
+            if self._sct_dispatch_tasks.get(key) is finished:
+                self._sct_dispatch_tasks.pop(key, None)
+                self._workflow_menu_state.pop(key, None)
+            if not finished.cancelled():
+                finished.exception()
+        task.add_done_callback(done)
+
     async def _start_sct_dispatch(
         self,
         *,
@@ -530,16 +546,10 @@ class FiscalQueryFlow:
             await self.send(chat_id, 'No pude revalidar el acceso. Probá nuevamente.')
             return True
         if state.skill_command == 'ccma_obligaciones_pagos':
-            self._workflow_menu_state.pop(state_key, None)
-            event = self._build_message_event(message, MessageType.COMMAND)
-            event.message_type = MessageType.COMMAND
-            event.text = (
-                '/ccma_obligaciones_pagos Ejecutar el flujo para:\n'
-                f'ARCA_CSV_LINE: {state.credential_line}\n'
-                f'Período: {period[0]}–{period[1]}\n'
-                'Resultado esperado: libro Excel de obligaciones y pagos'
-            )
-            await self.handle_message(event)
+            state.stage = 'running'
+            await self._start_ccma_dispatch(chat_id=chat_id, state_key=state_key,
+                credential_line=state.credential_line, credential_sha256=state.credential_sha256,
+                period_from=period[0], period_to=period[1])
         else:
             state.stage = 'running'
             await self._start_sct_dispatch(
