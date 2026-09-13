@@ -432,4 +432,10 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except ValueError as error:
+        if str(error) != 'ccma_amount_unreadable':
+            raise
+        print('result=ccma_amount_unreadable')
+        raise SystemExit(2)

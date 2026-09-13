@@ -1,6 +1,7 @@
 """Private fiscal menu dispatch, with synthetic taxpayer data only."""
 import asyncio
 import hashlib
+import sys
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
@@ -11,10 +12,14 @@ from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
 
 
 @pytest.fixture
-def flow():
+def flow(monkeypatch, tmp_path):
+    # These tests isolate menu/dispatch; real preflight has its own subprocess suite.
+    monkeypatch.setattr('plugins.platforms.telegram.fiscal_query_flow.require_fiscal_runtime', AsyncMock())
+    monkeypatch.setenv('CONTABOT_CLIENTES_ROOT', str(tmp_path/'clientes'))
     row = {'id': 3, 'nombre': 'Cliente de prueba', 'cuit': '20123456783', 'slug': 'cliente-prueba'}
     catalog = NS(_search=Mock(return_value=[row]), _by_id=Mock(return_value=[row]),
                  _query=Mock(return_value=[{'usuario': '20123456783'}]), _visible_cuit=lambda c: c)
+    catalog.runtime_python = sys.executable
     f = FiscalQueryFlow(catalog=catalog)
     adapter = NS(send=AsyncMock(), send_document=AsyncMock(), handle_message=AsyncMock(),
                  _bot=NS(send_message=AsyncMock()), _background_tasks=set(), _build_message_event=Mock(return_value=NS(text='')))
@@ -52,7 +57,8 @@ async def test_selection_period_and_private_dispatch(flow, action):
     assert kwargs['credential_sha256'] == 'a' * 64
     assert kwargs['period_from'] == ('01/2026' if action == 'ccma' else '20260000')
     if action == 'sct':
-        assert '20123456783' not in str(kwargs)
+        assert kwargs['client_slug'] == 'cliente-prueba'
+        assert kwargs['client_cuit'] == '20123456783'
 
 
 
@@ -135,6 +141,7 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
         period_from="20260000",
         period_until="20261231",
         period_label="2026",
+        client_slug="cliente-prueba", client_cuit="20123456783",
     )
 
     create_process.assert_awaited_once()
@@ -244,14 +251,16 @@ async def test_sct_dispatcher_builds_and_delivers_xlsx_without_model(flow, monke
         period_from="20260000",
         period_until="20261231",
         period_label="2026",
+        client_slug="cliente-prueba", client_cuit="20123456783",
     )
 
     assert create_process.await_count == 2
-    assert create_process.await_args_list[1].args[:2] == (str(uv), "run")
+    assert create_process.await_args_list[1].args[:2] == (sys.executable, "-B")
+    published = tmp_path/'clientes/cliente-prueba/20123456783/arca/2026/anual/consultas/cliente-prueba-sct-estado-cumplimiento-arca-2026.xlsx'
     flow.send_document.assert_awaited_once_with(
         chat_id="123",
-        file_path=str(xlsx_file),
-        file_name="sct_estado_cumplimiento.xlsx",
+        file_path=str(published),
+        file_name=published.name,
         caption="Estado de Cumplimiento SCT — consulta read-only.",
     )
     flow._adapter.handle_message.assert_not_awaited()

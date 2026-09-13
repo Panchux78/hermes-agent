@@ -18,6 +18,7 @@ from typing import Dict, Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
+from plugins.platforms.telegram.fiscal_runtime import browser_environment, require_fiscal_runtime, unavailable_message
 
 logger = logging.getLogger(__name__)
 _WORKFLOW_MENU_CANCEL = "✖️ Cancelar"
@@ -304,8 +305,7 @@ class FiscalQueryFlow:
     ) -> Dict[str, str]:
         """Build the complete, non-echoing environment passed to the SCT runner."""
         return {
-            "HOME": str(_Path.home()),
-            "HERMES_HOME": str(os.environ.get("HERMES_HOME", _Path.home() / ".hermes")),
+            **browser_environment(_Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes"))),
             "ARCA_CSV_FILE": str(credential_file if credential_file is not None else
                 os.environ.get("ARCA_CSV_FILE", _Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes")) / ".arca.csv")),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -352,6 +352,8 @@ class FiscalQueryFlow:
         period_from: str,
         period_until: str,
         period_label: str,
+        client_slug: str,
+        client_cuit: str,
     ) -> None:
         """Launch an SCT runner task directly, bypassing the general agent and its tools."""
         existing = self._sct_dispatch_tasks.get(state_key)
@@ -369,6 +371,8 @@ class FiscalQueryFlow:
                 period_from=period_from,
                 period_until=period_until,
                 period_label=period_label,
+                client_slug=client_slug,
+                client_cuit=client_cuit,
             )
         )
         self._sct_dispatch_tasks[state_key] = task
@@ -397,6 +401,8 @@ class FiscalQueryFlow:
         period_from: str,
         period_until: str,
         period_label: str,
+        client_slug: str,
+        client_cuit: str,
     ) -> None:
         """Execute and deliver the bounded SCT runner without involving an LLM."""
         hermes_home = _Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes"))
@@ -404,9 +410,21 @@ class FiscalQueryFlow:
         probe = skill_dir / "scripts" / "sct_probe.js"
         xlsx_builder = skill_dir / "scripts" / "sct_xlsx.py"
         node = shutil.which("node")
-        uv = hermes_home / "bin" / "uv"
-        if not node or not probe.is_file() or not xlsx_builder.is_file() or not uv.is_file():
-            await self.send(chat_id, "El runner SCT local no está disponible. No se inició ninguna consulta.")
+        python = getattr(self.catalog, 'runtime_python', None)
+        try:
+            if not xlsx_builder.is_file():
+                raise RuntimeError('fiscal_runtime_missing')
+            await require_fiscal_runtime(python, node, probe, hermes_home)
+        except RuntimeError as error:
+            await self.send(chat_id, unavailable_message('SCT', str(error)))
+            return
+        from plugins.platforms.telegram.ccma_artifact import sct_destination, publish_named
+        try:
+            destination_dir, destination_name = sct_destination(
+                _Path(os.environ.get('CONTABOT_CLIENTES_ROOT', _Path.home() / 'clientes')),
+                client_slug, client_cuit, period_mode, period_from, period_until)
+        except ValueError:
+            await self.send(chat_id, 'SCT no pudo verificar el contribuyente o período del archivo. No se consultó ARCA.')
             return
 
         xlsx_file, source_csv, login_screenshot, service_screenshot, result_screenshot = self._sct_dispatch_paths()
@@ -454,8 +472,8 @@ class FiscalQueryFlow:
             process = None
 
             process = await asyncio.create_subprocess_exec(
-                str(uv),
-                "run",
+                str(python),
+                "-B",
                 str(xlsx_builder),
                 str(source_csv),
                 str(xlsx_file),
@@ -472,10 +490,11 @@ class FiscalQueryFlow:
             if process.returncode != 0 or not xlsx_file.is_file():
                 await self.send(chat_id, "La fuente SCT se obtuvo, pero no se pudo generar el XLSX. No se entregó un archivo incompleto.")
                 return
+            xlsx_file = await asyncio.to_thread(publish_named, xlsx_file, destination_dir, destination_name)
             delivery = await self.send_document(
                 chat_id=chat_id,
                 file_path=str(xlsx_file),
-                file_name="sct_estado_cumplimiento.xlsx",
+                file_name=xlsx_file.name,
                 caption="Estado de Cumplimiento SCT — consulta read-only.",
             )
             if not delivery.success:
@@ -575,5 +594,6 @@ class FiscalQueryFlow:
             await self._start_sct_dispatch(
                 chat_id=chat_id, state_key=state_key,
                 credential_line=state.credential_line, credential_sha256=state.credential_sha256,
-                period_mode=period[0], period_from=period[1], period_until=period[2], period_label=text)
+                period_mode=period[0], period_from=period[1], period_until=period[2], period_label=text,
+                client_slug=state.slug, client_cuit=state.cuit)
         return True

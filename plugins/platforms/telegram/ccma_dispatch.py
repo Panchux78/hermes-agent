@@ -8,6 +8,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
+from plugins.platforms.telegram.fiscal_runtime import browser_environment, require_fiscal_runtime, unavailable_message
 
 
 async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha256, period_from, period_to, client_slug, client_cuit):
@@ -19,8 +20,10 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
     builder = Path(__file__).with_name('ccma_workbook.py')
     python = getattr(flow.catalog, 'runtime_python', None)
     node = shutil.which('node')
-    if not node or not probe.is_file() or not python or not Path(python).is_file():
-        await flow.send(chat_id, 'CCMA no pudo iniciarse: falta un componente del procedimiento.')
+    try:
+        await require_fiscal_runtime(python, node, probe, home)
+    except RuntimeError as error:
+        await flow.send(chat_id, unavailable_message('CCMA', str(error)))
         return
     root = Path.home() / 'hermes-workspace/output/private/ccma-runs'
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -34,7 +37,7 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         original = Path(os.environ.get('ARCA_CSV_FILE', home / '.arca.csv'))
         freeze_credentials(original, credential_copy, credential_sha256)
         credential_frozen = True
-        env = {'HOME': str(Path.home()), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8',
+        env = {**browser_environment(home),
                'ARCA_CSV_FILE': str(credential_copy), 'ARCA_CSV_LINE': str(credential_line),
                'ARCA_PERIOD_FROM': period_from, 'ARCA_PERIOD_TO': period_to,
                'ARCA_EXPORT_FILE': str(source)}
@@ -58,11 +61,14 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
                'CCMA_PERIOD_LABEL': f'{period_from}–{period_to}', 'CCMA_SOURCE_SHA256': digest,
                'CCMA_GENERATED_AT': datetime.now(timezone.utc).isoformat()}
         process = await asyncio.create_subprocess_exec(str(python), str(builder), env=env,
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
         flow._sct_dispatch_processes[state_key] = process
-        await asyncio.wait_for(process.communicate(), timeout=60)
+        builder_stdout, _ = await asyncio.wait_for(process.communicate(), timeout=60)
         if process.returncode != 0 or not workbook.is_file() or workbook.is_symlink():
-            await flow.send(chat_id, 'CCMA obtuvo una fuente nueva, pero falló la generación del Excel. No se entregó un archivo anterior.')
+            text = ('CCMA: la fuente tiene un importe ilegible; no se generó el libro. La fuente quedó preservada para revisión.'
+                    if builder_stdout.strip() == b'result=ccma_amount_unreadable'
+                    else 'CCMA obtuvo una fuente nueva, pero falló la generación del Excel. No se entregó un archivo anterior.')
+            await flow.send(chat_id, text)
             return
         workbook.chmod(0o600)
         workbook = await asyncio.to_thread(publish, workbook, clients_root, client_slug, client_cuit, period_from, period_to)

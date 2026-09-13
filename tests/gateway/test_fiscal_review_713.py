@@ -58,6 +58,7 @@ def test_sct_runner_uses_explicit_private_source(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('state', ['valid', 'changed', 'collision'])
 async def test_sct_freezes_selected_source_before_real_subprocess(tmp_path, monkeypatch, state):
+    monkeypatch.setattr(fiscal_module, 'require_fiscal_runtime', AsyncMock())
     home = tmp_path / 'profile'
     scripts = home / 'skills/productivity/sct-estado-cumplimiento/scripts'
     scripts.mkdir(parents=True)
@@ -97,7 +98,8 @@ async def test_sct_freezes_selected_source_before_real_subprocess(tmp_path, monk
         frozen.write_bytes(b'preexisting-owned-by-another-run')
     await flow._run_sct_dispatch(chat_id='synthetic', state_key=('0', '0'),
         credential_line=2, credential_sha256=expected, period_mode='empty',
-        period_from='', period_until='', period_label='')
+        period_from='', period_until='', period_label='',
+        client_slug='synthetic', client_cuit='00000000000')
     if state == 'valid':
         assert json.loads(observed.read_text()) == {
             'sha256':expected, 'path':str(frozen), 'profile':str(home), 'mode':0o600}
@@ -116,6 +118,7 @@ async def test_sct_freezes_selected_source_before_real_subprocess(tmp_path, monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize('operation', ['cancel', 'timeout'])
 async def test_ccma_stops_its_real_child(tmp_path, monkeypatch, operation):
+    monkeypatch.setattr(ccma_dispatch, 'require_fiscal_runtime', AsyncMock())
     libc=ctypes.CDLL(None,use_errno=True)
     previous=ctypes.c_int()
     assert libc.prctl(37,ctypes.byref(previous),0,0,0)==0
