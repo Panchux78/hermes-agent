@@ -3153,6 +3153,9 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             await self._await_disconnect_step(
                 asyncio.gather(*lifecycle_tasks, return_exceptions=True), _DISCONNECT_STEP_TIMEOUT, "lifecycle-task cancel")
         self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task")
+        menu = getattr(self, "_operational_menu", None)
+        if menu is not None:
+            await menu.flows["fq"].close()
         # Cancellation callbacks may have run while awaited; the fence stays authoritative.
         self._polling_progress_accepting = False
         self._send_path_degraded = True

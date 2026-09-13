@@ -63,13 +63,16 @@ def test_main_identity_icons_padding_and_distinct_portal_actions(menu):
     assert [r[0].text for r in menu.keyboard("organismos").inline_keyboard[:-1]] == [
         "🏛️  ARCA", "💵  AGIP" + "\u200a" * 2, "🪙  ARBA"]
     assert menu.keyboard("arca_consultar").inline_keyboard[0][0].callback_data == "pi:descargar"
+    assert [r[0].callback_data for r in menu.keyboard("arca_consultar").inline_keyboard[1:-1]] == ["fq:ccma", "fq:sct"]
+    assert [r[0].text for r in menu.keyboard("arca_consultar").inline_keyboard[1:-1]] == [
+        "📑  CCMA Obligaciones y pagos", "📊  SCT Estado de cumplimiento"]
     assert menu.keyboard("arca_preparar").inline_keyboard[0][0].callback_data == "pi:generar"
     assert "Lea" in menu.keyboard("ayuda").inline_keyboard[0][0].text
     assert not any(b.callback_data == "om:admin" for r in menu.keyboard().inline_keyboard for b in r)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("data", ["om:main", "oa:bcra:start", "pi:generar", "ad:start", "px:start"])
+@pytest.mark.parametrize("data", ["om:main", "oa:bcra:start", "pi:generar", "ad:start", "px:start", "fq:ccma", "fq:sct"])
 async def test_denied_callback_never_enters_workflow(menu, data):
     adapter = NS(_callback_authorized=AsyncMock(return_value=False))
     for flow in menu.flows.values():
@@ -91,7 +94,7 @@ async def test_admin_requires_exact_private_owner_even_with_allowlist(menu, uid,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("prefix", ["px","bx","ps","pi","ad","oa"])
+@pytest.mark.parametrize("prefix", ["px","bx","ps","pi","ad","oa","fq"])
 async def test_dispatches_existing_workflow_once(menu, prefix):
     flow = menu.flows[prefix]
     flow.callback = AsyncMock(return_value=True)

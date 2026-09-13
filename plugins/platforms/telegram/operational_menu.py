@@ -17,7 +17,9 @@ PAGES = {
     "organismos": ("Organismos fiscales\nElegí el organismo con el que necesitás operar.", "main", "Menú principal", [
         ("🏛️", "ARCA", "om:arca"), ("💵", "AGIP", "om:agip"), ("🪙", "ARBA", "om:arba")]),
     "arca_consultar": ("ARCA · Consultar", "arca", "ARCA", [
-        ("📥", "CSV de períodos presentados", "pi:descargar")]),
+        ("📥", "CSV de períodos presentados", "pi:descargar"),
+        ("📑", "CCMA Obligaciones y pagos", "fq:ccma"),
+        ("📊", "SCT Estado de cumplimiento", "fq:sct")]),
     "arca_preparar": ("ARCA · Preparar", "arca", "ARCA", [
         ("🧾", "Preparar período nuevo", "pi:generar")]),
     "agip_consultar": ("AGIP · Consultar", "agip", "AGIP", [
@@ -66,19 +68,22 @@ class OperationalMenu:
         from plugins.platforms.telegram.agip_ddjj_flow import AgipDdjjFlow
         from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
         from plugins.platforms.telegram.admin_maintenance_flow import AdminMaintenanceFlow
+        from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
         paths = deployment_paths(extra)
         required = {"project_dir", "runtime_python", "portal_iva_executor", "arca_map"}
         if set(paths) != required:
             raise ValueError("OPERATIONAL_MENU_PATHS_REQUIRED")
         project, runtime = paths["project_dir"], paths["runtime_python"]
         self.flows = {
-            "px": PdfXlsxFlow(router_project_dir=project, runtime_python=runtime),
+                        "px": PdfXlsxFlow(router_project_dir=project, runtime_python=runtime),
             "bx": BatchPdfXlsxFlow(project_dir=project, runtime_python=runtime),
             "ps": PdfSecurityFlow(),
             "ad": AgipDdjjFlow(worker=project / "scripts/agip-ddjj-worker.py", runtime_python=runtime),
             "pi": PortalIvaFlow(executor=paths["portal_iva_executor"], runtime_python=runtime),
             "oa": AdminMaintenanceFlow(project_dir=project, runtime_python=runtime, arca_map=paths["arca_map"]),
         }
+
+        self.flows["fq"] = FiscalQueryFlow(catalog=self.flows["pi"])
 
     def is_admin(self, user_id, chat_id, chat_type):
         return (self.technical_user.isdigit() and chat_type == "private"
@@ -147,7 +152,7 @@ class OperationalMenu:
         if (message.text or "").strip() in {menu_label("☰", "Menú"), "☰ Menú", "Menú"}:
             await self.open(message)
             return True
-        for prefix in ("ps", "ad", "pi"):
+        for prefix in ("fq", "ps", "ad", "pi"):
             if await self.flows[prefix].text(adapter, message):
                 return True
         return False
