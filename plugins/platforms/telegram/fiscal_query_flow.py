@@ -34,6 +34,8 @@ class _WorkflowMenuState:
     label: str
     nonce: str = dataclasses.field(default_factory=lambda: secrets.token_hex(5))
     contributor_id: Optional[int] = None
+    slug: Optional[str] = None
+    cuit: Optional[str] = None
     candidates: tuple[int, ...] = ()
     stage: str = "client"
     credential_line: Optional[int] = None
@@ -93,6 +95,7 @@ class FiscalQueryFlow:
             return False
         if self._workflow_menu_state.get(key) is not state:
             return False
+        state.slug, state.cuit = rows[0]["slug"], rows[0]["cuit"]
         state.contributor_id = item_id
         state.credential_line, state.credential_sha256 = binding
         state.stage = 'period'
@@ -549,7 +552,7 @@ class FiscalQueryFlow:
             state.stage = 'running'
             await self._start_ccma_dispatch(chat_id=chat_id, state_key=state_key,
                 credential_line=state.credential_line, credential_sha256=state.credential_sha256,
-                period_from=period[0], period_to=period[1])
+                period_from=period[0], period_to=period[1], client_slug=state.slug, client_cuit=state.cuit)
         else:
             state.stage = 'running'
             await self._start_sct_dispatch(

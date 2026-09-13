@@ -50,7 +50,8 @@ async def test_selection_period_and_private_dispatch(flow, action):
     kwargs = dispatch.await_args.kwargs
     assert kwargs['credential_sha256'] == 'a' * 64
     assert kwargs['period_from'] == ('01/2026' if action == 'ccma' else '20260000')
-    assert '20123456783' not in str(kwargs)
+    if action == 'sct':
+        assert '20123456783' not in str(kwargs)
 
 
 

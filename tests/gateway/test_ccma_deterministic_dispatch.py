@@ -19,14 +19,14 @@ async def test_repeated_scope_executes_twice_and_delivers_only_new_workbooks(tmp
     headers=['Detalle','Periodo','Impuesto','Concepto','Subpcto','Descripción','Fecha Movimiento','Debe','Haber','Saldo']
     import io
     content=io.StringIO();writer=csv.writer(content);writer.writerow(headers)
-    writer.writerow(['','Detalle','01/2025','20','19','19','Movimiento','01/01/2025','10,00','0,00','10,00'])
+    writer.writerow(['','Detalle','01/2025','20','19','19','Movimiento','01/01/2025','22,307.45','0.00','22,307.45'])
     source=content.getvalue()
     probe=scripts/'arca_ccma_probe.js'
     probe.write_text("const fs=require('fs'),crypto=require('crypto');const text="+json.dumps(source)+";fs.writeFileSync(process.env.ARCA_EXPORT_FILE,text,{mode:0o600});console.log('result=source_copied\\nsource_sha256='+crypto.createHash('sha256').update(text).digest('hex'));" )
     flow=NS(catalog=NS(runtime_python=sys.executable),send=AsyncMock(),send_document=AsyncMock(return_value=NS(success=True)),
             _sct_dispatch_processes={},_sct_runner_status=FiscalQueryFlow._sct_runner_status, handle_message=AsyncMock())
     kwargs=dict(chat_id='7',state_key=('7','7'),credential_line=2,
-                credential_sha256=hashlib.sha256(credentials.read_bytes()).hexdigest(),period_from='01/2025',period_to='12/2025')
+                credential_sha256=hashlib.sha256(credentials.read_bytes()).hexdigest(),period_from='01/2025',period_to='12/2025',client_slug='cliente-prueba',client_cuit='20123456783')
     await run_ccma(flow,**kwargs);await run_ccma(flow,**kwargs)
     assert flow.send_document.await_count==2
     files=[Path(c.kwargs['file_path']) for c in flow.send_document.await_args_list]
@@ -34,7 +34,18 @@ async def test_repeated_scope_executes_twice_and_delivers_only_new_workbooks(tmp
     for file in files:
         assert file.is_file() and file.stat().st_mode & 0o777 == 0o600
         assert not (file.parent/'access.csv').exists()
-        assert (file.parent/'fuente.csv').read_text() == source.replace('\r\n','\n')
+        from openpyxl import load_workbook
+        book=load_workbook(file,data_only=True)
+        assert book['Fuente CCMA']['I2'].value == 22307.45
+        assert book['Trabajo CCMA']['L2'].value == 22307.45
+        assert book['Obligaciones y Pagos']['H2'].value == 22307.45
+        assert book['Resumen']['B5'].value == 22307.45
+        book.close()
+    for run in (tmp_path/'hermes-workspace/output/private/ccma-runs').iterdir():
+        assert not (run/'access.csv').exists()
+        assert (run/'fuente.csv').read_text() == source.replace('\r\n','\n')
+    assert files[0].name == 'cliente-prueba-ccma-obligaciones-pagos-arca-2025.xlsx'
+    assert files[1].name.endswith('-v02.xlsx')
     flow.handle_message.assert_not_awaited()
     probe.write_text("console.log('result=runner_error')")
     await run_ccma(flow,**kwargs)

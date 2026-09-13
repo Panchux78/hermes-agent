@@ -10,7 +10,10 @@ import tempfile
 from datetime import datetime, timezone
 
 
-async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha256, period_from, period_to):
+async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha256, period_from, period_to, client_slug, client_cuit):
+    from plugins.platforms.telegram.ccma_artifact import destination, publish
+    clients_root = Path(os.environ.get('CONTABOT_CLIENTES_ROOT', Path.home() / 'clientes'))
+    destination(clients_root, client_slug, client_cuit, period_from, period_to)
     home = Path(os.environ.get('HERMES_HOME', Path.home() / '.hermes'))
     probe = home / 'skills/productivity/ccma-obligaciones-pagos/scripts/arca_ccma_probe.js'
     builder = Path(__file__).with_name('ccma_workbook.py')
@@ -70,6 +73,7 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
             await flow.send(chat_id, 'CCMA obtuvo una fuente nueva, pero falló la generación del Excel. No se entregó un archivo anterior.')
             return
         workbook.chmod(0o600)
+        workbook = await asyncio.to_thread(publish, workbook, clients_root, client_slug, client_cuit, period_from, period_to)
         delivery = await flow.send_document(chat_id=chat_id, file_path=str(workbook),
                     file_name=workbook.name, caption=f'CCMA — consulta nueva de {period_from} a {period_to}.')
         await flow.send(chat_id, 'Consulta CCMA finalizada. Se entregó el Excel de esta ejecución.' if delivery.success
