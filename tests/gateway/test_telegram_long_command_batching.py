@@ -22,6 +22,10 @@ def _make_adapter():
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
+    # These routing tests have no active accounting conversation.
+    adapter._pdf_security_flow = SimpleNamespace(text=AsyncMock(return_value=False))
+    adapter._agip_ddjj_flow = SimpleNamespace(text=AsyncMock(return_value=False))
+    adapter._portal_iva_flow = SimpleNamespace(text=AsyncMock(return_value=False))
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="fake-token", extra={})
     adapter._bot = SimpleNamespace(id=999, username="test_bot")

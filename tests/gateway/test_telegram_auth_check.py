@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 
 def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None, callback_auth=None, **extra_overrides):
@@ -29,6 +29,10 @@ def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None,
     extra.update(extra_overrides)
 
     adapter = object.__new__(TelegramAdapter)
+    # These routing tests have no active accounting conversation.
+    adapter._pdf_security_flow = SimpleNamespace(text=AsyncMock(return_value=False))
+    adapter._agip_ddjj_flow = SimpleNamespace(text=AsyncMock(return_value=False))
+    adapter._portal_iva_flow = SimpleNamespace(text=AsyncMock(return_value=False))
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="fake-token", extra=extra)
     adapter._bot = SimpleNamespace(id=999, username="test_bot")

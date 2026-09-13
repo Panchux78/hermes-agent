@@ -18,12 +18,11 @@ import pytest
 
 from gateway.config import PlatformConfig, Platform
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     SendResult,
     _reply_anchor_for_event,
     _thread_metadata_for_source,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import build_session_key
 
 
@@ -76,6 +75,8 @@ _fake_telegram.Bot = object
 _fake_telegram.Message = object
 _fake_telegram.InlineKeyboardButton = _FakeInlineKeyboardButton
 _fake_telegram.InlineKeyboardMarkup = _FakeInlineKeyboardMarkup
+_fake_telegram.KeyboardButton = _FakeInlineKeyboardButton
+_fake_telegram.ReplyKeyboardMarkup = lambda keyboard, **kwargs: SimpleNamespace(keyboard=keyboard, **kwargs)
 _fake_telegram.InputMediaPhoto = _FakeInputMediaPhoto
 _fake_telegram_error = types.ModuleType("telegram.error")
 _fake_telegram_error.NetworkError = FakeNetworkError
@@ -99,6 +100,7 @@ _fake_telegram_ext = types.ModuleType("telegram.ext")
 _fake_telegram_ext.Application = object
 _fake_telegram_ext.CommandHandler = object
 _fake_telegram_ext.CallbackQueryHandler = object
+_fake_telegram_ext.InlineQueryHandler = object
 _fake_telegram_ext.MessageHandler = object
 _fake_telegram_ext.TypeHandler = object
 _fake_telegram_ext.ContextTypes = SimpleNamespace(DEFAULT_TYPE=object)
@@ -722,5 +724,4 @@ async def test_thread_fallback_only_fires_once():
     # Second chunk: should use thread_id=None directly (effective_thread_id
     # was cleared per-chunk but the metadata doesn't change between chunks)
     # The key point: the message was delivered despite the invalid thread
-
 

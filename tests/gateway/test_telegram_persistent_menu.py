@@ -146,7 +146,8 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
             lambda text, callback_data: {"text": text, "callback_data": callback_data},
         )
         monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
-        monkeypatch.setattr(adapter_module.PortalIvaFlow, "available", lambda self: True)
+        from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
+        monkeypatch.setattr(PortalIvaFlow, "available", lambda self: True)
         query = SimpleNamespace(
             answer=AsyncMock(),
             message=SimpleNamespace(photo=[SimpleNamespace(file_id="avatar")]),
