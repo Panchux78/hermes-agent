@@ -54,7 +54,10 @@ async def test_selection_period_and_private_dispatch(flow, action):
     flow._adapter.handle_message.assert_not_awaited()
     dispatch = flow._start_ccma_dispatch if action == 'ccma' else flow._start_sct_dispatch
     kwargs = dispatch.await_args.kwargs
-    assert kwargs['credential_sha256'] == 'a' * 64
+    assert kwargs['credential_sha256'] is None
+    assert kwargs['contributor_id'] == 3
+    assert kwargs['holder_cuit'] == '20123456783'
+    flow._resolve_sct_credential_line.assert_not_awaited()
     assert kwargs['period_from'] == ('01/2026' if action == 'ccma' else '20260000')
     if action == 'sct':
         assert kwargs['client_slug'] == 'cliente-prueba'
@@ -171,6 +174,7 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
         "SCT_LOGIN_FAILURE_SCREENSHOT",
         "SCT_SERVICE_FAILURE_SCREENSHOT",
         "SCT_RESULT_SCREENSHOT",
+        "FISCAL_CAPTCHA_DIR",
     }
     assert not any(key.startswith("SCT_REQUESTED_") for key in environment)
     assert not any("CUIT" in key or "PASSWORD" in key or "CONTRASE" in key for key in environment)
@@ -290,7 +294,8 @@ async def test_multiple_candidates_require_current_offered_selection(flow, monke
     flow._resolve_sct_credential_line.assert_not_awaited()
     await flow.callback(flow._adapter,q,f'fq:select:{state.nonce}:3','7',None,'7')
     assert state.stage == 'period'
-    flow._resolve_sct_credential_line.assert_awaited_once()
+    flow._resolve_sct_credential_line.assert_not_awaited()
+    assert state.holder_cuit == '20123456783'
 
 
 @pytest.mark.asyncio

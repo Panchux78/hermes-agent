@@ -140,7 +140,7 @@ async def test_ccma_stops_its_real_child(tmp_path, monkeypatch, operation):
     monkeypatch.setattr(ccma_dispatch.shutil,'which',lambda name:sys.executable)
     real_wait_for=asyncio.wait_for
     async def short_timeout(aw,timeout):
-        return await real_wait_for(aw,timeout=2 if timeout==240 else timeout)
+        return await real_wait_for(aw,timeout=2 if timeout==1140 else timeout)
     if operation=='timeout': monkeypatch.setattr(asyncio,'wait_for',short_timeout)
     flow=NS(catalog=NS(runtime_python=sys.executable),send=AsyncMock(),send_document=AsyncMock(),
         _sct_dispatch_processes={},_sct_runner_status=FiscalQueryFlow._sct_runner_status)

@@ -9,9 +9,11 @@ import tempfile
 from datetime import datetime, timezone
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
 from plugins.platforms.telegram.fiscal_runtime import browser_environment, require_fiscal_runtime, unavailable_message
+from plugins.platforms.telegram.fiscal_credentials import canonical_access
+from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
 
 
-async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha256, period_from, period_to, client_slug, client_cuit):
+async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha256, period_from, period_to, client_slug, client_cuit, contributor_id=None, holder_cuit=None):
     from plugins.platforms.telegram.ccma_artifact import destination, publish
     clients_root = Path(os.environ.get('CONTABOT_CLIENTES_ROOT', Path.home() / 'clientes'))
     destination(clients_root, client_slug, client_cuit, period_from, period_to)
@@ -34,20 +36,33 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
     credential_frozen = False
     try:
         # Freeze the exact locally selected credential version for this runner.
-        original = Path(os.environ.get('ARCA_CSV_FILE', home / '.arca.csv'))
-        freeze_credentials(original, credential_copy, credential_sha256)
-        credential_frozen = True
+        initial = None
+        if contributor_id is not None:
+            initial = await canonical_access(contributor_id, client_cuit, client_slug, holder_cuit)
+        else:
+            original = Path(os.environ.get('ARCA_CSV_FILE', home / '.arca.csv'))
+            freeze_credentials(original, credential_copy, credential_sha256)
+            credential_frozen = True
         env = {**browser_environment(home),
                'ARCA_CSV_FILE': str(credential_copy), 'ARCA_CSV_LINE': str(credential_line),
                'ARCA_PERIOD_FROM': period_from, 'ARCA_PERIOD_TO': period_to,
                'ARCA_EXPORT_FILE': str(source)}
+        if contributor_id is not None:
+            env.pop('ARCA_CSV_FILE'); env.pop('ARCA_CSV_LINE')
+            env['FISCAL_CREDENTIAL_STDIN'] = '1'
+        env['FISCAL_CAPTCHA_DIR'] = str(run_dir)
         process = await asyncio.create_subprocess_exec(node, str(probe), cwd=str(probe.parent), env=env,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.PIPE, start_new_session=True)
         flow._sct_dispatch_processes[state_key] = process
-        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=240)
+        stdout = await interactive_communicate(flow, process, state_key, chat_id, run_dir, initial)
+        initial = None
         status = flow._sct_runner_status(stdout)
         if process.returncode != 0 or status != 'source_copied' or not source.is_file() or source.is_symlink():
-            await flow.send(chat_id, 'CCMA no completó la consulta a ARCA. No se generó ni se reenvió un libro anterior.')
+            message = ('No pude reconocer de forma única la tabla de movimientos de CCMA. Se requiere revisar el formato; no se generó un Excel.'
+                       if status == 'source_table_schema_unverified' else
+                       'CCMA no completó la consulta a ARCA. No se generó ni se reenvió un libro anterior.')
+            await flow.send(chat_id, message)
             return
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
         reported = re.search(rb'^source_sha256=([a-f0-9]{64})$', stdout, re.MULTILINE)
@@ -81,7 +96,7 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
     except asyncio.TimeoutError:
         await flow.send(chat_id, 'CCMA superó el tiempo máximo. No se entregó ningún libro anterior.')
     except ValueError:
-        await flow.send(chat_id, 'CCMA no pudo verificar la integridad del acceso o de la fuente. Iniciá una consulta nueva.')
+        await flow.send(chat_id, 'CCMA no pudo verificar el acceso, la fuente o el CAPTCHA. Iniciá una consulta nueva.')
     except Exception:
         await flow.send(chat_id, 'CCMA no pudo completar el procedimiento. No se entregó ningún libro anterior.')
     finally:

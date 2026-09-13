@@ -19,6 +19,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
 from plugins.platforms.telegram.fiscal_runtime import browser_environment, require_fiscal_runtime, unavailable_message
+from plugins.platforms.telegram.fiscal_credentials import canonical_access
+from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
 
 logger = logging.getLogger(__name__)
 _WORKFLOW_MENU_CANCEL = "✖️ Cancelar"
@@ -42,6 +44,10 @@ class _WorkflowMenuState:
     stage: str = "client"
     credential_line: Optional[int] = None
     credential_sha256: Optional[str] = None
+    holder_cuit: Optional[str] = None
+    captcha_response: Optional[asyncio.Future] = None
+    captcha_nonce: Optional[str] = None
+    captcha_message_id: Optional[int] = None
     period: Optional[str] = None
     started_monotonic: float = dataclasses.field(default_factory=time.monotonic)
 
@@ -91,15 +97,11 @@ class FiscalQueryFlow:
         if len(holders) != 1:
             await self.send(chat_id, 'No pude resolver un único acceso ARCA. Revisá la representación.')
             return False
-        binding = await self._resolve_sct_credential_line(holders[0]['usuario'], rows[0]['cuit'])
-        if not binding:
-            await self.send(chat_id, 'El contribuyente existe en la base, pero su acceso no coincide con el disponible para esta consulta. Revisá la configuración local.')
-            return False
         if self._workflow_menu_state.get(key) is not state:
             return False
         state.slug, state.cuit = rows[0]["slug"], rows[0]["cuit"]
         state.contributor_id = item_id
-        state.credential_line, state.credential_sha256 = binding
+        state.holder_cuit = holders[0]['usuario']
         state.stage = 'period'
         return True
 
@@ -108,7 +110,7 @@ class FiscalQueryFlow:
         key = (str(chat_id), str(user_id))
         action = data.partition(':')[2]
         state = self._workflow_menu_state.get(key)
-        if state and state.stage != 'running' and time.monotonic() - state.started_monotonic > _WORKFLOW_MENU_TIMEOUT_SECONDS:
+        if state and state.stage not in ('running', 'captcha') and time.monotonic() - state.started_monotonic > _WORKFLOW_MENU_TIMEOUT_SECONDS:
             self._workflow_menu_state.pop(key, None)
             state = None
         if action.startswith(('cancel:', 'select:')):
@@ -354,6 +356,8 @@ class FiscalQueryFlow:
         period_label: str,
         client_slug: str,
         client_cuit: str,
+        contributor_id: Optional[int] = None,
+        holder_cuit: Optional[str] = None,
     ) -> None:
         """Launch an SCT runner task directly, bypassing the general agent and its tools."""
         existing = self._sct_dispatch_tasks.get(state_key)
@@ -373,6 +377,7 @@ class FiscalQueryFlow:
                 period_label=period_label,
                 client_slug=client_slug,
                 client_cuit=client_cuit,
+                contributor_id=contributor_id, holder_cuit=holder_cuit,
             )
         )
         self._sct_dispatch_tasks[state_key] = task
@@ -403,6 +408,8 @@ class FiscalQueryFlow:
         period_label: str,
         client_slug: str,
         client_cuit: str,
+        contributor_id: Optional[int] = None,
+        holder_cuit: Optional[str] = None,
     ) -> None:
         """Execute and deliver the bounded SCT runner without involving an LLM."""
         hermes_home = _Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes"))
@@ -446,20 +453,32 @@ class FiscalQueryFlow:
         process: Optional[asyncio.subprocess.Process] = None
         credential_frozen = False
         try:
-            freeze_credentials(_Path(os.environ.get('ARCA_CSV_FILE', hermes_home / '.arca.csv')),
-                               credential_copy, credential_sha256)
-            credential_frozen = True
+            initial = None
+            if contributor_id is not None:
+                initial = await canonical_access(contributor_id, client_cuit, client_slug, holder_cuit)
+                for name in ('ARCA_CSV_FILE', 'ARCA_CSV_LINE', 'ARCA_CSV_SHA256'):
+                    environment.pop(name, None)
+                environment['FISCAL_CREDENTIAL_STDIN'] = '1'
+            else:  # explicit legacy caller only; Telegram always supplies contributor_id
+                freeze_credentials(_Path(os.environ.get('ARCA_CSV_FILE', hermes_home / '.arca.csv')),
+                                   credential_copy, credential_sha256)
+                credential_frozen = True
+            captcha_dir = source_csv.parent / (source_csv.stem + '-captcha')
+            captcha_dir.mkdir(mode=0o700)
+            environment['FISCAL_CAPTCHA_DIR'] = str(captcha_dir)
             process = await asyncio.create_subprocess_exec(
                 node,
                 str(probe),
                 cwd=str(skill_dir),
                 env=environment,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
             self._sct_dispatch_processes[state_key] = process
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=_SCT_DISPATCH_TIMEOUT_SECONDS)
+            stdout = await interactive_communicate(self, process, state_key, chat_id, captcha_dir, initial)
+            initial = None
             status = self._sct_runner_status(stdout)
             if process.returncode != 0 or status is None:
                 await self.send(chat_id, "El runner SCT terminó sin un estado verificable. No se entregó ningún resultado.")
@@ -506,9 +525,11 @@ class FiscalQueryFlow:
         except asyncio.CancelledError:
             raise
         except ValueError:
-            await self.send(chat_id, 'SCT no pudo verificar el acceso seleccionado. Iniciá una consulta nueva.')
+            await self.send(chat_id, 'SCT no pudo verificar el acceso o el CAPTCHA. Iniciá una consulta nueva.')
         except OSError:
-            await self.send(chat_id, "No se pudo iniciar el runner SCT local. No se inició ninguna consulta.")
+            await self.send(chat_id, 'SCT no pudo completar la consulta por un error local. No se entregó un archivo incompleto.')
+        except Exception:
+            await self.send(chat_id, 'SCT no pudo completar la consulta por un error técnico. No se informó una entrega inexistente.')
         finally:
             try:
                 await terminate_owned_group(process)
@@ -543,7 +564,7 @@ class FiscalQueryFlow:
         state = self._workflow_menu_state.get(state_key)
         if state is None:
             return False
-        if state.stage != 'running' and time.monotonic() - state.started_monotonic > _WORKFLOW_MENU_TIMEOUT_SECONDS:
+        if state.stage not in ('running', 'captcha') and time.monotonic() - state.started_monotonic > _WORKFLOW_MENU_TIMEOUT_SECONDS:
             self._workflow_menu_state.pop(state_key, None)
             await self.send(
                 chat_id,
@@ -551,6 +572,16 @@ class FiscalQueryFlow:
             )
             return True
 
+        if state.stage == 'captcha':
+            reply = getattr(message, 'reply_to_message', None)
+            if (state.captcha_message_id is None
+                    or getattr(reply, 'message_id', None) != state.captcha_message_id):
+                await self.send(chat_id, 'Respondé a la imagen del CAPTCHA vigente, no a una anterior.')
+            elif not re.fullmatch(r'[A-Za-z0-9]{4,20}', text):
+                await self.send(chat_id, 'Ingresá sólo los caracteres del CAPTCHA (sin espacios).')
+            elif state.captcha_response is not None and not state.captcha_response.done():
+                state.captcha_response.set_result(text)
+            return True
         if state.stage == 'running':
             await self.send(chat_id, 'La consulta ya está en ejecución.')
             return True
@@ -588,12 +619,14 @@ class FiscalQueryFlow:
             state.stage = 'running'
             await self._start_ccma_dispatch(chat_id=chat_id, state_key=state_key,
                 credential_line=state.credential_line, credential_sha256=state.credential_sha256,
+                contributor_id=state.contributor_id, holder_cuit=state.holder_cuit,
                 period_from=period[0], period_to=period[1], client_slug=state.slug, client_cuit=state.cuit)
         else:
             state.stage = 'running'
             await self._start_sct_dispatch(
                 chat_id=chat_id, state_key=state_key,
                 credential_line=state.credential_line, credential_sha256=state.credential_sha256,
+                contributor_id=state.contributor_id, holder_cuit=state.holder_cuit,
                 period_mode=period[0], period_from=period[1], period_until=period[2], period_label=text,
                 client_slug=state.slug, client_cuit=state.cuit)
         return True
