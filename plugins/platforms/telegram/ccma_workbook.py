@@ -135,6 +135,14 @@ def parse_amount(value: str) -> float | None:
     return -abs(amount) if negative else amount
 
 
+def append_literal_row(sheet, values):
+    """Only code-generated formulas may execute; source text stays literal."""
+    sheet.append(values)
+    for cell in sheet[sheet.max_row]:
+        if isinstance(cell.value, str):
+            cell.data_type = 's'
+
+
 def set_table_style(ws, header_row: int, widths: dict[int, float], freeze: str = 'A2'):
     header_fill = PatternFill('solid', fgColor=NAVY)
     header_font = Font(name='Arial', size=10, bold=True, color=WHITE)
@@ -182,12 +190,11 @@ def main() -> None:
             normalized = raw_row[-len(SOURCE_HEADERS):]
             amounts = tuple(parse_amount(normalized[column]) for column in (7, 8, 9))
             invalid_numeric = any(amount is None for amount in amounts)
-            status = 'ambiguous' if invalid_numeric else 'unmapped'
-            reference = (
-                'Fila de 11 celdas alineada por las últimas 10 con el encabezado exportado; importe no normalizable.'
-                if invalid_numeric
-                else 'Fila de 11 celdas alineada por las últimas 10 con el encabezado exportado; sin mapeo fiscal confirmado.'
-            )
+            if invalid_numeric:
+                # Do not publish zero-valued obligations/caches for an unknown amount.
+                raise ValueError('ccma_amount_unreadable')
+            status = 'unmapped'
+            reference = 'Fila de 11 celdas alineada por las últimas 10 con el encabezado exportado; sin mapeo fiscal confirmado.'
             derived_id = f'DER-{source_index:04d}'
         else:
             normalized = [''] * len(SOURCE_HEADERS)
@@ -225,7 +232,7 @@ def main() -> None:
                 value = parse_amount(row[col])
                 if value is not None:
                     displayed[col] = value
-        source_ws.append(displayed)
+        append_literal_row(source_ws, displayed)
     for row in source_ws.iter_rows(min_row=2, min_col=9, max_col=11):
         for cell in row:
             if isinstance(cell.value, (int, float)):
@@ -251,7 +258,7 @@ def main() -> None:
         source_row = record['source_index'] + 1
         source_id = f'SRC-{record["source_index"]:04d}'
         derived_id = record['derived_id']
-        work_ws.append([
+        append_literal_row(work_ws, [
             source_id, source_row, row[1], row[2], row[3], row[4], row[5], row[6],
             *(amounts[i] if amounts[i] is not None else row[7+i] for i in range(3)),
             amounts[0], amounts[1], amounts[2],
@@ -359,7 +366,7 @@ def main() -> None:
         ('Acciones excluidas', 'No se generó VEP, pago, reimputación, compensación ni presentación.'),
     ]
     for row in metadata:
-        meta_ws.append(row)
+        append_literal_row(meta_ws, row)
     set_table_style(meta_ws, 1, {1: 36, 2: 98})
     for row in meta_ws.iter_rows(min_row=2):
         row[1].alignment = Alignment(wrap_text=True, vertical='top')

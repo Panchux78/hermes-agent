@@ -17,6 +17,7 @@ from pathlib import Path as _Path
 from typing import Dict, Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
 
 logger = logging.getLogger(__name__)
 _WORKFLOW_MENU_CANCEL = "✖️ Cancelar"
@@ -299,10 +300,14 @@ class FiscalQueryFlow:
         login_screenshot: _Path,
         service_screenshot: _Path,
         result_screenshot: _Path,
+        credential_file: Optional[_Path] = None,
     ) -> Dict[str, str]:
         """Build the complete, non-echoing environment passed to the SCT runner."""
         return {
             "HOME": str(_Path.home()),
+            "HERMES_HOME": str(os.environ.get("HERMES_HOME", _Path.home() / ".hermes")),
+            "ARCA_CSV_FILE": str(credential_file if credential_file is not None else
+                os.environ.get("ARCA_CSV_FILE", _Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes")) / ".arca.csv")),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "LANG": os.environ.get("LANG", "C.UTF-8"),
             "ARCA_CSV_LINE": str(credential_line),
@@ -405,6 +410,7 @@ class FiscalQueryFlow:
             return
 
         xlsx_file, source_csv, login_screenshot, service_screenshot, result_screenshot = self._sct_dispatch_paths()
+        credential_copy = source_csv.with_suffix('.access.csv')
         source_csv.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         xlsx_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         environment = self._sct_runner_env(
@@ -417,9 +423,14 @@ class FiscalQueryFlow:
             login_screenshot=login_screenshot,
             service_screenshot=service_screenshot,
             result_screenshot=result_screenshot,
+            credential_file=credential_copy,
         )
         process: Optional[asyncio.subprocess.Process] = None
+        credential_frozen = False
         try:
+            freeze_credentials(_Path(os.environ.get('ARCA_CSV_FILE', hermes_home / '.arca.csv')),
+                               credential_copy, credential_sha256)
+            credential_frozen = True
             process = await asyncio.create_subprocess_exec(
                 node,
                 str(probe),
@@ -427,6 +438,7 @@ class FiscalQueryFlow:
                 env=environment,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
             )
             self._sct_dispatch_processes[state_key] = process
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=_SCT_DISPATCH_TIMEOUT_SECONDS)
@@ -437,6 +449,9 @@ class FiscalQueryFlow:
             if status != "sct_exported":
                 await self.send(chat_id, f"La consulta SCT terminó sin exportación: `{status}`. Revisá la evidencia privada.")
                 return
+
+            await terminate_owned_group(process)
+            process = None
 
             process = await asyncio.create_subprocess_exec(
                 str(uv),
@@ -450,6 +465,7 @@ class FiscalQueryFlow:
                 env={"HOME": str(_Path.home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": os.environ.get("LANG", "C.UTF-8")},
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
             )
             self._sct_dispatch_processes[state_key] = process
             await asyncio.wait_for(process.communicate(), timeout=60)
@@ -467,19 +483,20 @@ class FiscalQueryFlow:
                 return
             await self.send(chat_id, "Consulta SCT finalizada. Se entregó el XLSX; la fuente y evidencias quedan privadas.")
         except asyncio.TimeoutError:
-            if process is not None and process.returncode is None:
-                process.kill()
-                await process.wait()
             await self.send(chat_id, "La consulta SCT excedió el límite de ejecución y fue detenida. No se entregó ningún resultado.")
         except asyncio.CancelledError:
-            if process is not None and process.returncode is None:
-                process.kill()
-                await process.wait()
             raise
+        except ValueError:
+            await self.send(chat_id, 'SCT no pudo verificar el acceso seleccionado. Iniciá una consulta nueva.')
         except OSError:
             await self.send(chat_id, "No se pudo iniciar el runner SCT local. No se inició ninguna consulta.")
         finally:
-            self._sct_dispatch_processes.pop(state_key, None)
+            try:
+                await terminate_owned_group(process)
+            finally:
+                if credential_frozen:
+                    credential_copy.unlink(missing_ok=True)
+                self._sct_dispatch_processes.pop(state_key, None)
 
 
     async def _handle_workflow_menu_text(self, message: Message) -> bool:

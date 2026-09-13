@@ -5,9 +5,9 @@ import os
 from pathlib import Path
 import re
 import shutil
-import stat
 import tempfile
 from datetime import datetime, timezone
+from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
 
 
 async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha256, period_from, period_to, client_slug, client_cuit):
@@ -28,28 +28,18 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
     source, workbook = run_dir / 'fuente.csv', run_dir / 'ccma_obligaciones_pagos.xlsx'
     process = None
     credential_copy = run_dir / 'access.csv'
+    credential_frozen = False
     try:
         # Freeze the exact locally selected credential version for this runner.
         original = Path(os.environ.get('ARCA_CSV_FILE', home / '.arca.csv'))
-        fd = os.open(original, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, 'rb') as handle:
-            info = os.fstat(handle.fileno())
-            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.getuid():
-                raise ValueError('credential_permissions')
-            raw = handle.read()
-        if hashlib.sha256(raw).hexdigest() != credential_sha256:
-            await flow.send(chat_id, 'CCMA no se inició: cambió el acceso seleccionado. Iniciá una consulta nueva.')
-            return
-        fd = os.open(credential_copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'wb') as handle:
-            handle.write(raw)
-        del raw
+        freeze_credentials(original, credential_copy, credential_sha256)
+        credential_frozen = True
         env = {'HOME': str(Path.home()), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8',
                'ARCA_CSV_FILE': str(credential_copy), 'ARCA_CSV_LINE': str(credential_line),
                'ARCA_PERIOD_FROM': period_from, 'ARCA_PERIOD_TO': period_to,
                'ARCA_EXPORT_FILE': str(source)}
         process = await asyncio.create_subprocess_exec(node, str(probe), cwd=str(probe.parent), env=env,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
         flow._sct_dispatch_processes[state_key] = process
         stdout, _ = await asyncio.wait_for(process.communicate(), timeout=240)
         status = flow._sct_runner_status(stdout)
@@ -61,12 +51,14 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         if not reported or reported.group(1).decode() != digest:
             raise ValueError('source_integrity')
         source.chmod(0o600)
+        await terminate_owned_group(process)
+        process = None
         env = {'HOME': str(Path.home()), 'PATH': os.environ.get('PATH','/usr/bin:/bin'), 'LANG':'C.UTF-8',
                'CCMA_SOURCE_FILE': str(source), 'CCMA_WORKBOOK_FILE': str(workbook),
                'CCMA_PERIOD_LABEL': f'{period_from}–{period_to}', 'CCMA_SOURCE_SHA256': digest,
                'CCMA_GENERATED_AT': datetime.now(timezone.utc).isoformat()}
         process = await asyncio.create_subprocess_exec(str(python), str(builder), env=env,
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
         flow._sct_dispatch_processes[state_key] = process
         await asyncio.wait_for(process.communicate(), timeout=60)
         if process.returncode != 0 or not workbook.is_file() or workbook.is_symlink():
@@ -82,11 +74,14 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         raise
     except asyncio.TimeoutError:
         await flow.send(chat_id, 'CCMA superó el tiempo máximo. No se entregó ningún libro anterior.')
+    except ValueError:
+        await flow.send(chat_id, 'CCMA no pudo verificar la integridad del acceso o de la fuente. Iniciá una consulta nueva.')
     except Exception:
         await flow.send(chat_id, 'CCMA no pudo completar el procedimiento. No se entregó ningún libro anterior.')
     finally:
-        if process is not None and process.returncode is None:
-            process.kill()
-            await process.wait()
-        credential_copy.unlink(missing_ok=True)
-        flow._sct_dispatch_processes.pop(state_key, None)
+        try:
+            await terminate_owned_group(process)
+        finally:
+            if credential_frozen:
+                credential_copy.unlink(missing_ok=True)
+            flow._sct_dispatch_processes.pop(state_key, None)

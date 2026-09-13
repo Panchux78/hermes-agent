@@ -1,5 +1,6 @@
 """Private fiscal menu dispatch, with synthetic taxpayer data only."""
 import asyncio
+import hashlib
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
@@ -100,6 +101,11 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
     uv.parent.mkdir()
     uv.touch()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    access = hermes_home / '.arca.csv'
+    access.write_bytes(b'synthetic-only')
+    access.chmod(0o600)
+    credential_sha256 = hashlib.sha256(access.read_bytes()).hexdigest()
+    monkeypatch.setattr(fiscal_module, 'terminate_owned_group', AsyncMock())
     monkeypatch.setattr(
         fiscal_module.shutil,
         "which",
@@ -124,7 +130,7 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
         chat_id="123",
         state_key=("123", "456"),
         credential_line=3,
-        credential_sha256="a" * 64,
+        credential_sha256=credential_sha256,
         period_mode="range",
         period_from="20260000",
         period_until="20261231",
@@ -136,12 +142,17 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
     environment = create_process.await_args.kwargs["env"]
     assert command[0:2] == ("/fake/node", str(probe))
     assert environment["ARCA_CSV_LINE"] == "3"
-    assert environment["ARCA_CSV_SHA256"] == "a" * 64
+    assert environment["ARCA_CSV_SHA256"] == credential_sha256
+    assert environment['ARCA_CSV_FILE'] == str(tmp_path / 'private/source.access.csv')
+    assert environment['HERMES_HOME'] == str(hermes_home)
+    assert not (tmp_path / 'private/source.access.csv').exists()
     assert environment["SCT_PERIOD_MODE"] == "range"
     assert environment["SCT_PERIOD_FROM"] == "20260000"
     assert environment["SCT_PERIOD_UNTIL"] == "20261231"
     assert set(environment) == {
         "HOME",
+        "HERMES_HOME",
+        "ARCA_CSV_FILE",
         "PATH",
         "LANG",
         "ARCA_CSV_LINE",
@@ -198,6 +209,11 @@ async def test_sct_dispatcher_builds_and_delivers_xlsx_without_model(flow, monke
         ]
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    access = hermes_home / '.arca.csv'
+    access.write_bytes(b'synthetic-only')
+    access.chmod(0o600)
+    credential_sha256 = hashlib.sha256(access.read_bytes()).hexdigest()
+    monkeypatch.setattr(fiscal_module, 'terminate_owned_group', AsyncMock())
     monkeypatch.setattr(
         fiscal_module.shutil,
         "which",
@@ -223,7 +239,7 @@ async def test_sct_dispatcher_builds_and_delivers_xlsx_without_model(flow, monke
         chat_id="123",
         state_key=("123", "456"),
         credential_line=3,
-        credential_sha256="a" * 64,
+        credential_sha256=credential_sha256,
         period_mode="range",
         period_from="20260000",
         period_until="20261231",
