@@ -327,6 +327,7 @@ from plugins.platforms.telegram.batch_pdf_xlsx_flow import BatchPdfXlsxFlow
 from plugins.platforms.telegram.pdf_security_flow import PdfSecurityFlow
 from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
 from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
+from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
 from plugins.platforms.telegram.contabot_deployment import deployment_paths
 from utils import atomic_replace, env_float, env_int
 
@@ -773,6 +774,7 @@ class TelegramAdapter(BasePlatformAdapter):
             runtime_python=runtime,
             **({"executor": paths["portal_iva_executor"]} if "portal_iva_executor" in paths else {}),
         )
+        self._fiscal_query_flow = FiscalQueryFlow(catalog=self._portal_iva_flow)
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -1411,6 +1413,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 ],
             ]
+            rows.extend([[InlineKeyboardButton(aligned_menu_label(page, icon, label), callback_data=data)]
+                         for icon, label, data in [("📑", "CCMA Obligaciones y pagos", "fq:ccma"),
+                                                   ("📊", "SCT Estado de cumplimiento", "fq:sct")]])
             back_label = menu_label("‹", "ARCA")
             back_page = "arca"
         elif page == "arca_preparar":
@@ -5373,6 +5378,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # the reconnect watcher from acquiring it (#80598). The rest of teardown
         # is best-effort against a half-dead transport.
         self._release_platform_lock()
+        await self._fiscal_query_flow.close()
 
         # Recovery can be suspended in stop/drain/start while disconnect begins.
         # Cancel and await both polling lifecycle owners immediately after the
@@ -7530,6 +7536,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 self, query, data, query_chat_id, query_thread_id, caller_id
             ):
                 return
+
+        if data.startswith("fq:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if str(query_chat_type) != "private" or not self._is_callback_user_authorized(
+                caller_id, chat_id=query_chat_id, chat_type=str(query_chat_type),
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="Usá esta opción en tu chat privado autorizado.")
+                return
+            await self._fiscal_query_flow.callback(self, query, data, query_chat_id, query_thread_id, caller_id)
+            return
 
         # --- Descarga Portal IVA ---
         if data.startswith("pi:"):
@@ -10069,6 +10087,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if msg.text in {"☰ Menú", menu_label("☰", "Menú")}:
             await self._reply_operational_menu(msg, context.bot)
+            return
+        if await self._fiscal_query_flow.text(self, msg):
             return
         if await self._pdf_security_flow.text(self, msg):
             return
