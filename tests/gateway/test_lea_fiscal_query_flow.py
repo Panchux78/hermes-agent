@@ -37,25 +37,21 @@ async def test_selection_period_and_private_dispatch(flow, action):
     flow._resolve_ccma_credential_line = AsyncMock(return_value=3)
     flow._resolve_sct_credential_line = AsyncMock(return_value=(3, 'a' * 64))
     flow._start_sct_dispatch = AsyncMock()
+    flow._start_ccma_dispatch = AsyncMock()
     await start(flow, action)
     assert not await flow.text(flow._adapter, message('20123456783', uid=8))
     for text in ('cliente-prueba', 'invalid'):
         assert await flow.text(flow._adapter, message(text))
-    flow.handle_message.assert_not_awaited()
+    flow._adapter.handle_message.assert_not_awaited()
     flow._start_sct_dispatch.assert_not_awaited()
     assert await flow.text(flow._adapter, message('2026'))
-    if action == 'ccma':
-        event = flow.handle_message.await_args.args[0]
-        assert event.message_type == MessageType.COMMAND
-        assert 'ARCA_CSV_LINE: 3' in event.text
-        assert '20123456783' not in event.text
-    else:
-        flow.handle_message.assert_not_awaited()
-        kwargs = flow._start_sct_dispatch.await_args.kwargs
-        assert kwargs['credential_sha256'] == 'a' * 64
-        assert kwargs['period_from'] == '20260000'
-        assert '20123456783' not in str(kwargs)
-    assert not flow._workflow_menu_state or action == "sct"
+    flow._adapter.handle_message.assert_not_awaited()
+    dispatch = flow._start_ccma_dispatch if action == 'ccma' else flow._start_sct_dispatch
+    kwargs = dispatch.await_args.kwargs
+    assert kwargs['credential_sha256'] == 'a' * 64
+    assert kwargs['period_from'] == ('01/2026' if action == 'ccma' else '20260000')
+    assert '20123456783' not in str(kwargs)
+
 
 
 @pytest.mark.asyncio
@@ -159,7 +155,7 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
     }
     assert not any(key.startswith("SCT_REQUESTED_") for key in environment)
     assert not any("CUIT" in key or "PASSWORD" in key or "CONTRASE" in key for key in environment)
-    flow.handle_message.assert_not_awaited()
+    flow._adapter.handle_message.assert_not_awaited()
     flow.send.assert_awaited_once_with(
         "123",
         "La consulta SCT terminó sin exportación: `sct_handoff_login_not_verified`. Revisá la evidencia privada.",
@@ -241,7 +237,7 @@ async def test_sct_dispatcher_builds_and_delivers_xlsx_without_model(flow, monke
         file_name="sct_estado_cumplimiento.xlsx",
         caption="Estado de Cumplimiento SCT — consulta read-only.",
     )
-    flow.handle_message.assert_not_awaited()
+    flow._adapter.handle_message.assert_not_awaited()
     flow.send.assert_awaited_once_with(
         "123",
         "Consulta SCT finalizada. Se entregó el XLSX; la fuente y evidencias quedan privadas.",
@@ -304,4 +300,4 @@ async def test_no_match_or_database_failure_keeps_search_stage(flow):
     flow.catalog._search.side_effect=RuntimeError('private database detail')
     await flow.text(flow._adapter,message('otro'))
     assert 'private database detail' not in flow.send.await_args.args[1]
-    flow.handle_message.assert_not_awaited()
+    flow._adapter.handle_message.assert_not_awaited()
