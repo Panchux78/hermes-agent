@@ -135,7 +135,8 @@ async def test_ccma_stops_its_real_child(tmp_path, monkeypatch, operation):
     (scripts/'arca_ccma_probe.js').write_text('import subprocess,sys,time,pathlib\n'
         f'p=subprocess.Popen([sys.executable,"-c",{child_code!r}],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n'
         f'while not pathlib.Path({str(child_ready)!r}).exists(): time.sleep(.01)\n'
-        f'pathlib.Path({str(child_file)!r}).write_text(str(p.pid))\n'
+        f'pid_path=pathlib.Path({str(child_file)!r}); pid_tmp=pid_path.with_suffix(".tmp")\n'
+        'pid_tmp.write_text(str(p.pid)); pid_tmp.replace(pid_path)\n'
         'time.sleep(30)\n')
     monkeypatch.setattr(ccma_dispatch.shutil,'which',lambda name:sys.executable)
     real_wait_for=asyncio.wait_for

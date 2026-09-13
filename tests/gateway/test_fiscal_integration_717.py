@@ -47,7 +47,7 @@ async def test_missing_profile_has_no_privileged_or_csv_fallback(monkeypatch):
     monkeypatch.setitem(sys.modules, 'contabot_pg', NS(psql_invocation=unavailable))
     child = AsyncMock()
     monkeypatch.setattr(credentials.asyncio, 'create_subprocess_exec', child)
-    with pytest.raises(ValueError, match='canonical_access_unavailable'):
+    with pytest.raises(credentials.FiscalDatabaseError, match='fiscal_database_unavailable'):
         await credentials.canonical_access(8, '20987654321', 'synthetic-client', '20123456783')
     child.assert_not_awaited()
 
@@ -134,6 +134,7 @@ def test_captcha_image_containment(tmp_path, kind):
 @pytest.mark.parametrize('operation', ['ccma','sct'])
 async def test_dispatch_uses_private_stdin_and_never_a_csv(tmp_path,monkeypatch,operation):
     from plugins.platforms.telegram import ccma_dispatch, fiscal_query_flow
+    monkeypatch.setattr('plugins.platforms.telegram.fiscal_runtime.require_fiscal_database', AsyncMock())
     home=tmp_path/'profile'; scripts=home/'skills/productivity'/('ccma-obligaciones-pagos' if operation=='ccma' else 'sct-estado-cumplimiento')/'scripts'
     scripts.mkdir(parents=True)
     marker=tmp_path/'pipe-checked'

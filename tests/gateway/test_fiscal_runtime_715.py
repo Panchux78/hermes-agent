@@ -24,12 +24,12 @@ async def test_preflight_checks_selected_python_without_installing(tmp_path, mon
     probe.write_text("if(process.argv[2]!=='--preflight')process.exit(9);console.log('result=fiscal_runtime_ready')")
     node = shutil.which('node')
     assert node, 'offline Node runtime required for this suite'
-    await require_fiscal_runtime(sys.executable, node, probe, tmp_path)
+    await require_fiscal_runtime(sys.executable, node, probe, tmp_path, canonical=False)
     monkeypatch.setenv('PLAYWRIGHT_BROWSERS_PATH',str(tmp_path/'browser-cache'))
     import json
     probe.write_text("if(process.env.PLAYWRIGHT_BROWSERS_PATH!=="+
         json.dumps(str(tmp_path/'browser-cache'))+")process.exit(9);console.log('result=fiscal_runtime_ready')")
-    await require_fiscal_runtime(sys.executable, node, probe, tmp_path)
+    await require_fiscal_runtime(sys.executable, node, probe, tmp_path, canonical=False)
     flow = FiscalQueryFlow()
     environment = flow._sct_runner_env(credential_line=2,credential_sha256='0'*64,period_mode='empty',
         period_from='',period_until='',source_csv=tmp_path/'source.csv',
@@ -39,10 +39,10 @@ async def test_preflight_checks_selected_python_without_installing(tmp_path, mon
     empty = tmp_path/'empty-venv'
     subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(empty)], check=True, capture_output=True)
     with pytest.raises(RuntimeError, match='fiscal_python_missing'):
-        await require_fiscal_runtime(empty/'bin/python', node, probe, tmp_path)
+        await require_fiscal_runtime(empty/'bin/python', node, probe, tmp_path, canonical=False)
     probe.write_text("process.exit(1)")
     with pytest.raises(RuntimeError, match='fiscal_browser_missing'):
-        await require_fiscal_runtime(sys.executable, node, probe, tmp_path)
+        await require_fiscal_runtime(sys.executable, node, probe, tmp_path, canonical=False)
     assert not (empty/'bin/pip').exists()
 
 

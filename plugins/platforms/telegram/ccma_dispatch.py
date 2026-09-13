@@ -9,7 +9,7 @@ import tempfile
 from datetime import datetime, timezone
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
 from plugins.platforms.telegram.fiscal_runtime import browser_environment, require_fiscal_runtime, unavailable_message
-from plugins.platforms.telegram.fiscal_credentials import canonical_access
+from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
 
 
@@ -23,7 +23,7 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
     python = getattr(flow.catalog, 'runtime_python', None)
     node = shutil.which('node')
     try:
-        await require_fiscal_runtime(python, node, probe, home)
+        await require_fiscal_runtime(python, node, probe, home, canonical=contributor_id is not None)
     except RuntimeError as error:
         await flow.send(chat_id, unavailable_message('CCMA', str(error)))
         return
@@ -95,6 +95,8 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         raise
     except asyncio.TimeoutError:
         await flow.send(chat_id, 'CCMA superó el tiempo máximo. No se entregó ningún libro anterior.')
+    except FiscalDatabaseError as error:
+        await flow.send(chat_id, unavailable_message('CCMA', str(error)))
     except ValueError:
         await flow.send(chat_id, 'CCMA no pudo verificar el acceso, la fuente o el CAPTCHA. Iniciá una consulta nueva.')
     except Exception:

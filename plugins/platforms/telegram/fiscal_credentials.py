@@ -1,9 +1,21 @@
 """ARCA access from the canonical database, confined to local process memory."""
 import asyncio
 import json
+import logging
 import re
 
 from plugins.platforms.telegram.fiscal_execution import terminate_owned_group
+
+logger = logging.getLogger(__name__)
+
+
+class FiscalDatabaseError(RuntimeError):
+    """Safe local diagnostic, never a password, SQL statement or raw stderr."""
+
+
+def database_error(code):
+    logger.error("fiscal_database_failure code=%s", code)
+    return FiscalDatabaseError(code)
 
 
 def access_sql(contributor_id, cuit, slug, holder_cuit):
@@ -31,19 +43,46 @@ def access_sql(contributor_id, cuit, slug, holder_cuit):
     """
 
 
-async def canonical_access(contributor_id, cuit, slug, holder_cuit):
-    sql = access_sql(contributor_id, cuit, slug, holder_cuit)
+async def _query(sql):
     process = None
     try:
         from contabot_pg import psql_invocation
         command, environment = psql_invocation('fiscal')  # mandatory profile; NO sudo fallback
         process = await asyncio.create_subprocess_exec(
-            *command, '-At', '-c', sql, env=environment,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            *command, '-qAt', '-v', 'VERBOSITY=sqlstate', '-c', sql, env=environment,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=True)
-        raw, _ = await asyncio.wait_for(process.communicate(), timeout=20)
-        if process.returncode or len(raw) > 65536:
-            raise ValueError('canonical_access_unavailable')
+        raw, error = await asyncio.wait_for(process.communicate(), timeout=20)
+        if process.returncode:
+            code = ('fiscal_database_permissions' if re.search(rb'\b42501\b', error)
+                    else 'fiscal_database_unavailable')
+            raise database_error(code)
+        if len(raw) > 65536:
+            raise database_error('fiscal_database_unavailable')
+        return raw
+    except FiscalDatabaseError:
+        raise
+    except (ImportError, OSError, RuntimeError, asyncio.TimeoutError):
+        raise database_error('fiscal_database_unavailable') from None
+    finally:
+        await terminate_owned_group(process)
+
+
+async def require_fiscal_database():
+    # EXPLAIN without ANALYZE checks the actual consumer's columns, not a
+    # duplicated permission list. No credential rows are executed or returned.
+    sql = access_sql(1, '00000000000', 'preflight-synthetic', '00000000000')
+    raw = await _query("""BEGIN READ ONLY;
+        SELECT 'fiscal_sql_ready' FROM pg_roles WHERE rolname=current_user
+        AND NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls);
+        EXPLAIN """ + sql + " ROLLBACK;")
+    if not raw.splitlines() or raw.splitlines()[0] != b'fiscal_sql_ready':
+        raise database_error('fiscal_database_profile_invalid')
+
+
+async def canonical_access(contributor_id, cuit, slug, holder_cuit):
+    raw = await _query(access_sql(contributor_id, cuit, slug, holder_cuit))
+    try:
         rows = raw.splitlines()
         if len(rows) != 1:
             raise ValueError('canonical_access_changed_or_ambiguous')
@@ -53,7 +92,5 @@ async def canonical_access(contributor_id, cuit, slug, holder_cuit):
                 or not isinstance(value['password'], str) or not 0 < len(value['password']) <= 8192):
             raise ValueError('canonical_access_invalid')
         return json.dumps({'type': 'access', **value}, separators=(',', ':')).encode() + b'\n'
-    except (ImportError, OSError, RuntimeError, TypeError, KeyError, json.JSONDecodeError) as exc:
+    except (TypeError, KeyError, json.JSONDecodeError):
         raise ValueError('canonical_access_unavailable') from None
-    finally:
-        await terminate_owned_group(process)

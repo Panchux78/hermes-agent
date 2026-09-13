@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from plugins.platforms.telegram.fiscal_execution import terminate_owned_group
+from plugins.platforms.telegram.fiscal_credentials import require_fiscal_database
 
 PYTHON_CHECK = (
     "import openpyxl; from importlib.metadata import version; "
@@ -40,10 +41,12 @@ async def _check(command, environment, expected):
         await terminate_owned_group(process)
 
 
-async def require_fiscal_runtime(python, node, probe, home):
+async def require_fiscal_runtime(python, node, probe, home, *, canonical=True):
     if (not python or not Path(python).is_absolute() or not Path(python).is_file()
             or not os.access(python, os.X_OK) or not node or not probe.is_file()):
         raise RuntimeError('fiscal_runtime_missing')
+    if canonical:
+        await require_fiscal_database()
     environment = browser_environment(home)
     if not await _check([str(python), '-I', '-B', '-c', PYTHON_CHECK], environment, b'fiscal_python_ready'):
         raise RuntimeError('fiscal_python_missing')
@@ -53,6 +56,9 @@ async def require_fiscal_runtime(python, node, probe, home):
 
 def unavailable_message(operation, code):
     detail = {
+        'fiscal_database_permissions': 'faltan permisos de lectura en la base para el acceso fiscal',
+        'fiscal_database_unavailable': 'no se pudo acceder a la configuración o conexión fiscal local',
+        'fiscal_database_profile_invalid': 'el perfil fiscal tiene privilegios administrativos no permitidos',
         'fiscal_python_missing': 'falta openpyxl 3.1.5 en el Python fiscal configurado',
         'fiscal_browser_missing': 'Playwright o su navegador no están disponibles en este perfil',
     }.get(code, 'falta un componente del procedimiento local')

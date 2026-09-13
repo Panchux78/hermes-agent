@@ -19,7 +19,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
 from plugins.platforms.telegram.fiscal_runtime import browser_environment, require_fiscal_runtime, unavailable_message
-from plugins.platforms.telegram.fiscal_credentials import canonical_access
+from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
 
 logger = logging.getLogger(__name__)
@@ -421,7 +421,7 @@ class FiscalQueryFlow:
         try:
             if not xlsx_builder.is_file():
                 raise RuntimeError('fiscal_runtime_missing')
-            await require_fiscal_runtime(python, node, probe, hermes_home)
+            await require_fiscal_runtime(python, node, probe, hermes_home, canonical=contributor_id is not None)
         except RuntimeError as error:
             await self.send(chat_id, unavailable_message('SCT', str(error)))
             return
@@ -524,6 +524,8 @@ class FiscalQueryFlow:
             await self.send(chat_id, "La consulta SCT excedió el límite de ejecución y fue detenida. No se entregó ningún resultado.")
         except asyncio.CancelledError:
             raise
+        except FiscalDatabaseError as error:
+            await self.send(chat_id, unavailable_message('SCT', str(error)))
         except ValueError:
             await self.send(chat_id, 'SCT no pudo verificar el acceso o el CAPTCHA. Iniciá una consulta nueva.')
         except OSError:
