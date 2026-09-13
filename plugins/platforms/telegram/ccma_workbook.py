@@ -120,7 +120,15 @@ def parse_amount(value: str) -> float | None:
         return 0.0
     negative = raw.startswith('(') and raw.endswith(')')
     raw = raw.strip('()').replace('$', '').replace(' ', '')
-    raw = raw.replace('.', '').replace(',', '.')
+    # Accept explicit decimal conventions; never erase the decimal separator.
+    if re.fullmatch(r'-?\d{1,3}(?:,\d{3})+\.\d{2}', raw):
+        raw = raw.replace(',', '')
+    elif re.fullmatch(r'-?\d{1,3}(?:\.\d{3})+,\d{2}', raw):
+        raw = raw.replace('.', '').replace(',', '.')
+    elif re.fullmatch(r'-?\d+(?:[.,]\d{2})?', raw):
+        raw = raw.replace(',', '.')
+    else:
+        return None
     if not re.fullmatch(r'-?\d+(?:\.\d+)?', raw):
         return None
     amount = float(raw)
@@ -207,10 +215,21 @@ def main() -> None:
     workbook.properties.creator = 'Hermes Agent'
     workbook.properties.description = 'Libro read-only basado en copia local de tabla visible de CCMA.'
 
-    # Source is copied verbatim: no inserted title rows or changed values.
+    # Preserve the CSV as evidence; render monetary cells numerically in Excel.
     source_ws = workbook.create_sheet('Fuente CCMA')
-    for row in data:
-        source_ws.append(row)
+    source_ws.append(['Control original', *SOURCE_HEADERS])
+    for row in rows:
+        displayed = list(row)
+        if len(row) == 11:
+            for col in (8, 9, 10):
+                value = parse_amount(row[col])
+                if value is not None:
+                    displayed[col] = value
+        source_ws.append(displayed)
+    for row in source_ws.iter_rows(min_row=2, min_col=9, max_col=11):
+        for cell in row:
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = '#,##0.00;[Red](#,##0.00);-'
     set_table_style(
         source_ws, 1,
         {1: 20, 2: 12, 3: 14, 4: 13, 5: 12, 6: 42, 7: 16, 8: 15, 9: 15, 10: 15},
@@ -234,7 +253,8 @@ def main() -> None:
         derived_id = record['derived_id']
         work_ws.append([
             source_id, source_row, row[1], row[2], row[3], row[4], row[5], row[6],
-            row[7], row[8], row[9], amounts[0], amounts[1], amounts[2],
+            *(amounts[i] if amounts[i] is not None else row[7+i] for i in range(3)),
+            amounts[0], amounts[1], amounts[2],
             record['status'], record['reference'], derived_id,
         ])
         work_ws.cell(index + 1, 12).comment = work_comment
@@ -242,7 +262,7 @@ def main() -> None:
         work_ws, 1,
         {1: 15, 2: 17, 3: 14, 4: 16, 5: 14, 6: 14, 7: 42, 8: 18, 9: 16, 10: 16, 11: 16, 12: 16, 13: 16, 14: 16, 15: 14, 16: 55, 17: 15},
     )
-    for row in work_ws.iter_rows(min_row=2, min_col=12, max_col=14):
+    for row in work_ws.iter_rows(min_row=2, min_col=9, max_col=14):
         for cell in row:
             cell.number_format = '#,##0.00;[Red](#,##0.00);-'
             cell.font = Font(name='Arial', size=10, color=BLUE)
