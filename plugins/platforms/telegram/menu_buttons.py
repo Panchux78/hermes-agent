@@ -18,8 +18,8 @@ MENU_ALIGNMENT_PADDING = {
     ("agip", "Preparar"): (0, 2),
     ("arba", "Preparar"): (0, 2),
     # menu8.png: hair-only suffix had no effect; keep a shared terminator.
-    # menu9.png: reduce fine padding (CCMA 8 px, SCT 4 px left of CSV).
-    # This client calibration remains subject to visual QA.
+    # menu10.png: owner confirmed the menu9 adjustment on 2026-09-14.
+    # Keep these counts; other clients need their own visual verification.
     ("arca_consultar", "CSV de períodos presentados"): (1, 0),
     ("arca_consultar", "CCMA Obligaciones y pagos"): (1, 3),
     ("arca_consultar", "SCT Estado de cumplimiento"): (1, 2),

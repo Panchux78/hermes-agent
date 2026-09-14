@@ -1,4 +1,5 @@
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -6,6 +7,7 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.admin_maintenance_flow import AdminMaintenanceFlow
 from plugins.platforms.telegram.agip_ddjj_flow import AgipDdjjFlow
 from plugins.platforms.telegram.batch_pdf_xlsx_flow import BatchPdfXlsxFlow
+from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow, _WorkflowMenuState
 from plugins.platforms.telegram.menu_buttons import (
     BRAILLE_PATTERN_BLANK,
     HAIR_SPACE,
@@ -179,6 +181,30 @@ def test_arca_query_alignment_preserves_actions_labels_and_navigation(monkeypatc
         {"text": "‹  ARCA", "callback_data": "om:arca"},
         {"text": "✕  Cerrar", "callback_data": "om:close"},
     ]
+    _assert_safe_callbacks(rows)
+
+
+@pytest.mark.parametrize("operation", ["ccma", "sct"])
+def test_fiscal_selection_uses_shared_cancel_contract_without_padding(monkeypatch, operation):
+    import plugins.platforms.telegram.fiscal_query_flow as module
+
+    monkeypatch.setattr(module, "InlineKeyboardButton", lambda text, callback_data: SimpleNamespace(
+        text=text, callback_data=callback_data,
+    ))
+    monkeypatch.setattr(module, "InlineKeyboardMarkup", lambda rows: SimpleNamespace(inline_keyboard=rows))
+    flow = FiscalQueryFlow(catalog=SimpleNamespace(_visible_cuit=PortalIvaFlow._visible_cuit))
+    state = _WorkflowMenuState(skill_command=operation, label=operation, nonce="synthetic")
+    candidates = [{"id": 7, "nombre": "Empresa", "cuit": "30123456789"}]
+    rows = _rows(flow._candidate_keyboard(state, candidates))
+
+    assert all(len(row) == 1 for row in rows)
+    visible_cuit = flow.catalog._visible_cuit(candidates[0]["cuit"])
+    assert rows[0][0]["text"] == menu_label("👤", f"Empresa — {visible_cuit}")
+    assert rows[0][0]["callback_data"] == "fq:select:synthetic:7"
+    assert rows[-1] == [{"text": menu_label("❌", "Cancelar"), "callback_data": "fq:cancel:synthetic"}]
+    assert rows[-1:] == _rows(flow._cancel_keyboard(state))
+    assert not any(ch in button["text"] for row in rows for button in row for ch in (HAIR_SPACE, BRAILLE_PATTERN_BLANK))
+    _assert_contract_labels(rows)
     _assert_safe_callbacks(rows)
 
 

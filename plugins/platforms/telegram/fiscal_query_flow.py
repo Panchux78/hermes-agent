@@ -83,7 +83,7 @@ class FiscalQueryFlow:
 
     def _cancel_keyboard(self, state):
         return InlineKeyboardMarkup([[InlineKeyboardButton(
-            menu_label('✕', 'Cancelar'), callback_data=f'fq:cancel:{state.nonce}')]])
+            menu_label('❌', 'Cancelar'), callback_data=f'fq:cancel:{state.nonce}')]])
 
     def _candidate_keyboard(self, state, rows):
         return InlineKeyboardMarkup([
