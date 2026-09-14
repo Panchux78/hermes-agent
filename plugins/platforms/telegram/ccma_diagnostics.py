@@ -14,7 +14,12 @@ CODES.update({'service_catalog_wait', 'service_entry_ready', 'service_catalog_lo
 CODES.update({'captcha_answer_received', 'captcha_image_changed', 'captcha_input_verified',
               'captcha_input_not_retained', 'login_fields_verified', 'login_fields_not_retained',
               'captcha_rejected', 'stage_evidence_unavailable'})
-KINDS = {'TimeoutError', 'TimeoutException', 'Error', 'TypeError', 'ReferenceError', 'ValueError', 'OSError'}
+CODES.update({'runner_exception', 'evidence_metadata_unavailable'})
+KINDS = {'TimeoutError', 'TimeoutException', 'Error', 'TypeError', 'ReferenceError', 'ValueError', 'OSError',
+         'JavascriptException', 'WebDriverException', 'NoSuchWindowException', 'NoSuchFrameException',
+         'NoSuchElementException', 'StaleElementReferenceException', 'InvalidSessionIdException',
+         'UnexpectedAlertPresentException', 'ElementClickInterceptedException', 'ElementNotInteractableException',
+         'InvalidSelectorException', 'InvalidArgumentException', 'ScriptTimeoutException'}
 
 
 class Diagnostics:
@@ -33,6 +38,9 @@ class Diagnostics:
             row['code'] = event['code'] if isinstance(event['code'], str) and event['code'] in CODES else 'unknown_runner_status'
         if isinstance(event.get('error_kind'), str) and event['error_kind'] in KINDS:
             row['error_kind'] = event['error_kind']
+        origin = event.get('error_at')
+        if isinstance(origin, str) and re.fullmatch(r'arca_[a-z_]+\.py:[a-z_]+:[0-9]{1,6}', origin):
+            row['error_at'] = origin
         if type(event.get('exit_code')) is int:
             row['exit_code'] = event['exit_code']
         shot = event.get('screenshot')

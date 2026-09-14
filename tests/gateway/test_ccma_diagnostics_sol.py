@@ -69,6 +69,23 @@ def test_shared_login_and_service_events_survive_projection(tmp_path):
     assert 'SECRET' not in raw
 
 
+@pytest.mark.parametrize('kind', ['JavascriptException', 'NoSuchWindowException', 'NoSuchFrameException',
+    'InvalidSessionIdException', 'UnexpectedAlertPresentException', 'WebDriverException',
+    'ElementClickInterceptedException', 'ElementNotInteractableException', 'InvalidSelectorException'])
+def test_selenium_exception_class_and_location_survive_without_exception_text(tmp_path, kind):
+    diag = Diagnostics(tmp_path)
+    diag.record({'stage':'service', 'code':'runner_exception', 'error_kind':kind,
+                 'error_at':'arca_services.py:ready:87', 'message':'SECRET'})
+    diag.record({'error_at':'SECRET/../../private:bad:1'})
+    diag.close()
+    raw = (tmp_path/'diagnostic.jsonl').read_text()
+    rows = [json.loads(line) for line in raw.splitlines()]
+    assert rows[0]['error_kind'] == kind
+    assert rows[0]['error_at'] == 'arca_services.py:ready:87'
+    assert 'error_at' not in rows[1]
+    assert 'SECRET' not in raw
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('status', ['subject_not_verified', 'login_not_verified', 'source_table_ambiguous', 'source_table_evaluation_failed'])
 async def test_real_process_preserves_stage_code_and_reference(tmp_path, monkeypatch, status):
