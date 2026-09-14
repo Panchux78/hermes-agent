@@ -40,6 +40,21 @@ def test_screenshot_metadata_and_rejection_message(tmp_path):
     assert 'Clave o usuario incorrecto' in message and 'SECRET' not in str(rows)
 
 
+@pytest.mark.parametrize('code, explanation', [
+    ('service_catalog_load_timeout', 'ARCA no terminó de cargar el catálogo'),
+    ('ccma_account_load_timeout', 'CCMA no terminó de cargar la cuenta'),
+    ('ccma_entry_ambiguous', 'más de una entrada visible'),
+])
+def test_navigation_failure_is_not_misreported_as_wrong_identity(tmp_path, code, explanation):
+    diag = Diagnostics(tmp_path)
+    diag.record({'stage': 'service' if code != 'ccma_account_load_timeout' else 'subject'})
+    message = diag.failure(code)
+    diag.close()
+    assert explanation in message
+    assert 'no se pudo identificar de forma única' not in message
+    assert code in (tmp_path / 'diagnostic.jsonl').read_text()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('status', ['subject_not_verified', 'login_not_verified', 'source_table_ambiguous', 'source_table_evaluation_failed'])
 async def test_real_process_preserves_stage_code_and_reference(tmp_path, monkeypatch, status):
