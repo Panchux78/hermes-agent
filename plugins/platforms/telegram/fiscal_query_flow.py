@@ -322,7 +322,8 @@ class FiscalQueryFlow:
     ) -> Dict[str, str]:
         """Build the complete, non-echoing environment passed to the SCT runner."""
         return {
-            **browser_environment(_Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes"))),
+            **browser_environment(_Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes")),
+                                  python=getattr(self.catalog, 'runtime_python', None)),
             "ARCA_CSV_FILE": str(credential_file if credential_file is not None else
                 os.environ.get("ARCA_CSV_FILE", _Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes")) / ".arca.csv")),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),

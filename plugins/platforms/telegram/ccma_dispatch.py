@@ -52,7 +52,7 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
             original = Path(os.environ.get('ARCA_CSV_FILE', home / '.arca.csv'))
             freeze_credentials(original, credential_copy, credential_sha256)
             credential_frozen = True
-        env = {**browser_environment(home),
+        env = {**browser_environment(home, python=python),
                'ARCA_CSV_FILE': str(credential_copy), 'ARCA_CSV_LINE': str(credential_line),
                'ARCA_PERIOD_FROM': period_from, 'ARCA_PERIOD_TO': period_to,
                'ARCA_EXPORT_FILE': str(source)}

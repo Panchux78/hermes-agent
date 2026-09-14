@@ -175,6 +175,7 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
         "SCT_SERVICE_FAILURE_SCREENSHOT",
         "SCT_RESULT_SCREENSHOT",
         "FISCAL_CAPTCHA_DIR",
+        "FISCAL_RUNTIME_PYTHON",
     }
     assert not any(key.startswith("SCT_REQUESTED_") for key in environment)
     assert not any("CUIT" in key or "PASSWORD" in key or "CONTRASE" in key for key in environment)
