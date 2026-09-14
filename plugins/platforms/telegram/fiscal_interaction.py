@@ -33,7 +33,7 @@ def captcha_bytes(raw, root):
     return nonce, data
 
 
-async def communicate(flow, process, key, chat_id, root, initial=None):
+async def communicate(flow, process, key, chat_id, root, initial=None, on_diagnostic=None):
     """Keep stdout results separate; process each challenge as soon as emitted."""
     if initial is not None:
         process.stdin.write(initial)
@@ -45,6 +45,13 @@ async def communicate(flow, process, key, chat_id, root, initial=None):
 
     async def challenges():
         while line := await process.stderr.readline():
+            if on_diagnostic is not None and line.startswith(b'FISCAL_DIAGNOSTIC:'):
+                try:
+                    event = json.loads(line[len(b'FISCAL_DIAGNOSTIC:'):])
+                except (ValueError, UnicodeError):
+                    event = {'code': 'diagnostic_invalid'}
+                on_diagnostic(event)
+                continue
             if not line.startswith(b'FISCAL_CAPTCHA:'):
                 continue  # never echo browser diagnostics, credentials or page HTML
             nonce, data = captcha_bytes(line[len(b'FISCAL_CAPTCHA:'):].strip(), root)
