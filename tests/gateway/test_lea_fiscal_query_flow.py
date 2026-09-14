@@ -181,7 +181,7 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
     flow._adapter.handle_message.assert_not_awaited()
     flow.send.assert_awaited_once_with(
         "123",
-        "La consulta SCT terminó sin exportación: `sct_handoff_login_not_verified`. Revisá la evidencia privada.",
+        "La consulta SCT terminó sin exportación: `sct_handoff_login_not_verified`. Referencia: source-captcha. Revisá la evidencia privada.",
     )
 
 

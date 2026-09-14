@@ -21,6 +21,14 @@ def test_projection_never_stores_unknown_strings_or_raw_exceptions(tmp_path):
     assert (tmp_path / 'diagnostic.jsonl').stat().st_mode & 0o777 == 0o600
 
 
+def test_observed_subcpto_heading_survives_projection_without_private_text(tmp_path):
+    diag = Diagnostics(tmp_path)
+    diag.record({'stage': 'table', 'tables': [{'headings': [['subcpto', 'SECRET']]}]})
+    diag.close()
+    row = json.loads((tmp_path / 'diagnostic.jsonl').read_text())
+    assert row['tables'][0]['headings'] == [['subcpto', '?']]
+
+
 def test_screenshot_metadata_and_rejection_message(tmp_path):
     diag = Diagnostics(tmp_path)
     diag.record({'stage': 'login', 'code': 'failure_screenshot_saved',
