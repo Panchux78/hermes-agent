@@ -62,8 +62,11 @@ def make_flow():
 
 
 @pytest.mark.asyncio
-async def test_streaming_captcha_immediate_reply_identity_and_current_message(tmp_path):
+@pytest.mark.parametrize('operation', ['ccma', 'sct'])
+@pytest.mark.parametrize('direct', [False, True])
+async def test_streaming_captcha_immediate_reply_identity_and_current_message(tmp_path, operation, direct):
     flow, state = make_flow()
+    state.skill_command = 'sct_estado_cumplimiento' if operation == 'sct' else 'ccma_obligaciones_pagos'
     nonce = 'a' * 16
     image = tmp_path / f'captcha-{nonce}.png'
     image.write_bytes(b'\x89PNG\r\n\x1a\nsynthetic'); image.chmod(0o600)
@@ -82,11 +85,11 @@ async def test_streaming_captcha_immediate_reply_identity_and_current_message(tm
         assert state.captcha_message_id == 91
         flow._adapter._bot.send_photo.assert_awaited_once()
         def message(uid, reply):
-            return NS(text='ABCD', chat=NS(id=7, type='private'), from_user=NS(id=uid), reply_to_message=NS(message_id=reply))
-        assert not await flow.text(flow._adapter, message(9,91))
+            return NS(text='ABCD', chat=NS(id=7, type='private'), from_user=NS(id=uid), reply_to_message=NS(message_id=reply) if reply is not None else None)
+        assert not await flow.text(flow._adapter, message(9,None if direct else 91))
         await flow.text(flow._adapter, message(8,90))
         assert not state.captcha_response.done()
-        await flow.text(flow._adapter, message(8,91))
+        await flow.text(flow._adapter, message(8,None if direct else 91))
         assert await asyncio.wait_for(task, 3) == b'result=source_copied\n'
         assert state.stage == 'running' and state.captcha_response is None
     finally:

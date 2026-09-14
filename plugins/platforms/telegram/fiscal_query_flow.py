@@ -580,8 +580,8 @@ class FiscalQueryFlow:
 
         if state.stage == 'captcha':
             reply = getattr(message, 'reply_to_message', None)
-            if (state.captcha_message_id is None
-                    or getattr(reply, 'message_id', None) != state.captcha_message_id):
+            if (reply is not None and (state.captcha_message_id is None
+                    or getattr(reply, 'message_id', None) != state.captcha_message_id)):
                 await self.send(chat_id, 'Respondé a la imagen del CAPTCHA vigente, no a una anterior.')
             elif not re.fullmatch(r'[A-Za-z0-9]{4,20}', text):
                 await self.send(chat_id, 'Ingresá sólo los caracteres del CAPTCHA (sin espacios).')

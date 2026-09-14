@@ -68,7 +68,7 @@ async def communicate(flow, process, key, chat_id, root, initial=None, on_diagno
                 # First network operation: image. No agent turn or progress queue.
                 sent = await flow._adapter._bot.send_photo(
                     chat_id=chat_id, photo=data,
-                    caption='ARCA solicita un CAPTCHA. Respondé a ESTA imagen con sus caracteres. Si vence, te enviaré la nueva.',
+                    caption='ARCA solicita un CAPTCHA. Enviá sólo los caracteres de la imagen. Si vence, te enviaré una nueva.',
                     reply_markup=flow._cancel_keyboard(state))
                 state.captcha_message_id = sent.message_id
                 solution = await asyncio.wait_for(state.captcha_response, CAPTCHA_TIMEOUT)
