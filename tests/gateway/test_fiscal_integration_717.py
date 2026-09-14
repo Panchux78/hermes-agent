@@ -15,6 +15,21 @@ from plugins.platforms.telegram.fiscal_execution import terminate_owned_group
 from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow, _WorkflowMenuState
 
 
+def test_login_submission_diagnostics_exclude_values(tmp_path):
+    from plugins.platforms.telegram.ccma_diagnostics import Diagnostics
+    recorder = Diagnostics(tmp_path)
+    try:
+        for code in ('captcha_answer_received', 'captcha_input_verified', 'login_fields_verified',
+                     'captcha_input_not_retained', 'login_fields_not_retained', 'captcha_rejected'):
+            recorder.record({'stage': 'login', 'code': code, 'solution': 'PRIVATE-ANSWER',
+                             'password': 'PRIVATE-PASSWORD'})
+    finally:
+        recorder.close()
+    content = (tmp_path / 'diagnostic.jsonl').read_text()
+    assert 'unknown_runner_status' not in content
+    assert 'PRIVATE' not in content
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('variant', ['good', 'empty', 'ambiguous', 'wrong_holder', 'wrong_subject', 'empty_password'])
 async def test_canonical_access_validates_one_bound_row_without_exposing_secret(monkeypatch, variant):
@@ -92,6 +107,8 @@ async def test_streaming_captcha_immediate_reply_identity_and_current_message(tm
         await flow.text(flow._adapter, message(8,None if direct else 91))
         assert await asyncio.wait_for(task, 3) == b'result=source_copied\n'
         assert state.stage == 'running' and state.captcha_response is None
+        assert any(call.args[1] == 'Respuesta recibida. Verificando el ingreso a ARCA…'
+                   for call in flow.send.await_args_list)
     finally:
         task.cancel(); await asyncio.gather(task, return_exceptions=True)
         await terminate_owned_group(proc)

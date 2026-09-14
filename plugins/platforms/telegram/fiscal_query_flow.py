@@ -602,6 +602,8 @@ class FiscalQueryFlow:
                 await self.send(chat_id, 'Ingresá sólo los caracteres del CAPTCHA (sin espacios).')
             elif state.captcha_response is not None and not state.captcha_response.done():
                 state.captcha_response.set_result(text)
+                # Release the native stdin relay before awaiting any notification.
+                await self.send(chat_id, 'Respuesta recibida. Verificando el ingreso a ARCA…')
             return True
         if state.stage == 'running':
             await self.send(chat_id, 'La consulta ya está en ejecución.')
