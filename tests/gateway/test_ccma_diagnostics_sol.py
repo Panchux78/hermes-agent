@@ -42,6 +42,7 @@ def test_screenshot_metadata_and_rejection_message(tmp_path):
 
 @pytest.mark.parametrize('code, explanation', [
     ('service_catalog_load_timeout', 'ARCA no terminó de cargar el catálogo'),
+    ('service_open_timeout', 'CCMA no terminó de abrir'),
     ('ccma_account_load_timeout', 'CCMA no terminó de cargar la cuenta'),
     ('ccma_entry_ambiguous', 'más de una entrada visible'),
 ])
@@ -53,6 +54,19 @@ def test_navigation_failure_is_not_misreported_as_wrong_identity(tmp_path, code,
     assert explanation in message
     assert 'no se pudo identificar de forma única' not in message
     assert code in (tmp_path / 'diagnostic.jsonl').read_text()
+
+
+def test_shared_login_and_service_events_survive_projection(tmp_path):
+    diag = Diagnostics(tmp_path)
+    diag.record({'stage': 'login', 'code': 'login_verified'})
+    diag.record({'stage': 'service', 'code': 'service_opened'})
+    diag.record({'stage': 'service', 'code': 'runner_error', 'error_kind': 'TimeoutException', 'message': 'SECRET'})
+    diag.close()
+    raw = (tmp_path / 'diagnostic.jsonl').read_text()
+    rows = [json.loads(line) for line in raw.splitlines()]
+    assert [row['code'] for row in rows] == ['login_verified', 'service_opened', 'runner_error']
+    assert rows[-1]['error_kind'] == 'TimeoutException'
+    assert 'SECRET' not in raw
 
 
 @pytest.mark.asyncio

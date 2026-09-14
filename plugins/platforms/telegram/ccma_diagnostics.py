@@ -9,11 +9,12 @@ STAGES = {'preflight', 'access', 'browser', 'login', 'service', 'subject', 'peri
 CODES = set('login_credentials_rejected failure_screenshot_saved failure_screenshot_unavailable login_username_submitted login_password_submitted login_transition_timeout period_range_required period_range_invalid preflight_failed blocked_target login_host_invalid login_state_unexpected login_user_mismatch captcha_attempts_exhausted login_not_verified blocked_redirect human_gate_after_password ccma_not_found blocked_ccma_redirect subject_not_verified subject_selection_control_missing period_query_controls_missing source_result_unchanged canonical_access_invalid canonical_access_changed_or_ambiguous canonical_access_unavailable source_table_schema_unverified source_table_header_ambiguous source_table_ambiguous source_table_evaluation_failed source_frame_ambiguous source_copied runner_error runtime_unavailable source_integrity fiscal_output_too_large captcha_request_invalid captcha_path_invalid captcha_image_invalid captcha_request_repeated captcha_state_invalid fiscal_database_permissions fiscal_database_profile_invalid fiscal_database_unavailable timeout cancelled unexpected_error unknown_runner_status runner_exit_error source_missing workbook_failed ccma_amount_unreadable delivery_failed complete diagnostic_invalid fiscal_python_missing fiscal_browser_missing fiscal_runtime_missing'.split())
 HEADINGS = {'detalle', 'periodo', 'impuesto', 'concepto', 'subpcto', 'subcpto', 'descripcion', 'fechamovimiento', 'debe', 'haber', 'saldo', 'subconcepto', 'fecha', 'movimiento', 'subconcept', 'debitos', 'creditos'}
 CODES.update({'service_catalog_wait', 'service_entry_ready', 'service_catalog_load_timeout',
+              'service_opened', 'service_open_timeout', 'login_verified',
               'ccma_entry_ambiguous', 'ccma_account_load_timeout', 'subject_verified', 'subject_selection_submitted'})
 CODES.update({'captcha_answer_received', 'captcha_image_changed', 'captcha_input_verified',
               'captcha_input_not_retained', 'login_fields_verified', 'login_fields_not_retained',
               'captcha_rejected', 'stage_evidence_unavailable'})
-KINDS = {'TimeoutError', 'Error', 'TypeError', 'ReferenceError', 'ValueError', 'OSError'}
+KINDS = {'TimeoutError', 'TimeoutException', 'Error', 'TypeError', 'ReferenceError', 'ValueError', 'OSError'}
 
 
 class Diagnostics:
@@ -64,6 +65,7 @@ class Diagnostics:
         reason = {'login_credentials_rejected': 'ARCA respondió «Clave o usuario incorrecto» para el acceso guardado', 'login_not_verified': 'el ingreso no confirmó la transición esperada', 'source_result_unchanged': 'la página sigue mostrando el resultado anterior', 'source_table_schema_unverified': 'no se encontró el encabezado esperado', 'source_table_header_ambiguous': 'hay encabezados repetidos', 'source_table_ambiguous': 'hay más de una tabla candidata', 'source_table_evaluation_failed': 'falló la lectura técnica de la tabla', 'source_frame_ambiguous': 'hay más de un marco de CCMA', 'subject_not_verified': 'no se pudo identificar de forma única el contribuyente', 'period_query_controls_missing': 'no se encontraron los controles del período', 'ccma_not_found': 'no se encontró la entrada a CCMA'}.get(safe, 'el paso no pudo completarse')
         reason = {
             'service_catalog_load_timeout': 'ARCA no terminó de cargar el catálogo de servicios',
+            'service_open_timeout': 'el ingreso a ARCA se completó, pero CCMA no terminó de abrir después de seleccionarlo',
             'ccma_account_load_timeout': 'CCMA no terminó de cargar la cuenta y el período con identidad verificable',
             'ccma_entry_ambiguous': 'hay más de una entrada visible a CCMA y no se eligió ninguna',
         }.get(safe, reason)
