@@ -17,6 +17,10 @@ MENU_ALIGNMENT_PADDING = {
     ("arca", "Preparar"): (0, 2),
     ("agip", "Preparar"): (0, 2),
     ("arba", "Preparar"): (0, 2),
+    # menu7.png: CCMA starts 7 px and SCT 4 px right of the CSV reference.
+    # Client-calibrated suffixes; final pixel alignment still needs visual QA.
+    ("arca_consultar", "CCMA Obligaciones y pagos"): (1, 2),
+    ("arca_consultar", "SCT Estado de cumplimiento"): (0, 5),
     ("bancos", "Resumen bancario → Excel"): (7, 2),
     ("herramientas", "Proteger PDF"): (3, 0),
     ("ayuda", "Hacer una consulta"): (0, 1),

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.menu_buttons import aligned_menu_label
 from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
 
 
@@ -43,7 +43,7 @@ async def test_real_menu_to_canonical_identity_period_and_dispatch(adapter, acti
     rows = adapter._menu_panel_keyboard('arca_consultar').inline_keyboard
     buttons = {b.callback_data: b for row in rows for b in row}
     label = 'CCMA Obligaciones y pagos' if action == 'ccma' else 'SCT Estado de cumplimiento'
-    assert buttons[f'fq:{action}'].text == menu_label('📊' if action == 'ccma' else '📋', label)
+    assert buttons[f'fq:{action}'].text == aligned_menu_label('arca_consultar', '📊' if action == 'ccma' else '📋', label)
     assert 'pi:descargar' in buttons
     assert all(len(row) == 1 for row in rows[:-1])
     assert [b.callback_data for b in rows[-1]] == ['om:arca', 'om:close']

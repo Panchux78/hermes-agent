@@ -126,7 +126,7 @@ def test_alignment_padding_is_restricted_to_declared_fixed_buttons(monkeypatch):
     fixed_keyboards = {
         page: _rows(TelegramAdapter._menu_panel_keyboard(page, show_administration=True))
         for page in (
-            "main", "organismos", "arca", "agip", "arba", "bancos",
+            "main", "organismos", "arca", "agip", "arba", "arca_consultar", "bancos",
             "herramientas", "ayuda", "administracion",
         )
     }
@@ -157,6 +157,29 @@ def test_alignment_padding_is_restricted_to_declared_fixed_buttons(monkeypatch):
     assert used == {
         key for key in MENU_ALIGNMENT_PADDING if key[0] not in flow_pages
     }
+
+
+def test_arca_query_alignment_preserves_actions_labels_and_navigation(monkeypatch):
+    import plugins.platforms.telegram.adapter as module
+
+    _as_dict_markup(monkeypatch, module)
+    rows = _rows(TelegramAdapter._menu_panel_keyboard("arca_consultar"))
+    actions = [
+        ("pi:descargar", "📥", "CSV de períodos presentados"),
+        ("fq:ccma", "📊", "CCMA Obligaciones y pagos"),
+        ("fq:sct", "📋", "SCT Estado de cumplimiento"),
+    ]
+    assert [len(row) for row in rows] == [1, 1, 1, 2]
+    for row, (callback, icon, text) in zip(rows[:-1], actions):
+        button = row[0]
+        assert button["callback_data"] == callback
+        assert button["text"].rstrip(HAIR_SPACE + BRAILLE_PATTERN_BLANK) == menu_label(icon, text)
+        assert button["text"] == aligned_menu_label("arca_consultar", icon, text)
+    assert rows[-1] == [
+        {"text": "‹  ARCA", "callback_data": "om:arca"},
+        {"text": "✕  Cerrar", "callback_data": "om:close"},
+    ]
+    _assert_safe_callbacks(rows)
 
 
 def test_business_flow_keyboards_follow_icons_spacing_and_rows(monkeypatch):

@@ -955,11 +955,11 @@ class TelegramAdapter(BasePlatformAdapter):
             rows = [
                 [
                     InlineKeyboardButton(
-                        menu_label("📥", "CSV de períodos presentados"), callback_data="pi:descargar"
+                        aligned_menu_label(page, "📥", "CSV de períodos presentados"), callback_data="pi:descargar"
                     )
                 ],
-                [InlineKeyboardButton(menu_label("📊", "CCMA Obligaciones y pagos"), callback_data="fq:ccma")],
-                [InlineKeyboardButton(menu_label("📋", "SCT Estado de cumplimiento"), callback_data="fq:sct")],
+                [InlineKeyboardButton(aligned_menu_label(page, "📊", "CCMA Obligaciones y pagos"), callback_data="fq:ccma")],
+                [InlineKeyboardButton(aligned_menu_label(page, "📋", "SCT Estado de cumplimiento"), callback_data="fq:sct")],
             ]
             back_label = menu_label("‹", "ARCA")
             back_page = "arca"
