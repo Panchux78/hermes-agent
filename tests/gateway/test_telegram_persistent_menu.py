@@ -6,6 +6,7 @@ from PIL import Image
 import pytest
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.menu_buttons import aligned_menu_label
 
 
 def test_rich_reply_markup_is_one_persistent_menu_trigger():
@@ -226,7 +227,7 @@ def test_implemented_tax_actions_reuse_existing_flows(monkeypatch):
     monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
 
     assert TelegramAdapter._menu_panel_keyboard("arca_consultar")[0] == [
-        {"text": "📥  CSV de períodos presentados", "callback_data": "pi:descargar"}
+        {"text": aligned_menu_label("arca_consultar", "📥", "CSV de períodos presentados"), "callback_data": "pi:descargar"}
     ]
     assert TelegramAdapter._menu_panel_keyboard("arca_preparar")[0] == [
         {"text": "🧾  Preparar período nuevo", "callback_data": "pi:generar"}
