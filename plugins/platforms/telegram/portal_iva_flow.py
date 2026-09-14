@@ -63,7 +63,12 @@ class PortalIvaFlow:
     """Privileged Telegram flow; credentials are read only by portal_iva.py."""
 
     def __init__(self, *, executor: Path = _EXECUTOR, uv: Path = _UV,
-                 clients_root: Path = _CLIENTES_ROOT, captcha_root: Path = _CAPTCHA_ROOT) -> None:
+                 clients_root: Path = _CLIENTES_ROOT, captcha_root: Path = _CAPTCHA_ROOT,
+                 query_connection=None, runtime_python: Path | None = None) -> None:
+        # CCMA/SCT reuse only identity lookup, with their restricted connection.
+        # Defaults preserve the existing Portal IVA executor and DB connection.
+        self.query_connection = query_connection
+        self.runtime_python = runtime_python
         self.executor = Path(executor)
         self.uv = Path(uv)
         self.clients_root = Path(clients_root)
@@ -109,8 +114,12 @@ class PortalIvaFlow:
         return await adapter._bot.send_message(**kwargs)
 
     def _query(self, sql: str) -> list[dict[str, Any]]:
+        command = ["sudo", "-n", "-u", "postgres", "psql", "--dbname=contabot"]
+        environment = None
+        if self.query_connection is not None:
+            command, environment = self.query_connection()
         run = subprocess.run(
-            ["sudo", "-n", "-u", "postgres", "psql", "--dbname=contabot", "-At", "-c", sql],
+            [*command, "-At", "-c", sql], env=environment,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False,
         )
         if run.returncode:

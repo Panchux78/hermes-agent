@@ -448,6 +448,9 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.pdf_security_flow import PdfSecurityFlow
         from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
         from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
+        from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
+        from plugins.platforms.telegram.fiscal_credentials import lookup_connection
+        from plugins.platforms.telegram.contabot_deployment import deployment_paths
 
         extra = self.config.extra
         self._app: Optional[Application] = None
@@ -458,6 +461,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pdf_security_flow = PdfSecurityFlow()
         self._pdf_xlsx_flow = PdfXlsxFlow()
         self._portal_iva_flow = PortalIvaFlow()
+        fiscal_paths = deployment_paths(extra)
+        self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
+            query_connection=lookup_connection,
+            runtime_python=fiscal_paths.get("runtime_python"),
+        ))
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -950,6 +958,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         menu_label("📥", "CSV de períodos presentados"), callback_data="pi:descargar"
                     )
                 ],
+                [InlineKeyboardButton(menu_label("📊", "CCMA Obligaciones y pagos"), callback_data="fq:ccma")],
+                [InlineKeyboardButton(menu_label("📋", "SCT Estado de cumplimiento"), callback_data="fq:sct")],
             ]
             back_label = menu_label("‹", "ARCA")
             back_page = "arca"
@@ -3581,6 +3591,9 @@ class TelegramAdapter(BasePlatformAdapter):
         with contextlib.suppress(Exception):
             await self._await_disconnect_step(self._set_status_indicator(online=False), _DISCONNECT_STEP_TIMEOUT, "status-indicator update")
         await self._await_disconnect_step(self._cancel_pending_delivery_tasks(), _DISCONNECT_STEP_TIMEOUT, "pending-delivery cancel")
+        fiscal_flow = getattr(self, "_fiscal_query_flow", None)
+        if fiscal_flow is not None:
+            await self._await_disconnect_step(fiscal_flow.close(), _DISCONNECT_STEP_TIMEOUT, "fiscal-query cancel")
         if self._app:
             try:
                 # Bounded: a CLOSE-WAIT socket can wedge updater.stop() forever; fall through on timeout.
@@ -4674,6 +4687,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         data = query.data
         cb = self._callback_ctx(query)
+        fiscal_flow = getattr(self, "_fiscal_query_flow", None)
+        if fiscal_flow is not None and data in fiscal_flow.START_CALLBACKS:
+            if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para iniciar esta operación."):
+                return
+            if fiscal_flow.conflicts_with_start(self, data, cb["chat_id"], cb["thread_id"], query.from_user.id):
+                await query.answer(text="Completá o cancelá la operación en curso antes de iniciar otra.")
+                return
         # --- Administración ContaBot: technical DM only ---
         if data.startswith("oa:") or data == "om:administracion":
             if not self._is_technical_administrator_callback(query):
@@ -4759,6 +4779,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 self, query, data, cb["chat_id"], cb["thread_id"], caller_id
             ):
                 return
+
+        # CCMA/SCT: same allowlist, private chat only, never an agent turn.
+        if data.startswith("fq:"):
+            if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para consultar ARCA."):
+                return
+            if str(cb["chat_type"]).lower() != "private":
+                await query.answer(text="Estas consultas se realizan por privado.")
+                return
+            await self._fiscal_query_flow.callback(
+                self, query, data, cb["chat_id"], cb["thread_id"], str(query.from_user.id))
+            return
 
         # --- Descarga Portal IVA ---
         if data.startswith("pi:"):
@@ -6293,6 +6324,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if await self._agip_ddjj_flow.text(self, msg):
             return
         if await self._portal_iva_flow.text(self, msg):
+            return
+        fiscal_flow = getattr(self, "_fiscal_query_flow", None)
+        if fiscal_flow is not None and await fiscal_flow.text(self, msg):
             return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
