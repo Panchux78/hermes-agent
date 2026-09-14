@@ -480,11 +480,15 @@ class FiscalQueryFlow:
             stdout = await interactive_communicate(self, process, state_key, chat_id, captcha_dir, initial)
             initial = None
             status = self._sct_runner_status(stdout)
-            if process.returncode != 0 or status is None:
-                await self.send(chat_id, "El runner SCT terminó sin un estado verificable. No se entregó ningún resultado.")
+            if status is None:
+                await self.send(chat_id, f"El runner SCT terminó sin un estado verificable (salida {process.returncode}). No se entregó ningún resultado. Referencia: {captcha_dir.name}.")
                 return
             if status != "sct_exported":
-                await self.send(chat_id, f"La consulta SCT terminó sin exportación: `{status}`. Revisá la evidencia privada.")
+                await self.send(chat_id, f"La consulta SCT terminó sin exportación: `{status}`. Referencia: {captcha_dir.name}. Revisá la evidencia privada.")
+                return
+
+            if process.returncode != 0:
+                await self.send(chat_id, f"SCT informó exportación, pero terminó con error ({process.returncode}). No se entregó ningún resultado. Referencia: {captcha_dir.name}.")
                 return
 
             await terminate_owned_group(process)
