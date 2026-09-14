@@ -21,6 +21,17 @@ def test_projection_never_stores_unknown_strings_or_raw_exceptions(tmp_path):
     assert (tmp_path / 'diagnostic.jsonl').stat().st_mode & 0o777 == 0o600
 
 
+def test_screenshot_metadata_and_rejection_message(tmp_path):
+    diag = Diagnostics(tmp_path)
+    diag.record({'stage': 'login', 'code': 'failure_screenshot_saved',
+                 'screenshot': {'file': 'failure.png', 'bytes': 123, 'sha256': 'a'*64, 'password': 'SECRET'}})
+    message=diag.failure('login_credentials_rejected')
+    diag.close()
+    rows=[json.loads(x) for x in (tmp_path/'diagnostic.jsonl').read_text().splitlines()]
+    assert rows[0]['screenshot']=={'file':'failure.png','bytes':123,'sha256':'a'*64}
+    assert 'Clave o usuario incorrecto' in message and 'SECRET' not in str(rows)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('status', ['subject_not_verified', 'login_not_verified', 'source_table_ambiguous', 'source_table_evaluation_failed'])
 async def test_real_process_preserves_stage_code_and_reference(tmp_path, monkeypatch, status):
