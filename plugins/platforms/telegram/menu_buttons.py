@@ -19,7 +19,10 @@ MENU_ALIGNMENT_PADDING = {
     ("arba", "Preparar"): (0, 2),
     # menu8.png: hair-only suffix had no effect; keep a shared terminator.
     # menu10.png: owner confirmed the menu9 adjustment on 2026-09-14.
+    # Vencimientos was added later: compensate its shorter visible label
+    # against the same approved CSV reference instead of falling back to zero.
     # Keep these counts; other clients need their own visual verification.
+    ("arca_consultar", "Vencimientos"): (12, 0),
     ("arca_consultar", "CSV de períodos presentados"): (1, 0),
     ("arca_consultar", "CCMA Obligaciones y pagos"): (1, 3),
     ("arca_consultar", "SCT Estado de cumplimiento"): (1, 2),

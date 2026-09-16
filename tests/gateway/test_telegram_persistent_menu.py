@@ -6,7 +6,11 @@ from PIL import Image
 import pytest
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.menu_buttons import aligned_menu_label
+from plugins.platforms.telegram.menu_buttons import (
+    BRAILLE_PATTERN_BLANK,
+    MENU_ALIGNMENT_PADDING,
+    aligned_menu_label,
+)
 
 
 def test_rich_reply_markup_is_one_persistent_menu_trigger():
@@ -252,6 +256,21 @@ def test_implemented_tax_actions_reuse_existing_flows(monkeypatch):
             for row in TelegramAdapter._menu_panel_keyboard(page)
             for button in row
         )
+
+
+def test_arca_query_fixed_buttons_have_explicit_visual_compensation():
+    expected = {
+        "Vencimientos": (12, 0),
+        "CSV de períodos presentados": (1, 0),
+        "CCMA Obligaciones y pagos": (1, 3),
+        "SCT Estado de cumplimiento": (1, 2),
+    }
+
+    for text, padding in expected.items():
+        assert MENU_ALIGNMENT_PADDING[("arca_consultar", text)] == padding
+
+    label = aligned_menu_label("arca_consultar", "📅", "Vencimientos")
+    assert label == f"📅  Vencimientos{BRAILLE_PATTERN_BLANK * 12}"
 
 
 def test_pdf_tools_are_separate_from_accounting_preparation(monkeypatch):
