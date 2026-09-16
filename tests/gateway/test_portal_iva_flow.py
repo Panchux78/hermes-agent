@@ -613,3 +613,45 @@ def test_release_unblocks_pending_captcha():
         assert key not in flow.tasks
 
     asyncio.run(scenario())
+
+
+def test_own_relation_is_explained_instead_of_a_mute_failure():
+    # 2026-09-15: pedir al propio titular agotaba dos esperas de 90 s y
+    # terminaba en el mensaje genérico. Portal IVA no lista la identidad activa.
+    assert PortalIvaFlow._error_message(
+        {"motivo": "TITULAR_ES_EL_REPRESENTADO_20218332650"}, "fallback", "generar"
+    ) == (
+        "Generar CSV de período nuevo: el contribuyente elegido es el titular de la "
+        "clave de ARCA, así que no hay representación que usar. Portal IVA no deja "
+        "representarse a uno mismo, y la portada avisa que ese CUIT no tiene activa "
+        "la caracterización de IVA. Elegí un contribuyente representado por ese titular."
+    )
+
+
+def test_unlisted_represented_taxpayer_points_at_arca_not_at_the_bot():
+    assert PortalIvaFlow._error_message(
+        {"motivo": "REPRESENTADO_NO_LISTADO_20218332650"},
+        "fallback",
+        "descargar-presentados",
+    ) == (
+        "Descargar CSV presentados: ARCA no lista a ese contribuyente entre los "
+        "representados por el titular de la clave. Revisá la representación en ARCA."
+    )
+
+
+def test_unavailable_period_names_the_periods_the_portal_does_accept():
+    assert PortalIvaFlow._error_message(
+        {"motivo": "PERIODO_NO_DISPONIBLE_2026-07_OFRECE_202609_202608"},
+        "fallback",
+        "generar",
+    ) == (
+        "Generar CSV de período nuevo: el período 07/2026 no está disponible. "
+        "ARCA ofrece 09/2026, 08/2026 para declaración nueva."
+    )
+
+
+def test_unavailable_period_without_offered_list_keeps_the_previous_message():
+    # El ejecutor viejo, o un portal que no expone opciones, no debe romper.
+    assert PortalIvaFlow._error_message(
+        {"motivo": "PERIODO_NO_DISPONIBLE_2026-05"}, "fallback", "generar"
+    ) == "Generar CSV de período nuevo: el período no está disponible para esta operación."

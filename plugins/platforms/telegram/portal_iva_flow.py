@@ -645,6 +645,30 @@ class PortalIvaFlow:
                 f"{prefix}: el período {month}/{year} no figura como presentado en ARCA. "
                 "Si todavía no fue presentado, usá “Generar CSV de período nuevo”."
             )
+        own_relation = re.fullmatch(r"TITULAR_ES_EL_REPRESENTADO_(\d{11})", reason)
+        if own_relation:
+            return (
+                f"{prefix}: el contribuyente elegido es el titular de la clave de ARCA, "
+                "así que no hay representación que usar. Portal IVA no deja representarse "
+                "a uno mismo, y la portada avisa que ese CUIT no tiene activa la "
+                "caracterización de IVA. Elegí un contribuyente representado por ese titular."
+            )
+        not_listed = re.fullmatch(r"REPRESENTADO_NO_LISTADO_(\d{11})", reason)
+        if not_listed:
+            return (
+                f"{prefix}: ARCA no lista a ese contribuyente entre los representados "
+                "por el titular de la clave. Revisá la representación en ARCA."
+            )
+        unavailable = re.fullmatch(
+            r"PERIODO_NO_DISPONIBLE_(\d{4})-(0[1-9]|1[0-2])_OFRECE_((?:\d{6})(?:_\d{6})*)", reason)
+        if unavailable:
+            year, month, offered = unavailable.groups()
+            periods = ", ".join(
+                f"{value[4:]}/{value[:4]}" for value in offered.split("_"))
+            return (
+                f"{prefix}: el período {month}/{year} no está disponible. "
+                f"ARCA ofrece {periods} para declaración nueva."
+            )
         if reason.startswith(("PERIODO_NO_DISPONIBLE", "PERIODO_NO_PRESENTADO")):
             return f"{prefix}: el período no está disponible para esta operación."
         if reason:
