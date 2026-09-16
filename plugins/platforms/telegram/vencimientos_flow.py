@@ -78,7 +78,9 @@ class VencimientosFlow:
             FROM console.vw_vencimientos_telegram
            WHERE telegram_id={int(telegram_id)}
              AND (lower(nombre_legal) LIKE '%'||lower({literal})||'%'
-                  OR slug=lower({literal}))
+                  OR slug=lower({literal})
+                  OR regexp_replace(cuit,'[^0-9]','','g')=
+                     regexp_replace({literal},'[^0-9]','','g'))
            GROUP BY id_contribuyente,nombre_legal,slug ORDER BY nombre_legal LIMIT 12;
         """)
 
@@ -170,7 +172,7 @@ class VencimientosFlow:
             state = State(user_id=user_id, nonce=uuid.uuid4().hex[:10], created_at=time.monotonic())
             self.states[key] = state
             await query.answer()
-            await query.edit_message_text("Vencimientos ARCA\nIngresá el nombre o slug del contribuyente.", reply_markup=self._cancel(state.nonce))
+            await query.edit_message_text("Vencimientos ARCA\nIngresá el nombre, CUIT o alias del contribuyente.", reply_markup=self._cancel(state.nonce))
             return True
         if not state or len(parts) < 3 or parts[2] != state.nonce:
             await query.answer("Esta consulta venció. Iniciá una nueva.")
@@ -224,7 +226,7 @@ class VencimientosFlow:
         except Exception:
             self.states.pop(key, None); await message.reply_text("No pude consultar los vencimientos. Probá nuevamente más tarde."); return True
         if not rows:
-            await message.reply_text("No encontré un contribuyente autorizado con ese nombre o slug.", reply_markup=self._cancel(state.nonce)); return True
+            await message.reply_text("No encontré un contribuyente autorizado con ese nombre, CUIT o alias.", reply_markup=self._cancel(state.nonce)); return True
         if len(rows) == 1:
             self._select_subject(state, rows[0])
             await self._ask_format(message, state, edit=False)
