@@ -1,4 +1,4 @@
-"""Consulta y avisos programados de vencimientos ARCA por Telegram."""
+"""Consulta manual de vencimientos ARCA por Telegram."""
 from __future__ import annotations
 
 import asyncio
@@ -146,49 +146,3 @@ class VencimientosFlow:
         kwargs = {"chat_id": chat_id, "text": text}
         if thread_id is not None: kwargs["message_thread_id"] = thread_id
         await adapter._bot.send_message(**kwargs)
-
-    def _claim(self) -> list[dict[str, Any]]:
-        return self._query("""
-          WITH due AS (
-            SELECT a.id_aviso FROM console.tbl_vencimientos_avisos a
-             WHERE a.canal='telegram' AND a.estado IN ('pendiente','fallido')
-               AND a.disponible_desde<=now() AND a.intentos<5
-             ORDER BY a.id_aviso FOR UPDATE SKIP LOCKED LIMIT 20
-          ), claimed AS (
-            UPDATE console.tbl_vencimientos_avisos a SET estado='enviando',intentos=intentos+1,actualizado_en=now()
-             FROM due WHERE a.id_aviso=due.id_aviso RETURNING a.*
-          )
-          SELECT json_build_object('id',c.id_aviso,'chat_id',v.telegram_id,'impuesto',v.impuesto,
-                 'concepto',v.concepto,'fecha',to_char(c.fecha_vencimiento,'DD/MM/YYYY'))::text
-            FROM claimed c JOIN console.vw_vencimientos_telegram v
-              ON v.id_usuario=c.id_usuario AND v.id_contribuyente=c.id_contribuyente
-             AND v.id_impuesto=c.id_impuesto AND v.id_concepto=c.id_concepto
-             AND v.periodo=c.periodo AND v.anticipo_cuota=c.anticipo_cuota
-             AND v.tipo_operacion=c.tipo_operacion;
-        """)
-
-    def _finish_notice(self, notice_id: int, sent: bool) -> None:
-        result = "enviado" if sent else "telegram_no_enviado"
-        self._query(f"""
-          UPDATE console.tbl_vencimientos_avisos SET estado='{'enviado' if sent else 'fallido'}',
-                 enviado_en=CASE WHEN {str(sent).lower()} THEN now() ELSE enviado_en END,
-                 ultimo_resultado='{result}',
-                 disponible_desde=CASE WHEN {str(sent).lower()} THEN disponible_desde ELSE now()+interval '1 day' END,
-                 actualizado_en=now() WHERE id_aviso={int(notice_id)} RETURNING '{{}}'::json::text;
-        """)
-
-    async def notification_loop(self, adapter) -> None:
-        while True:
-            try:
-                for row in await asyncio.to_thread(self._claim):
-                    sent = False
-                    try:
-                        await adapter._bot.send_message(chat_id=row["chat_id"], text=f"Recordatorio ContaBot\n{row['fecha']} · {row['impuesto']} · {row['concepto']}")
-                        sent = True
-                    finally:
-                        await asyncio.to_thread(self._finish_notice, int(row["id"]), sent)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                pass
-            await asyncio.sleep(60)

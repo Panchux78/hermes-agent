@@ -506,7 +506,6 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_verifier_task: Optional[asyncio.Task] = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
         self._bot_identity_refresh_task: Optional[asyncio.Task] = None
-        self._vencimientos_notification_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None  # command menu + DM topics, off the connect path
         self._polling_conflict_count = self._polling_network_error_count = self._polling_generation = 0
         self._polling_conflict_recovery_generation: Optional[int] = None
@@ -2997,10 +2996,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._setup_dm_topics()
             except Exception as topics_err:
                 logger.warning("[%s] DM topics setup failed (non-fatal): %s", self.name, topics_err, exc_info=True)
-            task = getattr(self, "_vencimientos_notification_task", None)
-            if task is None or task.done():
-                task = asyncio.create_task(self._vencimientos_flow.notification_loop(self))
-                self._vencimientos_notification_task = task
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
         except asyncio.CancelledError:
@@ -3597,7 +3592,6 @@ class TelegramAdapter(BasePlatformAdapter):
         # Cancel the heartbeat (and webhook-mode identity loop) before tearing down the app.
         await self._cancel_task_attr("_polling_heartbeat_task", "heartbeat cancel")
         await self._cancel_task_attr("_bot_identity_refresh_task", "identity-refresh cancel")
-        await self._cancel_task_attr("_vencimientos_notification_task", "vencimientos notifications cancel")
         # Mark the bot "Offline" while its HTTP client is still alive. Opt-in, non-fatal.
         with contextlib.suppress(Exception):
             await self._await_disconnect_step(self._set_status_indicator(online=False), _DISCONNECT_STEP_TIMEOUT, "status-indicator update")

@@ -27,6 +27,10 @@ class VencimientosFlowTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "vencimientos_database_unavailable"):
                 VencimientosFlow._connection_args()
 
+    def test_telegram_is_query_only(self):
+        self.assertFalse(hasattr(VencimientosFlow, "notification_loop"))
+        self.assertFalse(hasattr(VencimientosFlow, "_claim"))
+
 
 if __name__ == "__main__":
     unittest.main()
