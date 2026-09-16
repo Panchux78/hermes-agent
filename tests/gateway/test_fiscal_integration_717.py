@@ -15,6 +15,12 @@ from plugins.platforms.telegram.fiscal_execution import terminate_owned_group
 from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow, _WorkflowMenuState
 
 
+def test_canonical_access_decrypts_only_inside_postgresql():
+    sql = credentials.access_sql(8, '20987654321', 'synthetic-client', '20123456783')
+    assert 'console.fn_acceso_descifrar(a.contrasena) AS password' in sql
+    assert 'a.contrasena AS password' not in sql
+
+
 def test_login_submission_diagnostics_exclude_values(tmp_path):
     from plugins.platforms.telegram.ccma_diagnostics import Diagnostics
     recorder = Diagnostics(tmp_path)

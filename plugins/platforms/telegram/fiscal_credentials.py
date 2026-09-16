@@ -34,7 +34,8 @@ def access_sql(contributor_id, cuit, slug, holder_cuit):
     # a representative from a name or silently replace the selected identity.
     return f"""WITH candidates AS (
       SELECT btrim(h.cuit) AS usuario, a.usuario AS login_usuario,
-             a.contrasena AS password, btrim(c.cuit) AS representado, c.slug
+             console.fn_acceso_descifrar(a.contrasena) AS password,
+             btrim(c.cuit) AS representado, c.slug
       FROM public.tbl_representaciones r
       JOIN public.tbl_entidades e ON e.id_entidad=r.id_entidad AND e.activo AND e.nombre='ARCA'
       JOIN public.tbl_contribuyentes c ON c.id_contribuyente=r.id_contribuyente_representado AND c.activo
