@@ -462,8 +462,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pdf_security_flow = PdfSecurityFlow()
         self._pdf_xlsx_flow = PdfXlsxFlow()
         self._portal_iva_flow = PortalIvaFlow()
-        self._vencimientos_flow = VencimientosFlow()
         fiscal_paths = deployment_paths(extra)
+        self._vencimientos_flow = VencimientosFlow(
+            runtime_python=fiscal_paths.get("runtime_python")
+        )
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection,
             runtime_python=fiscal_paths.get("runtime_python"),

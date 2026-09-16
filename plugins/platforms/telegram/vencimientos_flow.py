@@ -5,7 +5,9 @@ import asyncio
 import base64
 import json
 import os
+from pathlib import Path
 import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -22,13 +24,18 @@ class State:
     nonce: str
     stage: str = "search"
     created_at: float = 0.0
+    contributor_id: int | None = None
+    contributor_name: str = ""
+    contributor_slug: str = ""
+    candidates: dict[int, dict[str, Any]] | None = None
 
 
 class VencimientosFlow:
     TTL = 600
 
-    def __init__(self) -> None:
+    def __init__(self, runtime_python: Path | None = None) -> None:
         self.states: dict[str, State] = {}
+        self.runtime_python = Path(runtime_python) if runtime_python else None
 
     @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
@@ -77,16 +84,78 @@ class VencimientosFlow:
 
     def _calendar(self, telegram_id: int, contributor_id: int) -> list[dict[str, Any]]:
         return self._query(f"""
-          SELECT json_build_object('impuesto',impuesto,'concepto',concepto,'periodo',periodo,
-                 'tipo',tipo_operacion,'fecha',to_char(fecha_vencimiento,'DD/MM/YYYY'),'estado',estado)::text
+          SELECT json_build_object('id_impuesto',id_impuesto,'impuesto',impuesto,
+                 'id_concepto',id_concepto,'concepto',concepto,'periodo',periodo,
+                 'anticipo_cuota',anticipo_cuota,'tipo',tipo_operacion,
+                 'fecha',to_char(fecha_vencimiento,'YYYY-MM-DD'),
+                 'formularios',formularios,'estado',estado)::text
             FROM console.vw_vencimientos_telegram
            WHERE telegram_id={int(telegram_id)} AND id_contribuyente={int(contributor_id)}
-           ORDER BY fecha_vencimiento,id_vencimiento LIMIT 40;
+           ORDER BY fecha_vencimiento,id_vencimiento;
         """)
 
     @staticmethod
     def _cancel(nonce: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"ve:cancel:{nonce}")]])
+
+    @staticmethod
+    def _formats(nonce: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(menu_label("📊", "Excel"), callback_data=f"ve:format:{nonce}:xlsx")],
+            [InlineKeyboardButton(menu_label("📅", "ICS para Google Calendar"), callback_data=f"ve:format:{nonce}:ics")],
+            [InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"ve:cancel:{nonce}")],
+        ])
+
+    @staticmethod
+    def _select_subject(state: State, row: dict[str, Any]) -> None:
+        state.contributor_id = int(row["id"])
+        state.contributor_name = str(row["nombre"])
+        state.contributor_slug = str(row["slug"])
+        state.stage = "format"
+
+    async def _ask_format(self, target, state: State, *, edit: bool) -> None:
+        text = f"Vencimientos ARCA · {state.contributor_name}\nElegí el archivo que querés recibir."
+        method = target.edit_message_text if edit else target.reply_text
+        await method(text, reply_markup=self._formats(state.nonce))
+
+    def _generate(self, kind: str, output: Path, contributor_id: int, slug: str,
+                  rows: list[dict[str, Any]]) -> None:
+        python = self.runtime_python
+        script = Path(__file__).with_name("vencimientos_export.py")
+        if (python is None or not python.is_absolute() or not python.is_file()
+                or not os.access(python, os.X_OK) or not script.is_file()):
+            raise RuntimeError("vencimientos_export_runtime_unavailable")
+        run = subprocess.run(
+            [str(python), "-I", "-B", str(script), kind, str(output),
+             str(contributor_id), slug],
+            input=json.dumps(rows, ensure_ascii=False), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=30, check=False,
+        )
+        if run.returncode or not output.is_file() or output.is_symlink() or output.stat().st_size == 0:
+            raise RuntimeError("vencimientos_export_failed")
+
+    async def _deliver(self, adapter, chat_id, thread_id, telegram_id: int,
+                       state: State, kind: str) -> None:
+        if state.contributor_id is None:
+            raise RuntimeError("vencimientos_subject_missing")
+        rows = await asyncio.to_thread(self._calendar, telegram_id, state.contributor_id)
+        if not rows:
+            raise LookupError("vencimientos_empty")
+        with tempfile.TemporaryDirectory(prefix="contabot-vencimientos-") as directory:
+            output = Path(directory) / f"{state.contributor_slug}-vencimientos-arca.{kind}"
+            await asyncio.to_thread(
+                self._generate, kind, output, state.contributor_id,
+                state.contributor_slug, rows,
+            )
+            metadata = {"thread_id": thread_id} if thread_id is not None else None
+            result = await adapter.send_document(
+                chat_id=str(chat_id), file_path=str(output), file_name=output.name,
+                caption=f"Vencimientos ARCA · {state.contributor_name} · {len(rows)} registro(s).",
+                metadata=metadata,
+            )
+            if not getattr(result, "success", False):
+                raise RuntimeError("vencimientos_delivery_failed")
 
     async def callback(self, adapter, query, data: str, chat_id, thread_id, user_id: str) -> bool:
         if not data.startswith("ve:"):
@@ -110,7 +179,34 @@ class VencimientosFlow:
             self.states.pop(key, None); await query.answer(); await query.edit_message_text("Consulta cancelada.")
             return True
         if parts[1] == "select" and len(parts) == 4 and parts[3].isdigit():
-            await query.answer(); await self._show(adapter, chat_id, thread_id, int(user_id), int(parts[3])); self.states.pop(key, None)
+            candidate = (state.candidates or {}).get(int(parts[3]))
+            if not candidate or state.stage != "search":
+                await query.answer("Esta opción ya no está disponible.")
+                return True
+            self._select_subject(state, candidate)
+            await query.answer(); await self._ask_format(query, state, edit=True)
+            return True
+        if parts[1] == "format" and len(parts) == 4 and parts[3] in {"xlsx", "ics"}:
+            if state.stage != "format":
+                await query.answer("Esta opción ya no está disponible.")
+                return True
+            kind = parts[3]
+            await query.answer()
+            await query.edit_message_text(f"Preparando {'Excel' if kind == 'xlsx' else 'ICS'}…")
+            try:
+                await self._deliver(adapter, chat_id, thread_id, int(user_id), state, kind)
+            except LookupError:
+                self.states.pop(key, None)
+                await query.edit_message_text("No hay vencimientos ARCA publicados para ese contribuyente.")
+                return True
+            except Exception:
+                await query.edit_message_text(
+                    "No pude generar el archivo. Podés reintentar o cancelar.",
+                    reply_markup=self._formats(state.nonce),
+                )
+                return True
+            self.states.pop(key, None)
+            await query.edit_message_text(f"{'Excel' if kind == 'xlsx' else 'ICS'} enviado.")
             return True
         await query.answer("Esta opción ya no está disponible.")
         return True
@@ -130,19 +226,11 @@ class VencimientosFlow:
         if not rows:
             await message.reply_text("No encontré un contribuyente autorizado con ese nombre o slug.", reply_markup=self._cancel(state.nonce)); return True
         if len(rows) == 1:
-            self.states.pop(key, None); await self._show(adapter, message.chat_id, getattr(message, "message_thread_id", None), int(state.user_id), int(rows[0]["id"])); return True
+            self._select_subject(state, rows[0])
+            await self._ask_format(message, state, edit=False)
+            return True
+        state.candidates = {int(row["id"]): row for row in rows}
         keyboard = [[InlineKeyboardButton(menu_label("👤", row["nombre"]), callback_data=f"ve:select:{state.nonce}:{row['id']}")] for row in rows]
         keyboard += list(self._cancel(state.nonce).inline_keyboard)
         await message.reply_text("Encontré varias coincidencias. Elegí una:", reply_markup=InlineKeyboardMarkup(keyboard))
         return True
-
-    async def _show(self, adapter, chat_id, thread_id, telegram_id: int, contributor_id: int) -> None:
-        rows = await asyncio.to_thread(self._calendar, telegram_id, contributor_id)
-        if not rows:
-            text = "No hay vencimientos ARCA publicados para ese contribuyente."
-        else:
-            rendered = [f"• {r['fecha']} · {r['impuesto']} · {r['concepto']} · {r['tipo']} · {r['estado']}" for r in rows]
-            text = "Vencimientos ARCA\n\n" + "\n".join(rendered)
-        kwargs = {"chat_id": chat_id, "text": text}
-        if thread_id is not None: kwargs["message_thread_id"] = thread_id
-        await adapter._bot.send_message(**kwargs)

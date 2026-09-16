@@ -50,6 +50,7 @@ async def test_real_menu_to_canonical_identity_period_and_dispatch(adapter, acti
     flow = adapter._fiscal_query_flow
     assert flow.catalog is not adapter._portal_iva_flow
     assert flow.catalog.runtime_python == Path(sys.executable)
+    assert adapter._vencimientos_flow.runtime_python == Path(sys.executable)
     assert adapter._portal_iva_flow.query_connection is None
     row = {'id': 3, 'nombre': 'Cliente sintético', 'cuit': '20987654321', 'slug': 'cliente-sintetico'}
     flow.catalog._search = Mock(return_value=[row])
