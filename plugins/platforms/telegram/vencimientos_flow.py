@@ -15,7 +15,7 @@ from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 
 
 @dataclass
@@ -103,8 +103,8 @@ class VencimientosFlow:
     @staticmethod
     def _formats(nonce: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton(menu_label("📊", "Excel"), callback_data=f"ve:format:{nonce}:xlsx")],
-            [InlineKeyboardButton(menu_label("📅", "ICS para Google Calendar"), callback_data=f"ve:format:{nonce}:ics")],
+            [InlineKeyboardButton(aligned_menu_label("vencimientos_formato", "📊", "Excel"), callback_data=f"ve:format:{nonce}:xlsx")],
+            [InlineKeyboardButton(aligned_menu_label("vencimientos_formato", "📅", "ICS para Google Calendar"), callback_data=f"ve:format:{nonce}:ics")],
             [InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"ve:cancel:{nonce}")],
         ])
 

@@ -26,6 +26,8 @@ MENU_ALIGNMENT_PADDING = {
     ("arca_consultar", "CSV de períodos presentados"): (1, 0),
     ("arca_consultar", "CCMA Obligaciones y pagos"): (1, 3),
     ("arca_consultar", "SCT Estado de cumplimiento"): (1, 2),
+    ("vencimientos_formato", "Excel"): (14, 0),
+    ("vencimientos_formato", "ICS para Google Calendar"): (0, 0),
     ("bancos", "Resumen bancario → Excel"): (7, 2),
     ("herramientas", "Proteger PDF"): (3, 0),
     ("ayuda", "Hacer una consulta"): (0, 1),

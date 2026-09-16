@@ -3,10 +3,31 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from plugins.platforms.telegram.menu_buttons import MENU_ALIGNMENT_PADDING, aligned_menu_label
 from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
 
 
 class VencimientosFlowTests(unittest.TestCase):
+    def test_format_buttons_have_explicit_alignment_and_stable_callbacks(self):
+        import plugins.platforms.telegram.vencimientos_flow as module
+
+        self.assertEqual(MENU_ALIGNMENT_PADDING[("vencimientos_formato", "Excel")], (14, 0))
+        self.assertEqual(MENU_ALIGNMENT_PADDING[("vencimientos_formato", "ICS para Google Calendar")], (0, 0))
+        with (patch.object(module, "InlineKeyboardButton", side_effect=lambda text, callback_data: SimpleNamespace(text=text, callback_data=callback_data)),
+              patch.object(module, "InlineKeyboardMarkup", side_effect=lambda rows: SimpleNamespace(inline_keyboard=rows))):
+            rows = VencimientosFlow._formats("abc").inline_keyboard
+        self.assertEqual(
+            [row[0].text for row in rows[:2]],
+            [
+                aligned_menu_label("vencimientos_formato", "📊", "Excel"),
+                aligned_menu_label("vencimientos_formato", "📅", "ICS para Google Calendar"),
+            ],
+        )
+        self.assertEqual(
+            [row[0].callback_data for row in rows[:2]],
+            ["ve:format:abc:xlsx", "ve:format:abc:ics"],
+        )
+
     def test_search_scopes_by_telegram_id_and_accepts_name_slug_or_cuit(self):
         flow = VencimientosFlow()
         with patch.object(flow, "_query", return_value=[]) as query:
