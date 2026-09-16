@@ -227,6 +227,9 @@ def test_implemented_tax_actions_reuse_existing_flows(monkeypatch):
     monkeypatch.setattr(adapter_module, "InlineKeyboardMarkup", lambda rows: rows)
 
     assert TelegramAdapter._menu_panel_keyboard("arca_consultar")[0] == [
+        {"text": aligned_menu_label("arca_consultar", "📅", "Vencimientos"), "callback_data": "ve:start"}
+    ]
+    assert TelegramAdapter._menu_panel_keyboard("arca_consultar")[1] == [
         {"text": aligned_menu_label("arca_consultar", "📥", "CSV de períodos presentados"), "callback_data": "pi:descargar"}
     ]
     assert TelegramAdapter._menu_panel_keyboard("arca_preparar")[0] == [

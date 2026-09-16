@@ -448,6 +448,7 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.pdf_security_flow import PdfSecurityFlow
         from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
         from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
+        from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
         from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
         from plugins.platforms.telegram.fiscal_credentials import lookup_connection
         from plugins.platforms.telegram.contabot_deployment import deployment_paths
@@ -461,6 +462,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pdf_security_flow = PdfSecurityFlow()
         self._pdf_xlsx_flow = PdfXlsxFlow()
         self._portal_iva_flow = PortalIvaFlow()
+        self._vencimientos_flow = VencimientosFlow()
         fiscal_paths = deployment_paths(extra)
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection,
@@ -504,6 +506,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_verifier_task: Optional[asyncio.Task] = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
         self._bot_identity_refresh_task: Optional[asyncio.Task] = None
+        self._vencimientos_notification_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None  # command menu + DM topics, off the connect path
         self._polling_conflict_count = self._polling_network_error_count = self._polling_generation = 0
         self._polling_conflict_recovery_generation: Optional[int] = None
@@ -953,6 +956,7 @@ class TelegramAdapter(BasePlatformAdapter):
             back_page = "organismos"
         elif page == "arca_consultar":
             rows = [
+                [InlineKeyboardButton(aligned_menu_label(page, "📅", "Vencimientos"), callback_data="ve:start")],
                 [
                     InlineKeyboardButton(
                         aligned_menu_label(page, "📥", "CSV de períodos presentados"), callback_data="pi:descargar"
@@ -2993,6 +2997,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._setup_dm_topics()
             except Exception as topics_err:
                 logger.warning("[%s] DM topics setup failed (non-fatal): %s", self.name, topics_err, exc_info=True)
+            task = getattr(self, "_vencimientos_notification_task", None)
+            if task is None or task.done():
+                task = asyncio.create_task(self._vencimientos_flow.notification_loop(self))
+                self._vencimientos_notification_task = task
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
         except asyncio.CancelledError:
             raise
         finally:
@@ -3587,6 +3597,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Cancel the heartbeat (and webhook-mode identity loop) before tearing down the app.
         await self._cancel_task_attr("_polling_heartbeat_task", "heartbeat cancel")
         await self._cancel_task_attr("_bot_identity_refresh_task", "identity-refresh cancel")
+        await self._cancel_task_attr("_vencimientos_notification_task", "vencimientos notifications cancel")
         # Mark the bot "Offline" while its HTTP client is still alive. Opt-in, non-fatal.
         with contextlib.suppress(Exception):
             await self._await_disconnect_step(self._set_status_indicator(online=False), _DISCONNECT_STEP_TIMEOUT, "status-indicator update")
@@ -4711,6 +4722,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if data.startswith("om:"):
             await self._handle_operational_menu_callback(query, data)
             return
+
+        # --- Vencimientos ARCA ---
+        if data.startswith("ve:"):
+            if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para consultar vencimientos."):
+                return
+            if str(cb["chat_type"]).lower() != "private":
+                await query.answer(text="Estas consultas se realizan por privado.")
+                return
+            if await self._vencimientos_flow.callback(
+                self, query, data, cb["chat_id"], cb["thread_id"], str(query.from_user.id)
+            ):
+                return
 
         # --- Protección y desbloqueo determinista de PDFs ---
         if data.startswith("ps:"):
@@ -6324,6 +6347,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if await self._agip_ddjj_flow.text(self, msg):
             return
         if await self._portal_iva_flow.text(self, msg):
+            return
+        if await self._vencimientos_flow.text(self, msg):
             return
         fiscal_flow = getattr(self, "_fiscal_query_flow", None)
         if fiscal_flow is not None and await fiscal_flow.text(self, msg):
