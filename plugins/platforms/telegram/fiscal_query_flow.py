@@ -165,10 +165,17 @@ class FiscalQueryFlow:
         command, label = choices[action]
         state = _WorkflowMenuState(skill_command=command, label=label)
         self._workflow_menu_state[key] = state
-        await query.answer()
-        await query.edit_message_text(
-            f'{label}\nIngresá nombre, CUIT o slug del contribuyente.',
-            reply_markup=self._cancel_keyboard(state))
+        try:
+            await query.answer()
+            await query.edit_message_text(
+                f'{label}\nIngresá nombre, CUIT o slug del contribuyente.',
+                reply_markup=self._cancel_keyboard(state))
+        except BaseException:
+            # A failed Telegram acknowledgement/prompt must not leave a phantom
+            # consultation. Keep any newer state or one already advanced by input.
+            if self._workflow_menu_state.get(key) is state and state.stage == 'client':
+                self._workflow_menu_state.pop(key, None)
+            raise
 
     async def _request_period(self, chat_id, state):
         text = 'Ingresá el período: MM/AAAA, MM/AAAA-MM/AAAA o un año completo (AAAA).'

@@ -87,6 +87,56 @@ async def test_repeated_selection_does_not_replace_private_state(flow):
     q.edit_message_text.assert_not_awaited()
     assert flow._workflow_menu_state[('7', '7')].skill_command == 'ccma_obligaciones_pagos'
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['ccma', 'sct'])
+@pytest.mark.parametrize('failed_call', ['answer', 'edit_message_text'])
+async def test_failed_start_releases_state_and_allows_next_click(flow, action, failed_call):
+    from telegram.error import NetworkError
+
+    q = NS(answer=AsyncMock(), edit_message_text=AsyncMock())
+    getattr(q, failed_call).side_effect = NetworkError('synthetic connection failure')
+    with pytest.raises(NetworkError):
+        await flow.callback(flow._adapter, q, f'fq:{action}', '7', None, '7')
+    assert ('7', '7') not in flow._workflow_menu_state
+    assert not flow._sct_dispatch_tasks
+    assert not flow._background_tasks
+    q = await start(flow, action)
+    q.edit_message_text.assert_awaited_once()
+    assert flow._workflow_menu_state[('7', '7')].stage == 'client'
+
+
+@pytest.mark.asyncio
+async def test_cancelled_start_releases_only_its_own_state(flow):
+    from plugins.platforms.telegram.fiscal_query_flow import _WorkflowMenuState
+
+    q = NS(answer=AsyncMock(side_effect=asyncio.CancelledError), edit_message_text=AsyncMock())
+    with pytest.raises(asyncio.CancelledError):
+        await flow.callback(flow._adapter, q, 'fq:ccma', '7', None, '7')
+    assert ('7', '7') not in flow._workflow_menu_state
+
+    replacement = _WorkflowMenuState(skill_command='sct_estado_cumplimiento', label='SCT')
+    async def replace_then_cancel():
+        flow._workflow_menu_state[('7', '7')] = replacement
+        raise asyncio.CancelledError
+    q.answer.side_effect = replace_then_cancel
+    with pytest.raises(asyncio.CancelledError):
+        await flow.callback(flow._adapter, q, 'fq:ccma', '7', None, '7')
+    assert flow._workflow_menu_state[('7', '7')] is replacement
+
+
+@pytest.mark.asyncio
+async def test_failed_start_does_not_clear_query_already_advanced(flow):
+    from telegram.error import NetworkError
+
+    async def advance_then_fail(*args, **kwargs):
+        flow._workflow_menu_state[('7', '7')].stage = 'running'
+        raise NetworkError('synthetic prompt delivery failure')
+    q = NS(answer=AsyncMock(), edit_message_text=AsyncMock(side_effect=advance_then_fail))
+    with pytest.raises(NetworkError):
+        await flow.callback(flow._adapter, q, 'fq:ccma', '7', None, '7')
+    assert flow._workflow_menu_state[('7', '7')].stage == 'running'
+
 from unittest.mock import MagicMock
 from types import SimpleNamespace
 import plugins.platforms.telegram.fiscal_query_flow as fiscal_module
