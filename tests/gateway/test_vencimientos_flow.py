@@ -33,12 +33,18 @@ class VencimientosFlowTests(unittest.TestCase):
         with patch.object(flow, "_query", return_value=[]) as query:
             flow._search(123, "cliente-demo")
         sql = query.call_args.args[0]
-        self.assertIn("telegram_id=123", sql)
-        self.assertIn("slug=lower", sql)
-        self.assertIn("regexp_replace(cuit", sql)
-        self.assertIn("'cuit',regexp_replace(cuit", sql)
-        self.assertIn("GROUP BY id_contribuyente,nombre_legal,slug,cuit", sql)
+        self.assertIn("fn_buscar_contribuyente_telegram", sql)
+        self.assertIn("123,convert_from(decode(", sql)
+        self.assertIn("'cuit',cuit", sql)
         self.assertNotIn("cliente-demo", sql)
+
+    def test_search_is_independent_from_due_date_rows(self):
+        flow = VencimientosFlow()
+        with patch.object(flow, "_query", return_value=[]) as query:
+            flow._search(123, "berenstein")
+        sql = query.call_args.args[0]
+        self.assertNotIn("vw_vencimientos_telegram", sql)
+        self.assertNotIn("tbl_vencimientos", sql)
 
     def test_calendar_scopes_by_user_and_contributor(self):
         flow = VencimientosFlow()

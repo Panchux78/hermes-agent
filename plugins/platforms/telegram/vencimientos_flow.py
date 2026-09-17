@@ -80,15 +80,10 @@ class VencimientosFlow:
     def _search(self, telegram_id: int, term: str) -> list[dict[str, Any]]:
         literal = self._literal(term.strip())
         return self._query(f"""
-          SELECT json_build_object('id',id_contribuyente,'nombre',nombre_legal,'slug',slug,
-                 'cuit',regexp_replace(cuit,'[^0-9]','','g'))::text
-            FROM console.vw_vencimientos_telegram
-           WHERE telegram_id={int(telegram_id)}
-             AND (lower(nombre_legal) LIKE '%'||lower({literal})||'%'
-                  OR slug=lower({literal})
-                  OR regexp_replace(cuit,'[^0-9]','','g')=
-                     regexp_replace({literal},'[^0-9]','','g'))
-           GROUP BY id_contribuyente,nombre_legal,slug,cuit ORDER BY nombre_legal LIMIT 12;
+          SELECT json_build_object('id',id_contribuyente,'nombre',nombre_legal,
+                 'slug',slug,'cuit',cuit)::text
+            FROM console.fn_buscar_contribuyente_telegram(
+                 {int(telegram_id)},{literal});
         """)
 
     def _calendar(self, telegram_id: int, contributor_id: int) -> list[dict[str, Any]]:
