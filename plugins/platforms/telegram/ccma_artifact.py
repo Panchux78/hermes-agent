@@ -53,7 +53,12 @@ def publish_named(source, directory, filename):
     # Check before mkdir as well, so no directory is created through a symlink.
     for p in (directory,*directory.parents):
         if p.is_symlink(): raise ValueError('symlink_destination')
-    directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+    # The console reads the client tree through an inherited named ACL.  Mode
+    # 0700/0600 would reduce the ACL mask to zero and make a correctly archived
+    # workbook invisible to the read-only service account.  Keep owner-only
+    # writes while preserving read/traverse through that ACL.
+    directory.mkdir(parents=True,exist_ok=True,mode=0o750)
+    os.chmod(directory, 0o750)
     stem=Path(filename).stem
     source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(source_fd, 'rb') as inp:
@@ -62,6 +67,7 @@ def publish_named(source, directory, filename):
             raise ValueError('invalid_source')
         fd, temporary = tempfile.mkstemp(prefix='.fiscal-', suffix='.tmp', dir=directory)
         try:
+            os.fchmod(fd, 0o640)
             with os.fdopen(fd, 'wb') as out:
                 shutil.copyfileobj(inp, out)
                 out.flush(); os.fsync(out.fileno())

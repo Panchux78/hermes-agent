@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import pwd
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock
 
@@ -102,7 +103,8 @@ def test_publication_concurrent_no_partial_no_clobber(tmp_path, monkeypatch):
         files = list(executor.map(lambda _: publish_named(source, directory, 'book.xlsx'), range(4)))
     assert len(set(files)) == 4
     assert {p.name for p in files} == {'book.xlsx','book-v02.xlsx','book-v03.xlsx','book-v04.xlsx'}
-    assert all(p.read_bytes() == source.read_bytes() and p.stat().st_mode & 0o777 == 0o600 for p in files)
+    assert directory.stat().st_mode & 0o777 == 0o750
+    assert all(p.read_bytes() == source.read_bytes() and p.stat().st_mode & 0o777 == 0o640 for p in files)
     def interrupted(inp, out):
         out.write(b'partial')
         raise OSError('simulated_copy_failure')
@@ -115,6 +117,36 @@ def test_publication_concurrent_no_partial_no_clobber(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         publish_named(source, link/'must-not-exist', 'book.xlsx')
     assert not list(target.iterdir())
+
+
+def test_publication_preserves_read_only_named_acl(tmp_path):
+    if not shutil.which('setfacl') or not shutil.which('getfacl'):
+        pytest.skip('POSIX ACL tools unavailable')
+    try:
+        service_uid = pwd.getpwnam('contabot-console').pw_uid
+    except KeyError:
+        pytest.skip('console service identity unavailable')
+    root = tmp_path / 'clients'
+    root.mkdir()
+    subprocess.run(
+        ['setfacl', '-m', f'u:{service_uid}:r-x,d:u:{service_uid}:r-x', str(root)],
+        check=True,
+    )
+    source = tmp_path / 'source.xlsx'
+    source.write_bytes(b'synthetic-complete-book')
+
+    target = publish_named(source, root / 'client/year/consultas', 'book.xlsx')
+
+    directory_acl = subprocess.run(
+        ['getfacl', '-cpn', str(target.parent)], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    file_acl = subprocess.run(
+        ['getfacl', '-cpn', str(target)], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    assert f'user:{service_uid}:r-x' in directory_acl
+    assert f'user:{service_uid}:r-x\t#effective:r--' in file_acl
 
 
 @pytest.mark.asyncio
