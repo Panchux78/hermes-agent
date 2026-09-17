@@ -241,8 +241,7 @@ def level2(gate: Gate) -> None:
         "tests/gateway/test_fiscal_adapter_integration.py",
         "tests/gateway/test_portal_iva_flow.py",
         "tests/gateway/test_agip_ddjj_flow.py",
-        "tests/gateway/test_ccma_deterministic_dispatch.py",
-        "tests/gateway/test_sct_status_sol.py",
+        "tests/gateway/test_lea_fiscal_query_flow.py",
         "tests/gateway/test_vencimientos_flow.py",
     ]
     result = run([str(HERMES_REPO / "venv/bin/python"), "-m", "pytest", "-q", *tests],
@@ -255,6 +254,19 @@ def level2(gate: Gate) -> None:
 def level3(gate: Gate) -> None:
     programs = ("node", "firefox", "xvfb-run")
     gate.check(3, "required_programs", all(shutil.which(name) for name in programs))
+    fiscal_python = Path(os.environ.get(
+        "CONTABOT_FISCAL_RUNTIME_PYTHON",
+        "/home/pancho/.local/share/contabot/fiscal-runtime/bin/python",
+    ))
+    dependency_check = run([
+        str(fiscal_python), "-I", "-B", "-c",
+        "from importlib.metadata import version; "
+        "assert version('openpyxl') == '3.1.5'; "
+        "assert version('selenium') == '4.48.0'",
+    ], timeout=30) if fiscal_python.is_file() else None
+    gate.check(3, "fiscal_python_dependencies", bool(
+        dependency_check is not None and dependency_check.returncode == 0
+    ))
     probes = (
         HERMES_HOME / "skills/productivity/ccma-obligaciones-pagos/scripts/arca_ccma_probe.js",
         HERMES_HOME / "skills/productivity/sct-estado-cumplimiento/scripts/sct_probe.js",
