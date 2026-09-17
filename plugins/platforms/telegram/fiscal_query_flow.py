@@ -490,6 +490,7 @@ class FiscalQueryFlow:
         )
         process: Optional[asyncio.subprocess.Process] = None
         credential_frozen = False
+        source_exported = False
         try:
             initial = None
             if contributor_id is not None:
@@ -529,6 +530,7 @@ class FiscalQueryFlow:
                 await self.send(chat_id, f"SCT informó exportación, pero terminó con error ({process.returncode}). No se entregó ningún resultado. Referencia: {captcha_dir.name}.")
                 return
 
+            source_exported = True
             if telegram_id is None or scope_item is None:
                 raise RuntimeError('fiscal_scope_missing')
             await verify_representation(telegram_id, scope_item, 'ARCA', client_cuit)
@@ -571,7 +573,15 @@ class FiscalQueryFlow:
         except asyncio.CancelledError:
             raise
         except FiscalDatabaseError as error:
-            await self.send(chat_id, unavailable_message('SCT', str(error)))
+            if source_exported:
+                await self.send(
+                    chat_id,
+                    'SCT consultó ARCA y obtuvo la exportación, pero no pudo registrar '
+                    'la verificación local. No se generó ni entregó el Excel; requiere '
+                    'mantenimiento local.',
+                )
+            else:
+                await self.send(chat_id, unavailable_message('SCT', str(error)))
         except ValueError:
             await self.send(chat_id, 'SCT no pudo verificar el acceso o el CAPTCHA. Iniciá una consulta nueva.')
         except OSError:

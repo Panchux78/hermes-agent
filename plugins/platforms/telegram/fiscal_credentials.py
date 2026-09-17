@@ -51,11 +51,11 @@ def access_sql(contributor_id, cuit, slug, holder_cuit):
     """
 
 
-async def _query(sql):
+async def _query(sql, *, capability='fiscal'):
     process = None
     try:
         from contabot_pg import psql_invocation
-        command, environment = psql_invocation('fiscal')  # mandatory profile; NO sudo fallback
+        command, environment = psql_invocation(capability)  # mandatory profile; NO sudo fallback
         process = await asyncio.create_subprocess_exec(
             *command, '-qAt', '-v', 'VERBOSITY=sqlstate', '-c', sql, env=environment,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -106,7 +106,10 @@ async def canonical_access(contributor_id, cuit, slug, holder_cuit):
 
 async def verify_representation(telegram_id, item, entity, verified_cuit):
     """Persist only a subject identity already verified by the portal runner."""
-    raw = await _query(mark_verified_sql(telegram_id, item, entity, verified_cuit))
+    raw = await _query(
+        mark_verified_sql(telegram_id, item, entity, verified_cuit),
+        capability='verification',
+    )
     try:
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
         assert_marked(rows)

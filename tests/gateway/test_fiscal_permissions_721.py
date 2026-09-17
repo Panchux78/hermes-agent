@@ -74,3 +74,64 @@ async def test_missing_sql_permission_never_starts_portal_or_suggests_retry(tmp_
     text = flow.send.await_args.args[1]
     assert 'permisos' in text and 'No se consultó ARCA' in text
     assert 'Iniciá' not in text and 'CAPTCHA' not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['ccma', 'sct'])
+async def test_verification_database_failure_reports_completed_portal_stage(tmp_path, monkeypatch, kind):
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('HOME', str(tmp_path)); monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('CONTABOT_CLIENTES_ROOT', str(tmp_path/'clients'))
+    monkeypatch.setattr(fiscal_query_flow, '_WORKFLOW_MENU_OUTPUT_DIR', str(tmp_path/'output'))
+    skill = 'ccma-obligaciones-pagos' if kind == 'ccma' else 'sct-estado-cumplimiento'
+    scripts = tmp_path/'skills/productivity'/skill/'scripts'; scripts.mkdir(parents=True)
+    (scripts/('arca_ccma_probe.js' if kind == 'ccma' else 'sct_probe.js')).touch()
+    (scripts/'sct_xlsx.py').touch()
+    module = ccma_dispatch if kind == 'ccma' else fiscal_query_flow
+    monkeypatch.setattr(module, 'require_fiscal_runtime', AsyncMock())
+    monkeypatch.setattr(module, 'canonical_access', AsyncMock(return_value=b'{"type":"access"}\n'))
+    monkeypatch.setattr(
+        module,
+        'verify_representation',
+        AsyncMock(side_effect=credentials.FiscalDatabaseError('fiscal_database_unavailable')),
+    )
+    monkeypatch.setattr(module, 'terminate_owned_group', AsyncMock())
+
+    class Process:
+        returncode = 0
+
+    async def communicate(flow, process, state_key, chat_id, run_dir, initial, **kwargs):
+        if kind == 'ccma':
+            source = run_dir/'fuente.csv'
+            source.write_bytes(b'synthetic-source')
+            import hashlib
+            digest = hashlib.sha256(source.read_bytes()).hexdigest().encode()
+            return b'result=source_copied\nsource_sha256=' + digest + b'\n'
+        return b'result=sct_exported\n'
+
+    monkeypatch.setattr(module, 'interactive_communicate', communicate)
+    monkeypatch.setattr(module.asyncio, 'create_subprocess_exec', AsyncMock(return_value=Process()))
+    flow = fiscal_query_flow.FiscalQueryFlow(catalog=NS(runtime_python=sys.executable))
+    flow.send = AsyncMock(); flow.send_document = AsyncMock()
+    args = dict(chat_id='7', state_key=('7','8'), contributor_id=8, holder_cuit='20123456783',
+                client_slug='client', client_cuit='20987654321', credential_line=None,
+                credential_sha256=None, telegram_id='7',
+                scope_item={'id': 8, 'cuit': '20987654321', 'relation_id': 31,
+                            'relation_revision': 1, 'holder_cuit': '20123456783'})
+    if kind == 'ccma':
+        await ccma_dispatch.run_ccma(flow, **args, period_from='01/2026', period_to='01/2026')
+    else:
+        monkeypatch.setattr(
+            flow,
+            '_sct_dispatch_paths',
+            lambda: (tmp_path/'result.xlsx', tmp_path/'source.csv', tmp_path/'login.png',
+                     tmp_path/'service.png', tmp_path/'result.png'),
+        )
+        await flow._run_sct_dispatch(**args, period_mode='range', period_from='20260100',
+                                     period_until='20260131', period_label='01/2026')
+
+    text = flow.send.await_args.args[1]
+    assert 'consultó ARCA' in text
+    assert 'verificación local' in text
+    assert 'No se consultó ARCA' not in text
+    flow.send_document.assert_not_awaited()

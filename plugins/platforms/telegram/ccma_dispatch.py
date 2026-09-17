@@ -44,6 +44,7 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
     process = None
     credential_copy = run_dir / 'access.csv'
     credential_frozen = False
+    source_verified = False
     try:
         # Freeze the exact locally selected credential version for this runner.
         initial = None
@@ -79,6 +80,7 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         reported = re.search(rb'^source_sha256=([a-f0-9]{64})$', stdout, re.MULTILINE)
         if not reported or reported.group(1).decode() != digest:
             raise ValueError('source_integrity')
+        source_verified = True
         if telegram_id is None or scope_item is None:
             raise RuntimeError('fiscal_scope_missing')
         await verify_representation(telegram_id, scope_item, 'ARCA', client_cuit)
@@ -116,7 +118,15 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         await flow.send(chat_id, diagnostic.failure('timeout'))
     except FiscalDatabaseError as error:
         diagnostic.failure(str(error))
-        await flow.send(chat_id, unavailable_message('CCMA', str(error)) + f' Referencia: {run_dir.name}.')
+        if source_verified:
+            await flow.send(
+                chat_id,
+                'CCMA consultó ARCA y preservó la fuente, pero no pudo registrar '
+                'la verificación local. No se generó ni entregó el Excel; requiere '
+                f'mantenimiento local. Referencia: {run_dir.name}.',
+            )
+        else:
+            await flow.send(chat_id, unavailable_message('CCMA', str(error)) + f' Referencia: {run_dir.name}.')
     except ValueError as error:
         await flow.send(chat_id, diagnostic.failure(str(error), error=error))
     except Exception as error:

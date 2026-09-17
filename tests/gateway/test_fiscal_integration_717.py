@@ -73,6 +73,27 @@ async def test_missing_profile_has_no_privileged_or_csv_fallback(monkeypatch):
     child.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_verification_uses_the_narrow_write_capability(monkeypatch):
+    calls = []
+
+    def invocation(capability):
+        calls.append(capability)
+        raw = b'{"verified": true}\n'
+        return [sys.executable, '-c', f'import sys;sys.stdout.buffer.write({raw!r})'], {}
+
+    monkeypatch.setitem(sys.modules, 'contabot_pg', NS(psql_invocation=invocation))
+    item = {
+        'relation_id': 31,
+        'relation_revision': 1,
+        'cuit': '20987654326',
+    }
+
+    await credentials.verify_representation(7, item, 'ARCA', '20987654326')
+
+    assert calls == ['verification']
+
+
 def make_flow():
     flow = FiscalQueryFlow()
     bot = NS(send_photo=AsyncMock(return_value=NS(message_id=91)))
