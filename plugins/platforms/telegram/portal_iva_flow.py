@@ -22,6 +22,14 @@ from typing import Any
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.fiscal_scope import (
+    ACCOUNT_NOT_LINKED_MESSAGE,
+    AccountNotLinked,
+    FiscalScope,
+    InvalidCuit,
+    assert_marked,
+    mark_verified_sql,
+)
 
 try:
     import fcntl
@@ -57,6 +65,8 @@ class FlowState:
     captcha_nonce: str | None = None
     captcha_response: asyncio.Future | None = None
     created_at: float = field(default_factory=time.monotonic)
+    candidates: tuple[int, ...] = ()
+    scope_item: dict[str, Any] | None = None
 
 
 class PortalIvaFlow:
@@ -126,45 +136,14 @@ class PortalIvaFlow:
             raise RuntimeError("PORTAL_IVA_DATABASE_UNAVAILABLE")
         return [json.loads(line) for line in run.stdout.splitlines() if line.strip()]
 
-    def _search(self, term: str) -> list[dict[str, Any]]:
-        encoded = self._sql_scalar(term.strip())
-        value = f"convert_from(decode('{encoded}','base64'),'UTF8')"
-        match = (
-            f"(lower(c.nombre_legal) LIKE '%'||lower({value})||'%' "
-            f"OR c.slug=lower({value}) OR c.cuit=regexp_replace({value},'[^0-9]','','g'))"
-        )
-        sql = f"""
-            SELECT json_build_object('id',c.id_contribuyente,'nombre',c.nombre_legal,
-                'cuit',btrim(c.cuit),'slug',c.slug)::text
-            FROM tbl_contribuyentes c
-            WHERE c.activo AND {match}
-              AND 1 = (
-                SELECT count(*) FROM tbl_representaciones r
-                JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='ARCA' AND e.activo
-                JOIN tbl_accesos a ON a.id_entidad=r.id_entidad
-                    AND a.id_contribuyente=r.id_contribuyente_representante AND a.activo
-                JOIN tbl_contribuyentes holder ON holder.id_contribuyente=a.id_contribuyente AND holder.activo
-                WHERE r.activo AND r.id_contribuyente_representado=c.id_contribuyente
-              )
-            ORDER BY c.nombre_legal LIMIT 12;
-        """
-        return self._query(sql)
+    def _scope(self) -> FiscalScope:
+        return FiscalScope(self._query, "ARCA")
 
-    def _by_id(self, item_id: int) -> list[dict[str, Any]]:
-        return self._query(f"""
-            SELECT json_build_object('id',c.id_contribuyente,'nombre',c.nombre_legal,
-                'cuit',btrim(c.cuit),'slug',c.slug)::text
-            FROM tbl_contribuyentes c
-            WHERE c.id_contribuyente={int(item_id)} AND c.activo
-              AND 1 = (
-                SELECT count(*) FROM tbl_representaciones r
-                JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='ARCA' AND e.activo
-                JOIN tbl_accesos a ON a.id_entidad=r.id_entidad
-                    AND a.id_contribuyente=r.id_contribuyente_representante AND a.activo
-                JOIN tbl_contribuyentes holder ON holder.id_contribuyente=a.id_contribuyente AND holder.activo
-                WHERE r.activo AND r.id_contribuyente_representado=c.id_contribuyente
-              );
-        """)
+    def _search(self, term: str, telegram_id: Any) -> list[dict[str, Any]]:
+        return self._scope().search(telegram_id, term)
+
+    def _by_id(self, item_id: int, telegram_id: Any) -> list[dict[str, Any]]:
+        return self._scope().by_id(telegram_id, item_id)
 
     @staticmethod
     def _cancel_keyboard(nonce: str) -> InlineKeyboardMarkup:
@@ -187,6 +166,12 @@ class PortalIvaFlow:
         key = self._key(chat_id, thread_id, user_id)
         if key in self.tasks:
             await query.answer("Ya hay una descarga Portal IVA en curso.")
+            return
+        try:
+            await asyncio.to_thread(self._scope().require_actor, user_id)
+        except AccountNotLinked:
+            await query.answer("Cuenta no vinculada")
+            await self._send(adapter, chat_id, ACCOUNT_NOT_LINKED_MESSAGE, thread_id)
             return
         self.states[key] = FlowState(
             user_id=user_id, nonce=uuid.uuid4().hex[:10], stage="client", operation=operation,
@@ -243,7 +228,11 @@ class PortalIvaFlow:
             await query.answer("Esta selección venció. Iniciá Portal IVA nuevamente.")
             return True
         try:
-            found = await asyncio.to_thread(self._by_id, int(select.group(2)))
+            selected_id = int(select.group(2))
+            if selected_id not in state.candidates:
+                await query.answer("La opción ya no está disponible.")
+                return True
+            found = await asyncio.to_thread(self._by_id, selected_id, state.user_id)
         except Exception:
             await query.answer("No pude validar la opción en la base. Probá nuevamente.")
             return True
@@ -308,13 +297,17 @@ class PortalIvaFlow:
             task.add_done_callback(lambda done: self._release(key, done))
             return True
         try:
-            candidates = await asyncio.to_thread(self._search, message.text or "")
+            candidates = await asyncio.to_thread(self._search, message.text or "", state.user_id)
+        except InvalidCuit:
+            await self._send(adapter, chat_id, "El CUIT ingresado no es válido.", thread_id)
+            return True
         except Exception:
             await self._send(adapter, chat_id, "No pude consultar la base canónica. Probá nuevamente.", thread_id)
             return True
         if not candidates:
             await self._send(adapter, chat_id, "No hay un contribuyente ARCA activo con acceso y representación válidos que coincida. Probá con nombre, CUIT o slug.", thread_id)
             return True
+        state.candidates = tuple(int(candidate["id"]) for candidate in candidates)
         if len(candidates) == 1:
             await self._select(adapter, chat_id, thread_id, state, candidates[0])
             return True
@@ -326,6 +319,7 @@ class PortalIvaFlow:
         state.slug = str(item["slug"])
         state.cuit = str(item["cuit"])
         state.nombre = str(item["nombre"])
+        state.scope_item = dict(item)
         state.stage = "period"
         await self._send(adapter, chat_id, "Ingresá el período como MM/AAAA. Ejemplo: 08/2026.", thread_id)
 
@@ -689,10 +683,14 @@ class PortalIvaFlow:
                 raise RuntimeError("PORTAL_IVA_STATE_INVALID")
             contributor_id = state.contributor_id
             slug, cuit, period = state.slug, state.cuit, state.period
-            verified = await asyncio.to_thread(self._by_id, state.contributor_id)
+            verified = await asyncio.to_thread(self._by_id, state.contributor_id, state.user_id)
             if state.cancelled:
                 return
-            if len(verified) != 1 or verified[0].get("slug") != slug or verified[0].get("cuit") != cuit:
+            if (len(verified) != 1 or verified[0].get("slug") != slug
+                    or verified[0].get("cuit") != cuit
+                    or state.scope_item is None
+                    or verified[0].get("relation_id") != state.scope_item.get("relation_id")
+                    or verified[0].get("relation_revision") != state.scope_item.get("relation_revision")):
                 raise RuntimeError("PORTAL_IVA_SELECTION_STALE")
             execution_key = f"{contributor_id}:{period}"
             owner = self.execution_locks.get(execution_key)
@@ -736,6 +734,11 @@ class PortalIvaFlow:
                 return
             if result.get("etapa") != "completado":
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
+            verification_sql = mark_verified_sql(
+                state.user_id, verified[0], "ARCA", str(result.get("representado_verificado", ""))
+            )
+            marked = await asyncio.to_thread(self._query, verification_sql)
+            assert_marked(marked)
             state.progress_label = "Validando archivos…"
             await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
             deliverables = self._deliverables(slug, cuit, period, result)

@@ -52,10 +52,15 @@ async def test_real_menu_to_canonical_identity_period_and_dispatch(adapter, acti
     assert flow.catalog.runtime_python == Path(sys.executable)
     assert adapter._vencimientos_flow.runtime_python == Path(sys.executable)
     assert adapter._portal_iva_flow.query_connection is None
-    row = {'id': 3, 'nombre': 'Cliente sintético', 'cuit': '20987654321', 'slug': 'cliente-sintetico'}
+    row = {
+        'id': 3, 'nombre': 'Cliente sintético', 'cuit': '20987654326', 'slug': 'cliente-sintetico',
+        'study_id': 1, 'relation_id': 31, 'relation_revision': 1,
+        'verified': False, 'representative_id': 2, 'holder_cuit': '20123456786',
+    }
     flow.catalog._search = Mock(return_value=[row])
     flow.catalog._by_id = Mock(return_value=[row])
-    flow.catalog._query = Mock(return_value=[{'usuario': '20123456783'}])
+    flow.catalog._query = Mock(return_value=[{'usuario': '20123456786'}])
+    flow.catalog._scope = lambda: NS(require_actor=Mock(return_value=None))
     flow._start_ccma_dispatch = AsyncMock()
     flow._start_sct_dispatch = AsyncMock()
     adapter._enqueue_text_event = Mock(side_effect=AssertionError('must not invoke agent'))
@@ -63,13 +68,13 @@ async def test_real_menu_to_canonical_identity_period_and_dispatch(adapter, acti
     for text in ('cliente-sintetico', '08/2026'):
         message = NS(text=text, chat_id=7, chat=NS(id=7, type='private'), from_user=NS(id=7),
                      message_thread_id=None, reply_to_message=None)
-        await adapter._handle_text_message(NS(effective_message=message), NS())
+        await adapter._handle_text_message(NS(effective_message=message, message=message), NS())
     dispatch = flow._start_ccma_dispatch if action == 'ccma' else flow._start_sct_dispatch
     assert dispatch.await_count == 1
     args = dispatch.await_args.kwargs
     assert args['contributor_id'] == 3
-    assert args['holder_cuit'] == '20123456783'
-    assert args['client_cuit'] == '20987654321'
+    assert args['holder_cuit'] == '20123456786'
+    assert args['client_cuit'] == '20987654326'
     assert args['period_from'] == ('08/2026' if action == 'ccma' else '20260800')
     nonce = flow._workflow_menu_state[('7', '7')].nonce
     task = asyncio.create_task(asyncio.Event().wait())
@@ -97,14 +102,14 @@ def test_restricted_lookup_uses_portable_profile_and_never_falls_back(adapter, m
     monkeypatch.setitem(sys.modules, 'contabot_pg', NS(psql_invocation=invocation))
     runner = Mock(return_value=NS(returncode=0, stdout=''))
     monkeypatch.setattr(module.subprocess, 'run', runner)
-    adapter._fiscal_query_flow.catalog._search('synthetic')
+    adapter._fiscal_query_flow.catalog._search('synthetic', '7')
     assert seen == ['lookup']
     assert runner.call_args.args[0][0] == 'restricted-psql'
     assert runner.call_args.kwargs['env'] == {'PGPASSFILE': '/synthetic-only'}
     monkeypatch.setitem(sys.modules, 'contabot_pg', None)
     runner.reset_mock()
     with pytest.raises(ImportError):
-        adapter._fiscal_query_flow.catalog._search('synthetic')
+        adapter._fiscal_query_flow.catalog._search('synthetic', '7')
     runner.assert_not_called()
 
 

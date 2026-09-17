@@ -15,10 +15,17 @@ from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
 def flow(monkeypatch, tmp_path):
     # These tests isolate menu/dispatch; real preflight has its own subprocess suite.
     monkeypatch.setattr('plugins.platforms.telegram.fiscal_query_flow.require_fiscal_runtime', AsyncMock())
+    monkeypatch.setattr('plugins.platforms.telegram.fiscal_query_flow.verify_representation', AsyncMock())
     monkeypatch.setenv('CONTABOT_CLIENTES_ROOT', str(tmp_path/'clientes'))
-    row = {'id': 3, 'nombre': 'Cliente de prueba', 'cuit': '20123456783', 'slug': 'cliente-prueba'}
+    row = {
+        'id': 3, 'nombre': 'Cliente de prueba', 'cuit': '20123456786', 'slug': 'cliente-prueba',
+        'study_id': 1, 'relation_id': 31, 'relation_revision': 1,
+        'verified': False, 'representative_id': 3, 'holder_cuit': '20123456786',
+    }
+    scope = NS(require_actor=Mock(return_value=None))
     catalog = NS(_search=Mock(return_value=[row]), _by_id=Mock(return_value=[row]),
-                 _query=Mock(return_value=[{'usuario': '20123456783'}]), _visible_cuit=lambda c: c)
+                 _query=Mock(return_value=[{'usuario': '20123456786'}]), _visible_cuit=lambda c: c,
+                 _scope=lambda: scope)
     catalog.runtime_python = sys.executable
     f = FiscalQueryFlow(catalog=catalog)
     adapter = NS(send=AsyncMock(), send_document=AsyncMock(), handle_message=AsyncMock(),
@@ -45,7 +52,7 @@ async def test_selection_period_and_private_dispatch(flow, action):
     flow._start_sct_dispatch = AsyncMock()
     flow._start_ccma_dispatch = AsyncMock()
     await start(flow, action)
-    assert not await flow.text(flow._adapter, message('20123456783', uid=8))
+    assert not await flow.text(flow._adapter, message('20123456786', uid=8))
     for text in ('cliente-prueba', 'invalid'):
         assert await flow.text(flow._adapter, message(text))
     flow._adapter.handle_message.assert_not_awaited()
@@ -56,12 +63,12 @@ async def test_selection_period_and_private_dispatch(flow, action):
     kwargs = dispatch.await_args.kwargs
     assert kwargs['credential_sha256'] is None
     assert kwargs['contributor_id'] == 3
-    assert kwargs['holder_cuit'] == '20123456783'
+    assert kwargs['holder_cuit'] == '20123456786'
     flow._resolve_sct_credential_line.assert_not_awaited()
     assert kwargs['period_from'] == ('01/2026' if action == 'ccma' else '20260000')
     if action == 'sct':
         assert kwargs['client_slug'] == 'cliente-prueba'
-        assert kwargs['client_cuit'] == '20123456783'
+        assert kwargs['client_cuit'] == '20123456786'
 
 
 
@@ -194,7 +201,7 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
         period_from="20260000",
         period_until="20261231",
         period_label="2026",
-        client_slug="cliente-prueba", client_cuit="20123456783",
+        client_slug="cliente-prueba", client_cuit="20123456786",
     )
 
     create_process.assert_awaited_once()
@@ -306,12 +313,17 @@ async def test_sct_dispatcher_builds_and_delivers_xlsx_without_model(flow, monke
         period_from="20260000",
         period_until="20261231",
         period_label="2026",
-        client_slug="cliente-prueba", client_cuit="20123456783",
+        client_slug="cliente-prueba", client_cuit="20123456786",
+        telegram_id="7",
+        scope_item={
+            'id': 3, 'cuit': '20123456786', 'relation_id': 31,
+            'relation_revision': 1, 'holder_cuit': '20123456786',
+        },
     )
 
     assert create_process.await_count == 2
     assert create_process.await_args_list[1].args[:2] == (sys.executable, "-B")
-    published = tmp_path/'clientes/cliente-prueba/20123456783/arca/2026/anual/consultas/cliente-prueba-sct-estado-cumplimiento-arca-2026.xlsx'
+    published = tmp_path/'clientes/cliente-prueba/20123456786/arca/2026/anual/consultas/cliente-prueba-sct-estado-cumplimiento-arca-2026.xlsx'
     flow.send_document.assert_awaited_once_with(
         chat_id="123",
         file_path=str(published),
@@ -330,8 +342,8 @@ async def test_multiple_candidates_require_current_offered_selection(flow, monke
     monkeypatch.setattr(fiscal_module, 'InlineKeyboardButton', lambda text, callback_data: NS(text=text, callback_data=callback_data))
     monkeypatch.setattr(fiscal_module, 'InlineKeyboardMarkup', lambda rows: NS(inline_keyboard=rows))
     flow.catalog._search.return_value = [
-        {'id': 3, 'nombre': 'Uno', 'cuit': '20123456783', 'slug': 'uno'},
-        {'id': 4, 'nombre': 'Dos', 'cuit': '20222222222', 'slug': 'dos'}]
+        {'id': 3, 'nombre': 'Uno', 'cuit': '20123456786', 'slug': 'uno'},
+        {'id': 4, 'nombre': 'Dos', 'cuit': '20222222223', 'slug': 'dos'}]
     flow._resolve_sct_credential_line = AsyncMock(return_value=(3, 'a'*64))
     await start(flow, 'sct')
     await flow.text(flow._adapter, message('empresa'))
@@ -346,7 +358,7 @@ async def test_multiple_candidates_require_current_offered_selection(flow, monke
     await flow.callback(flow._adapter,q,f'fq:select:{state.nonce}:3','7',None,'7')
     assert state.stage == 'period'
     flow._resolve_sct_credential_line.assert_not_awaited()
-    assert state.holder_cuit == '20123456783'
+    assert state.holder_cuit == '20123456786'
 
 
 @pytest.mark.asyncio

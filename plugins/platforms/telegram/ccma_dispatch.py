@@ -9,12 +9,14 @@ import tempfile
 from datetime import datetime, timezone
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
 from plugins.platforms.telegram.fiscal_runtime import browser_environment, require_fiscal_runtime, unavailable_message
-from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError
+from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, verify_representation
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
 from plugins.platforms.telegram.ccma_diagnostics import Diagnostics
 
 
-async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha256, period_from, period_to, client_slug, client_cuit, contributor_id=None, holder_cuit=None):
+async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha256,
+                   period_from, period_to, client_slug, client_cuit,
+                   contributor_id=None, holder_cuit=None, telegram_id=None, scope_item=None):
     from plugins.platforms.telegram.ccma_artifact import destination, publish
     clients_root = Path(os.environ.get('CONTABOT_CLIENTES_ROOT', Path.home() / 'clientes'))
     destination(clients_root, client_slug, client_cuit, period_from, period_to)
@@ -77,6 +79,9 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         reported = re.search(rb'^source_sha256=([a-f0-9]{64})$', stdout, re.MULTILINE)
         if not reported or reported.group(1).decode() != digest:
             raise ValueError('source_integrity')
+        if telegram_id is None or scope_item is None:
+            raise RuntimeError('fiscal_scope_missing')
+        await verify_representation(telegram_id, scope_item, 'ARCA', client_cuit)
         source.chmod(0o600)
         await terminate_owned_group(process)
         process = None

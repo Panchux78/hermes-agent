@@ -9,6 +9,27 @@ import pytest
 from plugins.platforms.telegram.portal_iva_flow import FlowState, PortalIvaFlow
 
 
+VALID_CUIT = "20123456786"
+
+
+def _scope_item(**overrides):
+    item = {
+        "id": 1, "nombre": "Uno", "cuit": VALID_CUIT, "slug": "uno",
+        "study_id": 1, "relation_id": 11, "relation_revision": 1,
+        "verified": False, "representative_id": 1, "holder_cuit": VALID_CUIT,
+    }
+    item.update(overrides)
+    return item
+
+
+def _scope_query(sql):
+    if "fn_actor_telegram_vinculado" in sql:
+        return [{"linked": True}]
+    if "fn_verificar_representacion_fiscal" in sql:
+        return [{"verified": True}]
+    return []
+
+
 class FakeMessage:
     def __init__(self):
         self.edits = []
@@ -108,7 +129,11 @@ def _result(root: Path, state: FlowState, *, complete=True):
         (target / official).write_text("cabecera\n", encoding="utf-8")
         (target / deliverable).write_text("cabecera\n", encoding="utf-8")
         files.append({"libro": label, "csv_name": official, "entregable_name": deliverable, "filas": 0})
-    return {"ok": True, "etapa": "completado" if complete else "resolver", "archivos": files, "advertencias": ["CSV_SIN_FILAS_ventas"]}
+    return {
+        "ok": True, "etapa": "completado" if complete else "resolver",
+        "archivos": files, "advertencias": ["CSV_SIN_FILAS_ventas"],
+        "representado_verificado": state.cuit,
+    }
 
 
 def test_command_is_exact_and_shell_free(tmp_path):
@@ -125,7 +150,7 @@ def test_period_accepts_only_month_year_and_stores_executor_period(monkeypatch):
     async def scenario():
         flow = PortalIvaFlow()
         adapter = FakeAdapter()
-        state = FlowState(user_id="7", nonce="a" * 10, stage="period", slug="cliente", cuit="20123456789")
+        state = FlowState(user_id="7", nonce="a" * 10, stage="period", slug="cliente", cuit=VALID_CUIT)
         key = flow._key("10", None, "7")
         flow.states[key] = state
 
@@ -146,7 +171,7 @@ def test_period_rejects_every_non_month_year_format():
         for value in ("2026-08", "13/2026", "8/2026", "08/26", "2026"):
             flow = PortalIvaFlow()
             adapter = FakeAdapter()
-            state = FlowState(user_id="7", nonce="a" * 10, stage="period", slug="cliente", cuit="20123456789")
+            state = FlowState(user_id="7", nonce="a" * 10, stage="period", slug="cliente", cuit=VALID_CUIT)
             flow.states[flow._key("10", None, "7")] = state
             assert await flow.text(adapter, _message(value)) is True
             assert state.stage == "period"
@@ -161,7 +186,7 @@ def test_period_prompt_is_month_year_only():
         flow = PortalIvaFlow()
         adapter = FakeAdapter()
         state = FlowState(user_id="7", nonce="a" * 10, stage="client")
-        await flow._select(adapter, "10", None, state, {"id": 1, "nombre": "Uno", "cuit": "20123456789", "slug": "uno"})
+        await flow._select(adapter, "10", None, state, _scope_item())
         assert adapter._bot.send_message.await_args.kwargs["text"] == "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
 
     asyncio.run(scenario())
@@ -176,16 +201,18 @@ def test_search_handles_unique_multiple_and_missing(monkeypatch):
     async def scenario():
         flow = PortalIvaFlow()
         adapter = FakeAdapter()
-        flow._search = lambda term: []
+        flow._query = _scope_query
+        flow._search = lambda term, _uid: []
         await flow.start(adapter, _query("pi:generar"), "10", None, "7", "generar")
         assert await flow.text(adapter, _message("nadie"))
-        flow._search = lambda term: [{"id": 1, "nombre": "Uno", "cuit": "20123456789", "slug": "uno"}]
+        flow._search = lambda term, _uid: [_scope_item()]
         assert await flow.text(adapter, _message("uno"))
         assert flow.states[flow._key("10", None, "7")].stage == "period"
         flow.states[flow._key("10", None, "7")] = FlowState(user_id="7", nonce="b" * 10, stage="client")
-        flow._search = lambda term: [
-            {"id": 1, "nombre": "Uno", "cuit": "20123456789", "slug": "uno"},
-            {"id": 2, "nombre": "Dos", "cuit": "20987654321", "slug": "dos"},
+        flow._search = lambda term, _uid: [
+            _scope_item(),
+            _scope_item(id=2, nombre="Dos", cuit="20987654326", slug="dos",
+                        relation_id=12, representative_id=2, holder_cuit="20987654326"),
         ]
         assert await flow.text(adapter, _message("x"))
         assert "Elegí" in adapter._bot.send_message.await_args.kwargs["text"]
@@ -195,6 +222,7 @@ def test_search_handles_unique_multiple_and_missing(monkeypatch):
 def test_callback_selection_expires_and_double_start_is_blocked():
     async def scenario():
         flow = PortalIvaFlow()
+        flow._query = _scope_query
         adapter = FakeAdapter()
         expired = _query("pi:select:" + "a" * 10 + ":1")
         assert await flow.callback(adapter, expired, expired.data, "10", None, "7")
@@ -203,6 +231,26 @@ def test_callback_selection_expires_and_double_start_is_blocked():
         start = _query("pi:generar")
         assert await flow.callback(adapter, start, "pi:generar", "10", None, "7")
         start.answer.assert_awaited_once_with("Ya hay una descarga Portal IVA en curso.")
+    asyncio.run(scenario())
+
+
+def test_unlinked_actor_and_forged_current_selection_are_rejected():
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        flow._query = lambda _sql: [{"linked": False}]
+        await flow.start(adapter, _query("pi:generar"), "10", None, "7", "generar")
+        assert not flow.states
+        assert "no está vinculada" in adapter._bot.send_message.await_args.kwargs["text"]
+
+        key = flow._key("10", None, "7")
+        state = FlowState(user_id="7", nonce="a" * 10, stage="client", candidates=(1,))
+        flow.states[key] = state
+        forged = _query("pi:select:" + "a" * 10 + ":2")
+        assert await flow.callback(adapter, forged, forged.data, "10", None, "7")
+        forged.answer.assert_awaited_once_with("La opción ya no está disponible.")
+        assert state.stage == "client"
+
     asyncio.run(scenario())
 
 
@@ -385,9 +433,10 @@ def test_success_delivers_both_csvs_and_updates_same_message(monkeypatch, tmp_pa
         flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
         flow.executor.touch(); flow.uv.touch()
         adapter = FakeAdapter()
-        state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit="20123456789", period="2026-08", progress_message=FakeMessage())
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit=VALID_CUIT, period="2026-08", progress_message=FakeMessage(), scope_item=_scope_item(slug="cliente"))
         payload = json.dumps(_result(tmp_path, state)).encode()
-        flow._by_id = lambda _ident: [{"slug": "cliente", "cuit": "20123456789"}]
+        flow._by_id = lambda _ident, _uid: [_scope_item(slug="cliente")]
+        flow._query = _scope_query
         flow._acquire_execution_lock = lambda _key: None
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(payload)))
         await flow._run(adapter, "10", None, "10::7", state)
@@ -407,7 +456,7 @@ def test_completion_translates_empty_book_and_keeps_warning_codes_internal(monke
         flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
         flow.executor.touch(); flow.uv.touch()
         adapter = FakeAdapter()
-        state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit="20123456789", period="2026-08", progress_message=FakeMessage())
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit=VALID_CUIT, period="2026-08", progress_message=FakeMessage(), scope_item=_scope_item(slug="cliente"))
         result = _result(tmp_path, state)
         result["archivos"][1]["filas"] = 34
         result["advertencias"] = [
@@ -415,7 +464,8 @@ def test_completion_translates_empty_book_and_keeps_warning_codes_internal(monke
             "IMPORTACION_NUMEROS_NO_PARSEADOS_compras",
             "CSV_SIN_FILAS_ventas",
         ]
-        flow._by_id = lambda _ident: [{"slug": "cliente", "cuit": "20123456789"}]
+        flow._by_id = lambda _ident, _uid: [_scope_item(slug="cliente")]
+        flow._query = _scope_query
         flow._acquire_execution_lock = lambda _key: None
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(json.dumps(result).encode())))
 
@@ -447,8 +497,9 @@ def test_remote_filename_mismatch_is_logged_without_aborting_delivery(monkeypatc
         flow.executor.touch(); flow.uv.touch()
         adapter = FakeAdapter()
         adapter.send_document = AsyncMock(return_value=SimpleNamespace(success=True, delivered_filename="otro.csv"))
-        state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit="20123456789", period="2026-08", progress_message=FakeMessage())
-        flow._by_id = lambda _ident: [{"slug": "cliente", "cuit": "20123456789"}]
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit=VALID_CUIT, period="2026-08", progress_message=FakeMessage(), scope_item=_scope_item(slug="cliente"))
+        flow._by_id = lambda _ident, _uid: [_scope_item(slug="cliente")]
+        flow._query = _scope_query
         flow._acquire_execution_lock = lambda _key: None
         payload = json.dumps(_result(tmp_path, state)).encode()
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(payload)))
@@ -468,6 +519,7 @@ def test_remote_filename_mismatch_is_logged_without_aborting_delivery(monkeypatc
 def test_operation_callbacks_keep_shared_contributor_period_lock():
     async def scenario():
         flow = PortalIvaFlow()
+        flow._query = _scope_query
         adapter = FakeAdapter()
         generate = _query("pi:generar")
         assert await flow.callback(adapter, generate, "pi:generar", "10", None, "7")
@@ -487,9 +539,10 @@ def test_incomplete_output_and_exit_one_do_not_deliver(monkeypatch, tmp_path):
         flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
         flow.executor.touch(); flow.uv.touch()
         adapter = FakeAdapter()
-        state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit="20123456789", period="2026-08", progress_message=FakeMessage())
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit=VALID_CUIT, period="2026-08", progress_message=FakeMessage(), scope_item=_scope_item(slug="cliente"))
         blocked = {"ok": False, "etapa": "login", "motivo": "CREDENCIAL_RECHAZADA"}
-        flow._by_id = lambda _ident: [{"slug": "cliente", "cuit": "20123456789"}]
+        flow._by_id = lambda _ident, _uid: [_scope_item(slug="cliente")]
+        flow._query = _scope_query
         flow._acquire_execution_lock = lambda _key: None
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(json.dumps(blocked).encode(), returncode=1)))
         await flow._run(adapter, "10", None, "10::7", state)
@@ -505,11 +558,13 @@ def test_terminal_failure_sends_a_new_visible_message(monkeypatch, tmp_path):
         adapter = FakeAdapter()
         state = FlowState(
             user_id="7", nonce="a" * 10, stage="running", contributor_id=1,
-            slug="cliente", cuit="20123456789", period="2026-08",
+            slug="cliente", cuit=VALID_CUIT, period="2026-08",
             progress_message=FakeMessage(), operation="descargar-presentados",
+            scope_item=_scope_item(slug="cliente"),
         )
         blocked = {"ok": False, "motivo": "PERIODO_NO_PRESENTADO_2026-08"}
-        flow._by_id = lambda _ident: [{"slug": "cliente", "cuit": "20123456789"}]
+        flow._by_id = lambda _ident, _uid: [_scope_item(slug="cliente")]
+        flow._query = _scope_query
         flow._acquire_execution_lock = lambda _key: None
         monkeypatch.setattr(
             asyncio,

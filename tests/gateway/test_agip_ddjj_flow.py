@@ -19,6 +19,21 @@ from plugins.platforms.telegram.agip_ddjj_flow import (
 )
 
 
+VALID_CUIT = "30123456781"
+HOLDER_CUIT = "20123456786"
+
+
+def _scope_item(**overrides):
+    item = {
+        "id": 102, "nombre": "Cliente representado", "cuit": VALID_CUIT,
+        "slug": "cliente-representado", "study_id": 1,
+        "relation_id": 21, "relation_revision": 1, "verified": False,
+        "representative_id": 3, "holder_cuit": HOLDER_CUIT,
+    }
+    item.update(overrides)
+    return item
+
+
 class FakeMessage:
     def __init__(self):
         self.edits = []
@@ -73,13 +88,12 @@ def test_database_queries_scope_agip_to_clave_ciudad(monkeypatch):
     queries = []
     monkeypatch.setattr(flow, "_query", lambda sql: queries.append(sql) or [])
 
-    flow._search("empresa")
-    flow._by_id(2)
+    flow._search("empresa", "7")
+    flow._by_id(2, "7")
 
     assert len(queries) == 2
-    assert all("AGIP - Clave Ciudad" in sql for sql in queries)
-    assert all("e.nombre='AGIP'" not in sql for sql in queries)
-    assert all("id_contribuyente_representado=c.id_contribuyente" in sql for sql in queries)
+    assert all("fn_buscar_contribuyente_fiscal" in sql for sql in queries)
+    assert flow._scope().entity == "AGIP - Clave Ciudad"
     assert all("representative_id" in sql for sql in queries)
 
 
@@ -94,13 +108,7 @@ def test_searching_represented_contributor_resolves_unique_credential_holder(mon
         monkeypatch.setattr(
             flow,
             "_search",
-            lambda _term: [{
-                "id": 102,
-                "nombre": "Cliente representado",
-                "cuit": "30123456789",
-                "slug": "cliente-representado",
-                "representative_id": 3,
-            }],
+            lambda _term, _uid: [_scope_item()],
         )
 
         assert await flow.text(adapter, _message("cliente representado")) is True
@@ -110,6 +118,26 @@ def test_searching_represented_contributor_resolves_unique_credential_holder(mon
         assert state.contributor_id == 3
         assert state.represented_id == 102
         assert "período" in adapter._bot.send_message.await_args.kwargs["text"]
+
+    asyncio.run(scenario())
+
+
+def test_unlinked_actor_and_forged_current_selection_are_rejected(monkeypatch):
+    async def scenario():
+        flow = AgipDdjjFlow()
+        adapter = FakeAdapter()
+        monkeypatch.setattr(flow, "_query", lambda _sql: [{"linked": False}])
+        await flow.start(adapter, _query("ad:start"), "10", None, "7")
+        assert not flow.states
+        assert "no está vinculada" in adapter._bot.send_message.await_args.kwargs["text"]
+
+        key = flow._key("10", None, "7")
+        state = FlowState(user_id="7", nonce="a" * 10, stage="contributor", candidates=(102,))
+        flow.states[key] = state
+        forged = _query("ad:c:" + "a" * 10 + ":999")
+        assert await flow.callback(adapter, forged, forged.data, "10", None, "7")
+        forged.answer.assert_awaited_once_with("La opción ya no está disponible.")
+        assert state.stage == "contributor"
 
     asyncio.run(scenario())
 

@@ -21,6 +21,14 @@ from typing import Any
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.fiscal_scope import (
+    ACCOUNT_NOT_LINKED_MESSAGE,
+    AccountNotLinked,
+    FiscalScope,
+    InvalidCuit,
+    assert_marked,
+    mark_verified_sql,
+)
 
 try:
     import fcntl
@@ -79,6 +87,8 @@ class FlowState:
     progress_message: Any = None
     cancelled: bool = False
     created_at: float = field(default_factory=time.monotonic)
+    candidates: tuple[int, ...] = ()
+    scope_item: dict[str, Any] | None = None
 
 
 class AgipDdjjFlow:
@@ -107,37 +117,11 @@ class AgipDdjjFlow:
             raise RuntimeError("No se pudo consultar la base canónica")
         return [json.loads(line) for line in run.stdout.splitlines() if line.strip()]
 
-    def _search(self, term: str) -> list[dict[str, Any]]:
-        encoded = self._sql_scalar(term.strip())
-        base = f"convert_from(decode('{encoded}','base64'),'UTF8')"
-        where = (
-            f"(lower(c.nombre_legal) LIKE '%'||lower({base})||'%' "
-            f"OR c.slug=lower({base}) "
-            f"OR c.cuit=regexp_replace({base},'[^0-9]','','g'))"
-        )
-        sql = f"""
-            SELECT json_build_object(
-                'id',c.id_contribuyente,'nombre',c.nombre_legal,
-                'cuit',c.cuit,'slug',c.slug,
-                'representative_id',min(r.id_contribuyente_representante)
-            )::text
-            FROM tbl_contribuyentes c
-            JOIN tbl_representaciones r
-              ON r.id_contribuyente_representado=c.id_contribuyente AND r.activo
-            JOIN tbl_entidades e
-              ON e.id_entidad=r.id_entidad
-             AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}' AND e.activo
-            JOIN tbl_contribuyentes holder
-              ON holder.id_contribuyente=r.id_contribuyente_representante AND holder.activo
-            JOIN tbl_accesos a
-              ON a.id_entidad=e.id_entidad
-             AND a.id_contribuyente=holder.id_contribuyente AND a.activo
-            WHERE c.activo AND {where}
-            GROUP BY c.id_contribuyente,c.nombre_legal,c.cuit,c.slug
-            HAVING count(DISTINCT r.id_contribuyente_representante)=1
-            ORDER BY c.nombre_legal LIMIT 12;
-        """
-        return self._query(sql)
+    def _scope(self) -> FiscalScope:
+        return FiscalScope(self._query, _AGIP_CLAVE_CIUDAD_ENTITY)
+
+    def _search(self, term: str, telegram_id: Any) -> list[dict[str, Any]]:
+        return self._scope().search(telegram_id, term)
 
     async def _send(self, adapter, chat_id, text: str, keyboard=None, thread_id=None):
         kwargs = {"chat_id": chat_id, "text": text, "reply_markup": keyboard}
@@ -300,6 +284,12 @@ class AgipDdjjFlow:
         if key in self.tasks:
             await query.answer("Ya hay una consulta AGIP en curso.")
             return
+        try:
+            await asyncio.to_thread(self._scope().require_actor, user_id)
+        except AccountNotLinked:
+            await query.answer("Cuenta no vinculada")
+            await self._send(adapter, chat_id, ACCOUNT_NOT_LINKED_MESSAGE, thread_id=thread_id)
+            return
         self.states[key] = FlowState(
             user_id=str(user_id), nonce=uuid.uuid4().hex[:10], stage="contributor"
         )
@@ -343,38 +333,23 @@ class AgipDdjjFlow:
             self.tasks[key] = task
             task.add_done_callback(lambda done: self._release(key, done))
             return True
-        candidates = self._search(message.text)
+        try:
+            candidates = self._search(message.text, user_id)
+        except InvalidCuit:
+            await self._send(adapter, chat_id, "El CUIT ingresado no es válido.", thread_id=thread_id)
+            return True
         if not candidates:
             await self._send(adapter, chat_id, "No hay un contribuyente AGIP activo con una única Clave Ciudad válida que coincida. Probá con nombre, CUIT o slug.", thread_id=thread_id)
             return True
+        state.candidates = tuple(int(candidate["id"]) for candidate in candidates)
         if len(candidates) == 1:
             await self._select(adapter, chat_id, thread_id, user_id, state, candidates[0])
             return True
         await self._send(adapter, chat_id, "Elegí una opción:", self._candidate_keyboard(candidates, state.nonce), thread_id)
         return True
 
-    def _by_id(self, item_id: int) -> list[dict[str, Any]]:
-        return self._query(f"""
-            SELECT json_build_object(
-                'id',c.id_contribuyente,'nombre',c.nombre_legal,
-                'cuit',c.cuit,'slug',c.slug,
-                'representative_id',min(r.id_contribuyente_representante)
-            )::text
-            FROM tbl_contribuyentes c
-            JOIN tbl_representaciones r
-              ON r.id_contribuyente_representado=c.id_contribuyente AND r.activo
-            JOIN tbl_entidades e
-              ON e.id_entidad=r.id_entidad
-             AND e.nombre='{_AGIP_CLAVE_CIUDAD_ENTITY}' AND e.activo
-            JOIN tbl_contribuyentes holder
-              ON holder.id_contribuyente=r.id_contribuyente_representante AND holder.activo
-            JOIN tbl_accesos a
-              ON a.id_entidad=e.id_entidad
-             AND a.id_contribuyente=holder.id_contribuyente AND a.activo
-            WHERE c.activo AND c.id_contribuyente={int(item_id)}
-            GROUP BY c.id_contribuyente,c.nombre_legal,c.cuit,c.slug
-            HAVING count(DISTINCT r.id_contribuyente_representante)=1;
-        """)
+    def _by_id(self, item_id: int, telegram_id: Any) -> list[dict[str, Any]]:
+        return self._scope().by_id(telegram_id, item_id)
 
     async def callback(self, adapter, query, data: str, chat_id, thread_id, user_id) -> bool:
         key = self._key(chat_id, thread_id, user_id)
@@ -408,7 +383,11 @@ class AgipDdjjFlow:
         if not state or state.nonce != m.group(1) or state.stage != "contributor":
             await query.answer("Esta selección venció. Iniciá una consulta nueva.")
             return True
-        found = self._by_id(int(m.group(2)))
+        selected_id = int(m.group(2))
+        if selected_id not in state.candidates:
+            await query.answer("La opción ya no está disponible.")
+            return True
+        found = self._by_id(selected_id, state.user_id)
         if not found:
             await query.answer("La opción ya no está disponible.")
             return True
@@ -420,6 +399,7 @@ class AgipDdjjFlow:
         if state.stage == "contributor":
             state.contributor_id = int(row["representative_id"])
             state.represented_id = int(row["id"])
+            state.scope_item = dict(row)
             state.stage = "period"
             await self._send(
                 adapter, chat_id,
@@ -498,6 +478,21 @@ class AgipDdjjFlow:
                     self._worker_error_message(result, evidence is not None),
                 )
                 return
+            if state.scope_item is None:
+                raise RuntimeError("AGIP_SCOPE_STATE_INVALID")
+            current = await asyncio.to_thread(
+                self._by_id, int(state.represented_id), state.user_id
+            )
+            if (len(current) != 1
+                    or current[0].get("relation_id") != state.scope_item.get("relation_id")
+                    or current[0].get("relation_revision") != state.scope_item.get("relation_revision")):
+                raise RuntimeError("AGIP_SELECTION_STALE")
+            verification_sql = mark_verified_sql(
+                state.user_id, current[0], _AGIP_CLAVE_CIUDAD_ENTITY,
+                str(result.get("representado_verificado", "")),
+            )
+            marked = await asyncio.to_thread(self._query, verification_sql)
+            assert_marked(marked)
             xlsx = result.get("xlsx")
             path = os.path.realpath(str(xlsx or ""))
             if not (is_valid_delivery_path(path) and os.path.isfile(path)):

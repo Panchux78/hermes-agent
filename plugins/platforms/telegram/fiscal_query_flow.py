@@ -19,7 +19,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
 from plugins.platforms.telegram.fiscal_runtime import browser_environment, require_fiscal_runtime, unavailable_message
-from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError
+from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, verify_representation
+from plugins.platforms.telegram.fiscal_scope import ACCOUNT_NOT_LINKED_MESSAGE, AccountNotLinked, InvalidCuit
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ class _WorkflowMenuState:
     captcha_message_id: Optional[int] = None
     period: Optional[str] = None
     started_monotonic: float = dataclasses.field(default_factory=time.monotonic)
+    user_id: str = ""
+    scope_item: dict | None = None
 
 
 class FiscalQueryFlow:
@@ -97,26 +100,19 @@ class FiscalQueryFlow:
 
     async def _select(self, chat_id, key, state, item_id):
         # Revalidate the canonical ARCA relation; retrieve identities, never passwords.
-        rows = await asyncio.to_thread(self.catalog._by_id, item_id)
+        rows = await asyncio.to_thread(self.catalog._by_id, item_id, state.user_id)
         if not rows:
             await self.send(chat_id, 'La opción ya no tiene un acceso ARCA válido. Probá otra búsqueda.')
             return False
-        holders = await asyncio.to_thread(self.catalog._query, f"""
-            SELECT json_build_object('usuario',btrim(holder.cuit))::text
-            FROM tbl_representaciones r
-            JOIN tbl_entidades e ON e.id_entidad=r.id_entidad AND e.nombre='ARCA' AND e.activo
-            JOIN tbl_contribuyentes holder ON holder.id_contribuyente=r.id_contribuyente_representante AND holder.activo
-            JOIN tbl_accesos a ON a.id_entidad=e.id_entidad AND a.id_contribuyente=holder.id_contribuyente AND a.activo
-            WHERE r.activo AND r.id_contribuyente_representado={int(item_id)};
-        """)
-        if len(holders) != 1:
+        if len(rows) != 1:
             await self.send(chat_id, 'No pude resolver un único acceso ARCA. Revisá la representación.')
             return False
         if self._workflow_menu_state.get(key) is not state:
             return False
         state.slug, state.cuit = rows[0]["slug"], rows[0]["cuit"]
         state.contributor_id = item_id
-        state.holder_cuit = holders[0]['usuario']
+        state.holder_cuit = rows[0]['holder_cuit']
+        state.scope_item = dict(rows[0])
         state.stage = 'period'
         return True
 
@@ -163,7 +159,13 @@ class FiscalQueryFlow:
             await query.answer('Completá o cancelá la consulta fiscal en curso.')
             return
         command, label = choices[action]
-        state = _WorkflowMenuState(skill_command=command, label=label)
+        try:
+            await asyncio.to_thread(self.catalog._scope().require_actor, user_id)
+        except AccountNotLinked:
+            await query.answer('Cuenta no vinculada')
+            await self.send(chat_id, ACCOUNT_NOT_LINKED_MESSAGE)
+            return
+        state = _WorkflowMenuState(skill_command=command, label=label, user_id=str(user_id))
         self._workflow_menu_state[key] = state
         try:
             await query.answer()
@@ -381,6 +383,8 @@ class FiscalQueryFlow:
         client_cuit: str,
         contributor_id: Optional[int] = None,
         holder_cuit: Optional[str] = None,
+        telegram_id: Optional[str] = None,
+        scope_item: Optional[dict] = None,
     ) -> None:
         """Launch an SCT runner task directly, bypassing the general agent and its tools."""
         existing = self._sct_dispatch_tasks.get(state_key)
@@ -401,6 +405,7 @@ class FiscalQueryFlow:
                 client_slug=client_slug,
                 client_cuit=client_cuit,
                 contributor_id=contributor_id, holder_cuit=holder_cuit,
+                telegram_id=telegram_id, scope_item=scope_item,
             )
         )
         self._sct_dispatch_tasks[state_key] = task
@@ -433,6 +438,8 @@ class FiscalQueryFlow:
         client_cuit: str,
         contributor_id: Optional[int] = None,
         holder_cuit: Optional[str] = None,
+        telegram_id: Optional[str] = None,
+        scope_item: Optional[dict] = None,
     ) -> None:
         """Execute and deliver the bounded SCT runner without involving an LLM."""
         hermes_home = _Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes"))
@@ -513,6 +520,10 @@ class FiscalQueryFlow:
             if process.returncode != 0:
                 await self.send(chat_id, f"SCT informó exportación, pero terminó con error ({process.returncode}). No se entregó ningún resultado. Referencia: {captcha_dir.name}.")
                 return
+
+            if telegram_id is None or scope_item is None:
+                raise RuntimeError('fiscal_scope_missing')
+            await verify_representation(telegram_id, scope_item, 'ARCA', client_cuit)
 
             await terminate_owned_group(process)
             process = None
@@ -621,7 +632,7 @@ class FiscalQueryFlow:
                 await self.send(chat_id, 'Ingresá nombre, CUIT o slug del contribuyente.')
                 return True
             try:
-                rows = await asyncio.to_thread(self.catalog._search, text)
+                rows = await asyncio.to_thread(self.catalog._search, text, state.user_id)
                 if self._workflow_menu_state.get(state_key) is not state:
                     return True
                 state.candidates = tuple(int(row['id']) for row in rows)
@@ -632,6 +643,8 @@ class FiscalQueryFlow:
                         await self._request_period(chat_id, state)
                 else:
                     await self._send_panel(chat_id, 'Elegí un contribuyente:', self._candidate_keyboard(state, rows))
+            except InvalidCuit:
+                await self.send(chat_id, 'El CUIT ingresado no es válido.')
             except Exception:
                 await self.send(chat_id, 'No pude consultar la base canónica. Probá nuevamente.')
             return True
@@ -651,7 +664,8 @@ class FiscalQueryFlow:
             await self._start_ccma_dispatch(chat_id=chat_id, state_key=state_key,
                 credential_line=state.credential_line, credential_sha256=state.credential_sha256,
                 contributor_id=state.contributor_id, holder_cuit=state.holder_cuit,
-                period_from=period[0], period_to=period[1], client_slug=state.slug, client_cuit=state.cuit)
+                period_from=period[0], period_to=period[1], client_slug=state.slug, client_cuit=state.cuit,
+                telegram_id=state.user_id, scope_item=state.scope_item)
         else:
             state.stage = 'running'
             await self._start_sct_dispatch(
@@ -659,5 +673,6 @@ class FiscalQueryFlow:
                 credential_line=state.credential_line, credential_sha256=state.credential_sha256,
                 contributor_id=state.contributor_id, holder_cuit=state.holder_cuit,
                 period_mode=period[0], period_from=period[1], period_until=period[2], period_label=text,
-                client_slug=state.slug, client_cuit=state.cuit)
+                client_slug=state.slug, client_cuit=state.cuit,
+                telegram_id=state.user_id, scope_item=state.scope_item)
         return True

@@ -5,6 +5,7 @@ import logging
 import re
 
 from plugins.platforms.telegram.fiscal_execution import terminate_owned_group
+from plugins.platforms.telegram.fiscal_scope import assert_marked, mark_verified_sql
 
 logger = logging.getLogger(__name__)
 
@@ -101,3 +102,13 @@ async def canonical_access(contributor_id, cuit, slug, holder_cuit):
         return json.dumps({'type': 'access', **value}, separators=(',', ':')).encode() + b'\n'
     except (TypeError, KeyError, json.JSONDecodeError):
         raise ValueError('canonical_access_unavailable') from None
+
+
+async def verify_representation(telegram_id, item, entity, verified_cuit):
+    """Persist only a subject identity already verified by the portal runner."""
+    raw = await _query(mark_verified_sql(telegram_id, item, entity, verified_cuit))
+    try:
+        rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        assert_marked(rows)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError('representation_verification_failed') from exc
