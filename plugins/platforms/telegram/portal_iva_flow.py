@@ -22,6 +22,11 @@ from typing import Any
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.contributor_selector import (
+    CONTRIBUTOR_PROMPT,
+    MULTIPLE_CONTRIBUTORS_TEXT,
+    ContributorOffer,
+)
 from plugins.platforms.telegram.fiscal_scope import (
     ACCOUNT_NOT_LINKED_MESSAGE,
     AccountNotLinked,
@@ -65,7 +70,7 @@ class FlowState:
     captcha_nonce: str | None = None
     captcha_response: asyncio.Future | None = None
     created_at: float = field(default_factory=time.monotonic)
-    candidates: tuple[int, ...] = ()
+    candidates: dict[int, dict[str, Any]] = field(default_factory=dict)
     scope_item: dict[str, Any] | None = None
 
 
@@ -151,13 +156,13 @@ class PortalIvaFlow:
 
     @staticmethod
     def _candidate_keyboard(candidates: list[dict[str, Any]], nonce: str) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                menu_label("👤", f"{candidate['nombre']} — {PortalIvaFlow._visible_cuit(candidate['cuit'])}"),
-                callback_data=f"pi:select:{nonce}:{candidate['id']}",
-            )]
-            for candidate in candidates
-        ])
+        return ContributorOffer.from_rows(candidates).keyboard(
+            callback_prefix="pi",
+            nonce=nonce,
+            cancel_text=menu_label("❌", "Cancelar"),
+            button_factory=InlineKeyboardButton,
+            markup_factory=InlineKeyboardMarkup,
+        )
 
     async def start(self, adapter, query, chat_id: Any, thread_id: Any, user_id: str, operation: str) -> None:
         if operation not in {"generar", "descargar-presentados"}:
@@ -180,7 +185,7 @@ class PortalIvaFlow:
         )
         await query.answer("Portal IVA")
         await self._send(
-            adapter, chat_id, "Ingresá nombre, CUIT o slug del contribuyente.", thread_id,
+            adapter, chat_id, CONTRIBUTOR_PROMPT, thread_id,
             self._cancel_keyboard(self.states[key].nonce),
         )
 
@@ -304,14 +309,21 @@ class PortalIvaFlow:
         except Exception:
             await self._send(adapter, chat_id, "No pude consultar la base canónica. Probá nuevamente.", thread_id)
             return True
-        if not candidates:
+        offer = ContributorOffer.from_rows(candidates)
+        state.candidates = offer.candidates
+        if offer.status == "empty":
             await self._send(adapter, chat_id, "No hay un contribuyente ARCA activo con acceso y representación válidos que coincida. Probá con nombre, CUIT o slug.", thread_id)
             return True
-        state.candidates = tuple(int(candidate["id"]) for candidate in candidates)
-        if len(candidates) == 1:
-            await self._select(adapter, chat_id, thread_id, state, candidates[0])
+        if offer.status == "single":
+            await self._select(adapter, chat_id, thread_id, state, offer.single)
             return True
-        await self._send(adapter, chat_id, "Elegí un contribuyente:", thread_id, self._candidate_keyboard(candidates, state.nonce))
+        await self._send(
+            adapter,
+            chat_id,
+            MULTIPLE_CONTRIBUTORS_TEXT,
+            thread_id,
+            self._candidate_keyboard(candidates, state.nonce),
+        )
         return True
 
     async def _select(self, adapter, chat_id: Any, thread_id: Any, state: FlowState, item: dict[str, Any]) -> None:

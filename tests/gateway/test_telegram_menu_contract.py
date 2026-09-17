@@ -155,7 +155,10 @@ def test_alignment_padding_is_restricted_to_declared_fixed_buttons(monkeypatch):
                 }:
                     assert not has_padding
 
-    flow_pages = {"pdf_consentimiento", "admin_confirmacion", "lote_confirmacion"}
+    flow_pages = {
+        "pdf_consentimiento", "admin_confirmacion", "lote_confirmacion",
+        "vencimientos_formato",
+    }
     assert used == {
         key for key in MENU_ALIGNMENT_PADDING if key[0] not in flow_pages
     }
@@ -167,11 +170,12 @@ def test_arca_query_alignment_preserves_actions_labels_and_navigation(monkeypatc
     _as_dict_markup(monkeypatch, module)
     rows = _rows(TelegramAdapter._menu_panel_keyboard("arca_consultar"))
     actions = [
+        ("ve:start", "📅", "Vencimientos"),
         ("pi:descargar", "📥", "CSV de períodos presentados"),
         ("fq:ccma", "📊", "CCMA Obligaciones y pagos"),
         ("fq:sct", "📋", "SCT Estado de cumplimiento"),
     ]
-    assert [len(row) for row in rows] == [1, 1, 1, 2]
+    assert [len(row) for row in rows] == [1, 1, 1, 1, 2]
     for row, (callback, icon, text) in zip(rows[:-1], actions):
         button = row[0]
         assert button["callback_data"] == callback

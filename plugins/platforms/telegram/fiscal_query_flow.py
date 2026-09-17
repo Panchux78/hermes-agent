@@ -22,6 +22,11 @@ from plugins.platforms.telegram.fiscal_runtime import browser_environment, requi
 from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, verify_representation
 from plugins.platforms.telegram.fiscal_scope import ACCOUNT_NOT_LINKED_MESSAGE, AccountNotLinked, InvalidCuit
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
+from plugins.platforms.telegram.contributor_selector import (
+    CONTRIBUTOR_PROMPT,
+    MULTIPLE_CONTRIBUTORS_TEXT,
+    ContributorOffer,
+)
 
 logger = logging.getLogger(__name__)
 _WORKFLOW_MENU_CANCEL = "✖️ Cancelar"
@@ -41,7 +46,7 @@ class _WorkflowMenuState:
     contributor_id: Optional[int] = None
     slug: Optional[str] = None
     cuit: Optional[str] = None
-    candidates: tuple[int, ...] = ()
+    candidates: dict[int, dict] = dataclasses.field(default_factory=dict)
     stage: str = "client"
     credential_line: Optional[int] = None
     credential_sha256: Optional[str] = None
@@ -89,11 +94,13 @@ class FiscalQueryFlow:
             menu_label('❌', 'Cancelar'), callback_data=f'fq:cancel:{state.nonce}')]])
 
     def _candidate_keyboard(self, state, rows):
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton(menu_label('👤', f"{row['nombre']} — {self.catalog._visible_cuit(row['cuit'])}"),
-                                  callback_data=f"fq:select:{state.nonce}:{row['id']}")]
-            for row in rows
-        ] + list(self._cancel_keyboard(state).inline_keyboard))
+        return ContributorOffer.from_rows(rows).keyboard(
+            callback_prefix="fq",
+            nonce=state.nonce,
+            cancel_text=menu_label("❌", "Cancelar"),
+            button_factory=InlineKeyboardButton,
+            markup_factory=InlineKeyboardMarkup,
+        )
 
     async def _send_panel(self, chat_id, text, keyboard):
         await self._adapter._bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
@@ -178,7 +185,7 @@ class FiscalQueryFlow:
         try:
             await query.answer()
             await query.edit_message_text(
-                f'{label}\nIngresá nombre, CUIT o slug del contribuyente.',
+                f'{label}\n{CONTRIBUTOR_PROMPT}',
                 reply_markup=self._cancel_keyboard(state))
         except BaseException:
             # A failed Telegram acknowledgement/prompt must not leave a phantom
@@ -647,20 +654,25 @@ class FiscalQueryFlow:
             return True
         if state.stage == 'client':
             if not text:
-                await self.send(chat_id, 'Ingresá nombre, CUIT o slug del contribuyente.')
+                await self.send(chat_id, CONTRIBUTOR_PROMPT)
                 return True
             try:
                 rows = await asyncio.to_thread(self.catalog._search, text, state.user_id)
                 if self._workflow_menu_state.get(state_key) is not state:
                     return True
-                state.candidates = tuple(int(row['id']) for row in rows)
-                if not rows:
+                offer = ContributorOffer.from_rows(rows)
+                state.candidates = offer.candidates
+                if offer.status == "empty":
                     await self.send(chat_id, 'No hay un contribuyente ARCA activo con acceso y representación válidos que coincida. Probá con nombre, CUIT o slug.')
-                elif len(rows) == 1:
-                    if await self._select(chat_id, state_key, state, int(rows[0]['id'])):
+                elif offer.status == "single":
+                    if await self._select(chat_id, state_key, state, int(offer.single['id'])):
                         await self._request_period(chat_id, state)
                 else:
-                    await self._send_panel(chat_id, 'Elegí un contribuyente:', self._candidate_keyboard(state, rows))
+                    await self._send_panel(
+                        chat_id,
+                        MULTIPLE_CONTRIBUTORS_TEXT,
+                        self._candidate_keyboard(state, rows),
+                    )
             except InvalidCuit:
                 await self.send(chat_id, 'El CUIT ingresado no es válido.')
             except Exception:

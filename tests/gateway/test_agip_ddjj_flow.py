@@ -135,7 +135,7 @@ def test_unlinked_actor_and_forged_current_selection_are_rejected(monkeypatch):
         key = flow._key("10", None, "7")
         state = FlowState(user_id="7", nonce="a" * 10, stage="contributor", candidates=(102,))
         flow.states[key] = state
-        forged = _query("ad:c:" + "a" * 10 + ":999")
+        forged = _query("ad:select:" + "a" * 10 + ":999")
         assert await flow.callback(adapter, forged, forged.data, "10", None, "7")
         forged.answer.assert_awaited_once_with("La opción ya no está disponible.")
         assert state.stage == "contributor"

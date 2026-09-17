@@ -18,6 +18,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 from plugins.platforms.telegram.ccma_artifact import publish_named, validate_identity
+from plugins.platforms.telegram.contributor_selector import (
+    CONTRIBUTOR_PROMPT,
+    MULTIPLE_CONTRIBUTORS_TEXT,
+    ContributorOffer,
+)
 
 
 @dataclass
@@ -111,6 +116,16 @@ class VencimientosFlow:
         ])
 
     @staticmethod
+    def _candidate_keyboard(candidates: list[dict[str, Any]], nonce: str) -> InlineKeyboardMarkup:
+        return ContributorOffer.from_rows(candidates).keyboard(
+            callback_prefix="ve",
+            nonce=nonce,
+            cancel_text=menu_label("❌", "Cancelar"),
+            button_factory=InlineKeyboardButton,
+            markup_factory=InlineKeyboardMarkup,
+        )
+
+    @staticmethod
     def _select_subject(state: State, row: dict[str, Any]) -> None:
         state.contributor_id = int(row["id"])
         state.contributor_name = str(row["nombre"])
@@ -189,7 +204,10 @@ class VencimientosFlow:
             state = State(user_id=user_id, nonce=uuid.uuid4().hex[:10], created_at=time.monotonic())
             self.states[key] = state
             await query.answer()
-            await query.edit_message_text("Vencimientos ARCA\nIngresá el nombre, CUIT o alias del contribuyente.", reply_markup=self._cancel(state.nonce))
+            await query.edit_message_text(
+                f"Vencimientos ARCA\n{CONTRIBUTOR_PROMPT}",
+                reply_markup=self._cancel(state.nonce),
+            )
             return True
         if not state or len(parts) < 3 or parts[2] != state.nonce:
             await query.answer("Esta consulta venció. Iniciá una nueva.")
@@ -242,14 +260,16 @@ class VencimientosFlow:
             rows = await asyncio.to_thread(self._search, int(state.user_id), message.text or "")
         except Exception:
             self.states.pop(key, None); await message.reply_text("No pude consultar los vencimientos. Probá nuevamente más tarde."); return True
-        if not rows:
+        offer = ContributorOffer.from_rows(rows)
+        state.candidates = offer.candidates
+        if offer.status == "empty":
             await message.reply_text("No encontré un contribuyente autorizado con ese nombre, CUIT o alias.", reply_markup=self._cancel(state.nonce)); return True
-        if len(rows) == 1:
-            self._select_subject(state, rows[0])
+        if offer.status == "single":
+            self._select_subject(state, offer.single)
             await self._ask_format(message, state, edit=False)
             return True
-        state.candidates = {int(row["id"]): row for row in rows}
-        keyboard = [[InlineKeyboardButton(menu_label("👤", row["nombre"]), callback_data=f"ve:select:{state.nonce}:{row['id']}")] for row in rows]
-        keyboard += list(self._cancel(state.nonce).inline_keyboard)
-        await message.reply_text("Encontré varias coincidencias. Elegí una:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await message.reply_text(
+            MULTIPLE_CONTRIBUTORS_TEXT,
+            reply_markup=self._candidate_keyboard(rows, state.nonce),
+        )
         return True

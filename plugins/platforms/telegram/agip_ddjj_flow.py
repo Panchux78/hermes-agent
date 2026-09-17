@@ -21,6 +21,11 @@ from typing import Any
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.contributor_selector import (
+    CONTRIBUTOR_PROMPT,
+    MULTIPLE_CONTRIBUTORS_TEXT,
+    ContributorOffer,
+)
 from plugins.platforms.telegram.fiscal_scope import (
     ACCOUNT_NOT_LINKED_MESSAGE,
     AccountNotLinked,
@@ -88,7 +93,7 @@ class FlowState:
     progress_message: Any = None
     cancelled: bool = False
     created_at: float = field(default_factory=time.monotonic)
-    candidates: tuple[int, ...] = ()
+    candidates: dict[int, dict[str, Any]] = field(default_factory=dict)
     scope_item: dict[str, Any] | None = None
 
 
@@ -138,13 +143,13 @@ class AgipDdjjFlow:
 
     @staticmethod
     def _candidate_keyboard(candidates: list[dict[str, Any]], nonce: str) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                menu_label("👤", f"{candidate['nombre']} — {visible_cuit(candidate['cuit'])}"),
-                callback_data=f"ad:c:{nonce}:{candidate['id']}",
-            )]
-            for candidate in candidates
-        ])
+        return ContributorOffer.from_rows(candidates).keyboard(
+            callback_prefix="ad",
+            nonce=nonce,
+            cancel_text=menu_label("❌", "Cancelar"),
+            button_factory=InlineKeyboardButton,
+            markup_factory=InlineKeyboardMarkup,
+        )
 
     @staticmethod
     def _expired(state: FlowState) -> bool:
@@ -338,7 +343,7 @@ class AgipDdjjFlow:
             user_id=str(user_id), nonce=uuid.uuid4().hex[:10], stage="contributor"
         )
         await query.answer("Consulta DDJJ IIBB")
-        await self._send(adapter, chat_id, "Ingresá nombre, CUIT o slug del contribuyente.", thread_id=thread_id)
+        await self._send(adapter, chat_id, CONTRIBUTOR_PROMPT, thread_id=thread_id)
 
     async def text(self, adapter, message) -> bool:
         chat_id, user_id = message.chat_id, message.from_user.id
@@ -382,14 +387,21 @@ class AgipDdjjFlow:
         except InvalidCuit:
             await self._send(adapter, chat_id, "El CUIT ingresado no es válido.", thread_id=thread_id)
             return True
-        if not candidates:
+        offer = ContributorOffer.from_rows(candidates)
+        state.candidates = offer.candidates
+        if offer.status == "empty":
             await self._send(adapter, chat_id, "No hay un contribuyente AGIP activo con una única Clave Ciudad válida que coincida. Probá con nombre, CUIT o slug.", thread_id=thread_id)
             return True
-        state.candidates = tuple(int(candidate["id"]) for candidate in candidates)
-        if len(candidates) == 1:
-            await self._select(adapter, chat_id, thread_id, user_id, state, candidates[0])
+        if offer.status == "single":
+            await self._select(adapter, chat_id, thread_id, user_id, state, offer.single)
             return True
-        await self._send(adapter, chat_id, "Elegí una opción:", self._candidate_keyboard(candidates, state.nonce), thread_id)
+        await self._send(
+            adapter,
+            chat_id,
+            MULTIPLE_CONTRIBUTORS_TEXT,
+            self._candidate_keyboard(candidates, state.nonce),
+            thread_id,
+        )
         return True
 
     def _by_id(self, item_id: int, telegram_id: Any) -> list[dict[str, Any]]:
@@ -416,7 +428,7 @@ class AgipDdjjFlow:
                 "Consulta AGIP cancelada. No se entregó ningún archivo.",
             )
             return True
-        m = re.fullmatch(r"ad:c:([0-9a-f]{10}):(\d+)", data)
+        m = re.fullmatch(r"ad:select:([0-9a-f]{10}):(\d+)", data)
         if not m:
             return False
         state = self.states.get(key)
