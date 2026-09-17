@@ -48,7 +48,8 @@ def validate_identity(slug, cuit):
 
 def publish_named(source, directory, filename):
     directory = Path(directory)
-    if Path(filename).name != filename or not filename.endswith('.xlsx'):
+    suffix = Path(filename).suffix.lower()
+    if Path(filename).name != filename or suffix not in {'.xlsx', '.ics'}:
         raise ValueError('invalid_filename')
     # Check before mkdir as well, so no directory is created through a symlink.
     for p in (directory,*directory.parents):
@@ -72,7 +73,7 @@ def publish_named(source, directory, filename):
                 shutil.copyfileobj(inp, out)
                 out.flush(); os.fsync(out.fileno())
             for version in range(1,10000):
-                target=directory/(filename if version==1 else f'{stem}-v{version:02d}.xlsx')
+                target=directory/(filename if version==1 else f'{stem}-v{version:02d}{suffix}')
                 try: os.link(temporary, target)
                 except FileExistsError: continue
                 directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

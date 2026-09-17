@@ -149,6 +149,19 @@ def test_publication_preserves_read_only_named_acl(tmp_path):
     assert f'user:{service_uid}:r-x\t#effective:r--' in file_acl
 
 
+def test_publication_versions_ics_without_changing_extension(tmp_path):
+    source = tmp_path / 'calendar.ics'
+    source.write_bytes(b'BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n')
+    directory = tmp_path / 'client/arca/consultas'
+
+    first = publish_named(source, directory, 'client-vencimientos-arca.ics')
+    second = publish_named(source, directory, 'client-vencimientos-arca.ics')
+
+    assert first.name == 'client-vencimientos-arca.ics'
+    assert second.name == 'client-vencimientos-arca-v02.ics'
+    assert first.read_bytes() == second.read_bytes() == source.read_bytes()
+
+
 @pytest.mark.asyncio
 async def test_ccma_reports_unreadable_amount_without_private_diagnostics(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME',str(tmp_path)); monkeypatch.setenv('HERMES_HOME',str(tmp_path))

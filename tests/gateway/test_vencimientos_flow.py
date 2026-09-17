@@ -36,6 +36,7 @@ class VencimientosFlowTests(unittest.TestCase):
         self.assertIn("telegram_id=123", sql)
         self.assertIn("slug=lower", sql)
         self.assertIn("regexp_replace(cuit", sql)
+        self.assertIn("'cuit',regexp_replace(cuit", sql)
         self.assertNotIn("cliente-demo", sql)
 
     def test_calendar_scopes_by_user_and_contributor(self):
@@ -68,7 +69,7 @@ class VencimientosConversationTests(unittest.IsolatedAsyncioTestCase):
             from_user=SimpleNamespace(id=123), text="cliente-demo",
             reply_text=AsyncMock(),
         )
-        row = {"id": 9, "nombre": "Cliente Demo", "slug": "cliente-demo"}
+        row = {"id": 9, "nombre": "Cliente Demo", "slug": "cliente-demo", "cuit": "20123456786"}
         formats = object()
         with (patch.object(flow, "_search", return_value=[row]),
               patch.object(flow, "_formats", return_value=formats)):
@@ -80,10 +81,16 @@ class VencimientosConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(message.reply_text.await_args.kwargs["reply_markup"], formats)
 
     async def test_format_callback_delivers_selected_file(self):
-        flow = VencimientosFlow(runtime_python=Path("/runtime/python"))
+        from tempfile import TemporaryDirectory
+
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        clients_root = Path(temporary.name) / "clientes"
+        flow = VencimientosFlow(runtime_python=Path("/runtime/python"), clients_root=clients_root)
         state = SimpleNamespace(
             user_id="123", nonce="abc", stage="format", created_at=__import__("time").monotonic(),
             contributor_id=9, contributor_name="Cliente Demo", contributor_slug="cliente-demo",
+            contributor_cuit="20123456786",
         )
         flow.states["10::123"] = state
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
@@ -99,7 +106,40 @@ class VencimientosConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         self.assertNotIn("10::123", flow.states)
         self.assertEqual(adapter.send_document.await_args.kwargs["file_name"], "cliente-demo-vencimientos-arca.xlsx")
+        published = clients_root / "cliente-demo/20123456786/arca/2026/anual/consultas/cliente-demo-vencimientos-arca.xlsx"
+        self.assertEqual(Path(adapter.send_document.await_args.kwargs["file_path"]), published)
+        self.assertEqual(published.read_bytes(), b"xlsx")
+        self.assertEqual(published.stat().st_mode & 0o777, 0o640)
         self.assertEqual(query.edit_message_text.await_args_list[-1].args[0], "Excel enviado.")
+
+    async def test_ics_is_published_and_versioned_in_general_folder_for_multiple_years(self):
+        from tempfile import TemporaryDirectory
+
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        clients_root = Path(temporary.name) / "clientes"
+        flow = VencimientosFlow(runtime_python=Path("/runtime/python"), clients_root=clients_root)
+        state = SimpleNamespace(
+            user_id="123", nonce="abc", stage="format", created_at=__import__("time").monotonic(),
+            contributor_id=9, contributor_name="Cliente Demo", contributor_slug="cliente-demo",
+            contributor_cuit="20123456786",
+        )
+        rows = [{"fecha": "2026-12-31"}, {"fecha": "2027-01-02"}]
+
+        def generate(kind, output, contributor_id, slug, given_rows):
+            output.write_bytes(b"ics")
+
+        adapter = SimpleNamespace(send_document=AsyncMock(return_value=SimpleNamespace(success=True)))
+        for expected in ("cliente-demo-vencimientos-arca.ics", "cliente-demo-vencimientos-arca-v02.ics"):
+            flow.states["10::123"] = state
+            with patch.object(flow, "_calendar", return_value=rows), patch.object(flow, "_generate", side_effect=generate):
+                await flow.callback(adapter, SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock()),
+                                    "ve:format:abc:ics", 10, None, "123")
+            self.assertEqual(Path(adapter.send_document.await_args.kwargs["file_path"]).name, expected)
+        target = clients_root / "cliente-demo/20123456786/arca/consultas"
+        self.assertEqual(sorted(path.name for path in target.iterdir()), [
+            "cliente-demo-vencimientos-arca-v02.ics", "cliente-demo-vencimientos-arca.ics",
+        ])
 
 
 if __name__ == "__main__":

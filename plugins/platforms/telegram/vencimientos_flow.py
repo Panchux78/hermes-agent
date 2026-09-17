@@ -11,11 +11,13 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
+from plugins.platforms.telegram.ccma_artifact import publish_named, validate_identity
 
 
 @dataclass
@@ -27,15 +29,19 @@ class State:
     contributor_id: int | None = None
     contributor_name: str = ""
     contributor_slug: str = ""
+    contributor_cuit: str = ""
     candidates: dict[int, dict[str, Any]] | None = None
 
 
 class VencimientosFlow:
     TTL = 600
 
-    def __init__(self, runtime_python: Path | None = None) -> None:
+    def __init__(self, runtime_python: Path | None = None, clients_root: Path | None = None) -> None:
         self.states: dict[str, State] = {}
         self.runtime_python = Path(runtime_python) if runtime_python else None
+        self.clients_root = Path(clients_root) if clients_root else Path(
+            os.environ.get("CONTABOT_CLIENTES_ROOT", Path.home() / "clientes")
+        )
 
     @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
@@ -74,7 +80,8 @@ class VencimientosFlow:
     def _search(self, telegram_id: int, term: str) -> list[dict[str, Any]]:
         literal = self._literal(term.strip())
         return self._query(f"""
-          SELECT json_build_object('id',id_contribuyente,'nombre',nombre_legal,'slug',slug)::text
+          SELECT json_build_object('id',id_contribuyente,'nombre',nombre_legal,'slug',slug,
+                 'cuit',regexp_replace(cuit,'[^0-9]','','g'))::text
             FROM console.vw_vencimientos_telegram
            WHERE telegram_id={int(telegram_id)}
              AND (lower(nombre_legal) LIKE '%'||lower({literal})||'%'
@@ -113,7 +120,20 @@ class VencimientosFlow:
         state.contributor_id = int(row["id"])
         state.contributor_name = str(row["nombre"])
         state.contributor_slug = str(row["slug"])
+        state.contributor_cuit = str(row["cuit"])
         state.stage = "format"
+
+    def _destination(self, state: State, rows: list[dict[str, Any]]) -> Path:
+        validate_identity(state.contributor_slug, state.contributor_cuit)
+        years: set[str] = set()
+        for row in rows:
+            value = str(row.get("fecha", ""))
+            parsed = date.fromisoformat(value)
+            years.add(str(parsed.year))
+        if not years:
+            raise ValueError("vencimientos_dates_missing")
+        base = self.clients_root / state.contributor_slug / state.contributor_cuit / "arca"
+        return base / next(iter(years)) / "anual" / "consultas" if len(years) == 1 else base / "consultas"
 
     async def _ask_format(self, target, state: State, *, edit: bool) -> None:
         text = f"Vencimientos ARCA · {state.contributor_name}\nElegí el archivo que querés recibir."
@@ -150,6 +170,8 @@ class VencimientosFlow:
                 self._generate, kind, output, state.contributor_id,
                 state.contributor_slug, rows,
             )
+            destination = self._destination(state, rows)
+            output = await asyncio.to_thread(publish_named, output, destination, output.name)
             metadata = {"thread_id": thread_id} if thread_id is not None else None
             result = await adapter.send_document(
                 chat_id=str(chat_id), file_path=str(output), file_name=output.name,
