@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
 from hermes_cli import setup_platforms
 
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
+from plugins.platforms.telegram.contabot_access import telegram_user_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -784,6 +785,10 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or user_id in allowed_ids
 
+    def authorize_principal(self, user_id: str, **_context: Any) -> Optional[bool]:
+        """Live ContaBot table gate; None keeps upstream behavior outside configured deployments."""
+        return telegram_user_enabled(user_id)
+
     def _is_callback_user_authorized(
         self, user_id: str, *, chat_id: Optional[str] = None, chat_type: Optional[str] = None,
         thread_id: Optional[str] = None, user_name: Optional[str] = None) -> bool:
@@ -1255,6 +1260,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # No identity → service message or channel post without sender_chat; defer to message gating.
         if not user_id:
             return True
+        table_verdict = self.authorize_principal(
+            user_id, chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id)
+        if table_verdict is not None:
+            return table_verdict
         authorized: Optional[bool] = None
         # Adapter-level allow_from (DMs) / group_allow_from (groups) are the sole authority if set.
         adapter_allow_from = self.config.extra.get(

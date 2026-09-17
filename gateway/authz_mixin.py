@@ -527,6 +527,18 @@ class GatewayAuthorizationMixin:
             return True
 
         adapter_profile = self._adapter_profile_for_source(source)
+        adapter = self._authorization_adapter(source.platform, adapter_profile)
+        dynamic_check = getattr(adapter, "authorize_principal", None) if adapter is not None else None
+        if callable(dynamic_check):
+            try:
+                verdict = dynamic_check(
+                    source.user_id or "", chat_id=source.chat_id, chat_type=source.chat_type,
+                    thread_id=source.thread_id, user_name=source.user_name)
+            except Exception:
+                logger.exception("Dynamic authorization failed closed for %s", source.platform)
+                return False
+            if verdict is not None:
+                return verdict is True
         is_group = source.chat_type in _GROUP_CHAT_TYPES
         is_group_or_forum = source.chat_type in _GROUP_FORUM_TYPES
         if self._chat_scoped_grant(source, adapter_profile, is_group, allow_adapter_delegation):
