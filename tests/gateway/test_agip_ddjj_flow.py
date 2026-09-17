@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import signal
@@ -459,3 +460,40 @@ def test_failure_manifest_contains_only_allowlisted_fields(tmp_path, monkeypatch
     assert "unexpected" not in payload
     assert path.stat().st_mode & 0o777 == 0o600
     assert failure_root.stat().st_mode & 0o777 == 0o700
+
+
+def test_worker_result_parser_skips_malformed_json_like_noise():
+    raw = b'log line\n{"broken":\n{"ok":false,"error_code":"AGIP_ACCESS_UNAVAILABLE"}\n'
+
+    assert AgipDdjjFlow._parse_worker_result(raw) == {
+        "ok": False,
+        "error_code": "AGIP_ACCESS_UNAVAILABLE",
+    }
+
+
+def test_invalid_worker_result_persists_bounded_redacted_tails(tmp_path, monkeypatch):
+    failure_root = tmp_path / "failures"
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.agip_ddjj_flow._FAILURE_ROOT", failure_root
+    )
+    stdout = b"noise cuit=30711746044 password=secret https://example.test/x?token=abc\n"
+    stderr = b"Traceback: token=private\n"
+
+    path = AgipDdjjFlow._persist_failure(
+        {"ok": False, "error_code": "AGIP_WORKER_RESULT_INVALID"},
+        "2026",
+        0,
+        worker_stdout=stdout,
+        worker_stderr=stderr,
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["worker_stdout_sha256"] == hashlib.sha256(stdout).hexdigest()
+    assert payload["worker_stderr_sha256"] == hashlib.sha256(stderr).hexdigest()
+    serialized = json.dumps(payload)
+    assert "30711746044" not in serialized
+    assert "secret" not in serialized
+    assert "private" not in serialized
+    assert "<cuit-redacted>" in payload["worker_stdout_tail"]
+    assert "password=<redacted>" in payload["worker_stdout_tail"]
+    assert "token=<redacted>" in payload["worker_stderr_tail"]

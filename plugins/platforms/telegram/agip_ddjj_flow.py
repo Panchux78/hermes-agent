@@ -42,6 +42,7 @@ _FAILURE_ROOT = Path("/home/pancho/.local/state/contabot/agip-ddjj/failures")
 _STATE_TTL_SECONDS = 600
 _AGIP_CLAVE_CIUDAD_ENTITY = "AGIP - Clave Ciudad"
 _RUN_TIMEOUT_SECONDS = 1800
+_WORKER_DIAGNOSTIC_TAIL_BYTES = 8192
 _DELIVERY_XLSX = re.compile(
     rf"^(?:{re.escape(_CLIENTS_ROOT)}/(?P<slug_annual>[a-z0-9]+(?:-[a-z0-9]+)*)/(?P<cuit_annual>\d{{11}})/agip/"
     r"(?P<year_annual>\d{4})/anual/consultas/(?P=slug_annual)-ddjj-iibb-agip-"
@@ -230,7 +231,43 @@ class AgipDdjjFlow:
         return message
 
     @staticmethod
-    def _persist_failure(result: dict[str, Any], period: str, returncode: int | None) -> Path:
+    def _parse_worker_result(raw: bytes) -> dict[str, Any] | None:
+        """Return the last valid worker result, ignoring unrelated stdout lines."""
+        for line in reversed(raw.decode("utf-8", errors="replace").splitlines()):
+            if not line.strip().startswith("{"):
+                continue
+            try:
+                candidate = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and isinstance(candidate.get("ok"), bool):
+                return candidate
+        return None
+
+    @staticmethod
+    def _diagnostic_tail(raw: bytes) -> str:
+        """Keep a bounded, redacted diagnostic excerpt outside the repository."""
+        text = raw[-_WORKER_DIAGNOSTIC_TAIL_BYTES:].decode("utf-8", errors="replace")
+        text = "".join(character for character in text if character in "\n\r\t" or ord(character) >= 32)
+        text = re.sub(r"(?<!\d)\d{11}(?!\d)", "<cuit-redacted>", text)
+        text = re.sub(
+            r"(?i)\b(password|contrasena|contraseña|token|sign|cookie|authorization)"
+            r"\s*[:=]\s*([^\s,;]+)",
+            r"\1=<redacted>",
+            text,
+        )
+        text = re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?<query-redacted>", text)
+        return text[-4096:]
+
+    @staticmethod
+    def _persist_failure(
+        result: dict[str, Any],
+        period: str,
+        returncode: int | None,
+        *,
+        worker_stdout: bytes | None = None,
+        worker_stderr: bytes | None = None,
+    ) -> Path:
         """Persist only allowlisted diagnostic fields, atomically and mode 0600."""
         _FAILURE_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
         if _FAILURE_ROOT.is_symlink() or not _FAILURE_ROOT.is_dir():
@@ -259,6 +296,13 @@ class AgipDdjjFlow:
         status = result.get("http_status")
         if isinstance(status, int) and 100 <= status <= 599:
             payload["http_status"] = status
+        if payload["error_code"] == "AGIP_WORKER_RESULT_INVALID":
+            if worker_stdout is not None:
+                payload["worker_stdout_sha256"] = hashlib.sha256(worker_stdout).hexdigest()
+                payload["worker_stdout_tail"] = AgipDdjjFlow._diagnostic_tail(worker_stdout)
+            if worker_stderr is not None:
+                payload["worker_stderr_sha256"] = hashlib.sha256(worker_stderr).hexdigest()
+                payload["worker_stderr_tail"] = AgipDdjjFlow._diagnostic_tail(worker_stderr)
         name = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex}.json"
         fd, temporary = tempfile.mkstemp(prefix=".failure-", dir=_FAILURE_ROOT)
         try:
@@ -434,7 +478,7 @@ class AgipDdjjFlow:
                 "/home/pancho/hermes-workspace/agip-consulta-2025/.venv-selenium/bin/python",
                 "/home/pancho/hermes-workspace/Contabot/scripts/agip-ddjj-worker.py",
                 str(state.contributor_id), str(state.represented_id), period,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
             self.processes[key] = proc
@@ -442,7 +486,7 @@ class AgipDdjjFlow:
                 await self._terminate_process(proc)
                 return
             try:
-                raw, _ = await asyncio.wait_for(
+                raw, error = await asyncio.wait_for(
                     proc.communicate(), timeout=_RUN_TIMEOUT_SECONDS
                 )
             except TimeoutError:
@@ -454,18 +498,20 @@ class AgipDdjjFlow:
                 return
             if state.cancelled:
                 return
-            try:
-                result = next(
-                    json.loads(line)
-                    for line in reversed(raw.decode(errors="replace").splitlines())
-                    if line.strip().startswith("{")
-                )
-            except Exception:
+            result = self._parse_worker_result(raw)
+            invalid_worker_result = result is None
+            if invalid_worker_result:
                 result = {"ok": False, "error_code": "AGIP_WORKER_RESULT_INVALID"}
             if not result.get("ok"):
                 evidence = None
                 try:
-                    evidence = self._persist_failure(result, period, proc.returncode)
+                    evidence = self._persist_failure(
+                        result,
+                        period,
+                        proc.returncode,
+                        worker_stdout=raw if invalid_worker_result else None,
+                        worker_stderr=error if invalid_worker_result else None,
+                    )
                 except Exception as exc:
                     logger.error("[AGIP-DDJJ] failure evidence error_type=%s", type(exc).__name__)
                 logger.warning(
