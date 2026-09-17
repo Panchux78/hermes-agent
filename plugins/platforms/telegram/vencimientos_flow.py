@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import json
 import os
 from pathlib import Path
+import signal
+import stat
 import subprocess
 import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -40,12 +43,29 @@ class State:
 
 class VencimientosFlow:
     TTL = 600
+    SOURCE_HEADERS = [
+        "ID Impuesto", "Impuesto", "ID Concepto", "Concepto", "Período",
+        "Anticipo/Cuota", "Tipo Operación", "Vencimiento", "Formularios",
+    ]
 
-    def __init__(self, runtime_python: Path | None = None, clients_root: Path | None = None) -> None:
+    def __init__(self, runtime_python: Path | None = None, clients_root: Path | None = None,
+                 source_script: Path | None = None, source_map: Path | None = None) -> None:
         self.states: dict[str, State] = {}
         self.runtime_python = Path(runtime_python) if runtime_python else None
         self.clients_root = Path(clients_root) if clients_root else Path(
             os.environ.get("CONTABOT_CLIENTES_ROOT", Path.home() / "clientes")
+        )
+        self.source_script = Path(source_script) if source_script else Path(
+            os.environ.get(
+                "CONTABOT_VENCIMIENTOS_SCRIPT",
+                "/srv/contabot-console/integrations/regenerar_vencimientos_arca.py",
+            )
+        )
+        self.source_map = Path(source_map) if source_map else Path(
+            os.environ.get(
+                "CONTABOT_VENCIMIENTOS_MAP",
+                "/home/pancho/hermes-workspace/vectux.com/root/mapa_impuestos.json",
+            )
         )
 
     @staticmethod
@@ -102,6 +122,86 @@ class VencimientosFlow:
            WHERE telegram_id={int(telegram_id)} AND id_contribuyente={int(contributor_id)}
            ORDER BY fecha_vencimiento,id_vencimiento;
         """)
+
+    @staticmethod
+    def _safe_source_file(path: Path) -> None:
+        if not path.is_absolute():
+            raise RuntimeError("vencimientos_source_path_invalid")
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise RuntimeError("vencimientos_source_file_invalid")
+        if info.st_mode & 0o022:
+            raise RuntimeError("vencimientos_source_permissions_invalid")
+
+    def _source_calendar(self, cuit: str) -> list[dict[str, Any]]:
+        python = self.runtime_python
+        if (python is None or not python.is_absolute() or not python.is_file()
+                or not os.access(python, os.X_OK)):
+            raise RuntimeError("vencimientos_source_runtime_unavailable")
+        self._safe_source_file(self.source_script)
+        self._safe_source_file(self.source_map)
+        with tempfile.TemporaryDirectory(prefix="contabot-vencimientos-source-") as directory:
+            root = Path(directory)
+            requested = root / "vencimientos.csv"
+            process = subprocess.Popen(
+                [str(python), "-I", "-B", str(self.source_script), cuit,
+                 str(self.source_map), str(requested)],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                start_new_session=True,
+            )
+            try:
+                stdout, _ = process.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+                raise RuntimeError("vencimientos_source_timeout") from None
+            if process.returncode:
+                raise RuntimeError("vencimientos_source_failed")
+            try:
+                result = json.loads(stdout)
+                output = Path(result["output"])
+            except (json.JSONDecodeError, KeyError, TypeError):
+                raise RuntimeError("vencimientos_source_response_invalid") from None
+            if output.parent != root:
+                raise RuntimeError("vencimientos_source_output_outside_staging")
+            self._safe_source_file(output)
+            with output.open("r", encoding="utf-8-sig", newline="") as stream:
+                reader = csv.DictReader(stream, delimiter=";")
+                if reader.fieldnames != self.SOURCE_HEADERS:
+                    raise RuntimeError("vencimientos_source_columns_invalid")
+                rows: list[dict[str, Any]] = []
+                keys: set[tuple[str, ...]] = set()
+                for raw in reader:
+                    try:
+                        due = datetime.strptime(raw["Vencimiento"].strip(), "%d/%m/%Y").date()
+                    except (ValueError, AttributeError):
+                        raise RuntimeError("vencimientos_source_date_invalid") from None
+                    row = {
+                        "id_impuesto": raw["ID Impuesto"].strip(),
+                        "impuesto": raw["Impuesto"].strip(),
+                        "id_concepto": raw["ID Concepto"].strip(),
+                        "concepto": raw["Concepto"].strip(),
+                        "periodo": raw["Período"].strip(),
+                        "anticipo_cuota": raw["Anticipo/Cuota"].strip(),
+                        "tipo": raw["Tipo Operación"].strip(),
+                        "fecha": due.isoformat(),
+                        "formularios": raw["Formularios"].strip(),
+                        "estado": "pendiente",
+                    }
+                    key = tuple(row[name] for name in (
+                        "id_impuesto", "id_concepto", "periodo", "anticipo_cuota", "tipo",
+                    ))
+                    if not row["id_impuesto"] or not row["id_concepto"] or key in keys:
+                        raise RuntimeError("vencimientos_source_identity_invalid")
+                    keys.add(key)
+                    rows.append(row)
+            if not rows or result.get("rows") != len(rows):
+                raise RuntimeError("vencimientos_source_rows_invalid")
+            return rows
 
     @staticmethod
     def _cancel(nonce: str) -> InlineKeyboardMarkup:
@@ -173,7 +273,7 @@ class VencimientosFlow:
             raise RuntimeError("vencimientos_subject_missing")
         rows = await asyncio.to_thread(self._calendar, telegram_id, state.contributor_id)
         if not rows:
-            raise LookupError("vencimientos_empty")
+            rows = await asyncio.to_thread(self._source_calendar, state.contributor_cuit)
         with tempfile.TemporaryDirectory(prefix="contabot-vencimientos-") as directory:
             output = Path(directory) / f"{state.contributor_slug}-vencimientos-arca.{kind}"
             await asyncio.to_thread(

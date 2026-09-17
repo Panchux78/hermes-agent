@@ -1,4 +1,5 @@
 import unittest
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -8,6 +9,39 @@ from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
 
 
 class VencimientosFlowTests(unittest.TestCase):
+    def test_source_calendar_parses_the_canonical_csv_contract(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "source.py"
+            mapping = root / "map.json"
+            mapping.write_text("{}", encoding="utf-8")
+            script.write_text(
+                "import csv,json,os,sys\n"
+                "out=sys.argv[3]\n"
+                "headers=['ID Impuesto','Impuesto','ID Concepto','Concepto','Período','Anticipo/Cuota','Tipo Operación','Vencimiento','Formularios']\n"
+                "with open(out,'w',encoding='utf-8-sig',newline='') as f:\n"
+                " w=csv.writer(f,delimiter=';');w.writerow(headers);w.writerow(['20','IVA','30','Saldo','202608','8','PAGO','21/09/2026','F.2051'])\n"
+                "os.chmod(out,0o600)\n"
+                "print(json.dumps({'ok':True,'rows':1,'output':out}))\n",
+                encoding="utf-8",
+            )
+            script.chmod(0o700)
+            mapping.chmod(0o600)
+            flow = VencimientosFlow(
+                runtime_python=Path(sys.executable),
+                source_script=script,
+                source_map=mapping,
+            )
+            rows = flow._source_calendar("20123456786")
+        self.assertEqual(rows, [{
+            "id_impuesto": "20", "impuesto": "IVA", "id_concepto": "30",
+            "concepto": "Saldo", "periodo": "202608", "anticipo_cuota": "8",
+            "tipo": "PAGO", "fecha": "2026-09-21", "formularios": "F.2051",
+            "estado": "pendiente",
+        }])
+
     def test_format_buttons_have_explicit_alignment_and_stable_callbacks(self):
         import plugins.platforms.telegram.vencimientos_flow as module
 
@@ -67,6 +101,33 @@ class VencimientosFlowTests(unittest.TestCase):
 
 
 class VencimientosConversationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_published_calendar_fetches_arca_before_exporting(self):
+        from tempfile import TemporaryDirectory
+
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        flow = VencimientosFlow(runtime_python=Path("/runtime/python"), clients_root=Path(temporary.name))
+        state = SimpleNamespace(
+            user_id="123", nonce="abc", stage="format", created_at=__import__("time").monotonic(),
+            contributor_id=158, contributor_name="Berenstein Jorge", contributor_slug="berenstein-jorge",
+            contributor_cuit="20123456786",
+        )
+        live = [{"fecha": "2026-09-21", "estado": "pendiente"}]
+        flow.states["10::123"] = state
+        query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
+        adapter = SimpleNamespace(send_document=AsyncMock(return_value=SimpleNamespace(success=True)))
+
+        def generate(kind, output, contributor_id, slug, rows):
+            self.assertEqual(rows, live)
+            output.write_bytes(b"xlsx")
+
+        with (patch.object(flow, "_calendar", return_value=[]),
+              patch.object(flow, "_source_calendar", return_value=live) as source,
+              patch.object(flow, "_generate", side_effect=generate)):
+            await flow.callback(adapter, query, "ve:format:abc:xlsx", 10, None, "123")
+        source.assert_called_once_with("20123456786")
+        self.assertEqual(query.edit_message_text.await_args_list[-1].args[0], "Excel enviado.")
+
     async def test_unique_subject_asks_for_excel_or_ics_without_listing_rows(self):
         flow = VencimientosFlow()
         state = SimpleNamespace(user_id="123", nonce="abc", created_at=__import__("time").monotonic())
