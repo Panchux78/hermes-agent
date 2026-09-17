@@ -37,6 +37,7 @@ class VencimientosFlowTests(unittest.TestCase):
         self.assertIn("slug=lower", sql)
         self.assertIn("regexp_replace(cuit", sql)
         self.assertIn("'cuit',regexp_replace(cuit", sql)
+        self.assertIn("GROUP BY id_contribuyente,nombre_legal,slug,cuit", sql)
         self.assertNotIn("cliente-demo", sql)
 
     def test_calendar_scopes_by_user_and_contributor(self):

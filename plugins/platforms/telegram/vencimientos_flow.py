@@ -88,7 +88,7 @@ class VencimientosFlow:
                   OR slug=lower({literal})
                   OR regexp_replace(cuit,'[^0-9]','','g')=
                      regexp_replace({literal},'[^0-9]','','g'))
-           GROUP BY id_contribuyente,nombre_legal,slug ORDER BY nombre_legal LIMIT 12;
+           GROUP BY id_contribuyente,nombre_legal,slug,cuit ORDER BY nombre_legal LIMIT 12;
         """)
 
     def _calendar(self, telegram_id: int, contributor_id: int) -> list[dict[str, Any]]:
