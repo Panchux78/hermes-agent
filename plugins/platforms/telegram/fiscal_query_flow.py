@@ -165,6 +165,14 @@ class FiscalQueryFlow:
             await query.answer('Cuenta no vinculada')
             await self.send(chat_id, ACCOUNT_NOT_LINKED_MESSAGE)
             return
+        except Exception:
+            logger.exception("fiscal_scope_actor_lookup_failed")
+            await query.answer('Consulta no disponible')
+            await self.send(
+                chat_id,
+                'No pude consultar la base de ContaBot. Probá nuevamente en unos minutos.'
+            )
+            return
         state = _WorkflowMenuState(skill_command=command, label=label, user_id=str(user_id))
         self._workflow_menu_state[key] = state
         try:

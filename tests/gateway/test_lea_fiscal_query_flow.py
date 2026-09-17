@@ -46,6 +46,21 @@ async def start(flow, action):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('action', ['ccma', 'sct'])
+async def test_actor_database_failure_is_reported_without_starting_state(flow, action):
+    flow.catalog._scope().require_actor.side_effect = RuntimeError('private database detail')
+
+    query = await start(flow, action)
+
+    assert not flow._workflow_menu_state
+    query.answer.assert_awaited_once_with('Consulta no disponible')
+    assert flow.send.await_args.args[1] == (
+        'No pude consultar la base de ContaBot. Probá nuevamente en unos minutos.'
+    )
+    assert 'private database detail' not in flow.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['ccma', 'sct'])
 async def test_selection_period_and_private_dispatch(flow, action):
     flow._resolve_ccma_credential_line = AsyncMock(return_value=3)
     flow._resolve_sct_credential_line = AsyncMock(return_value=(3, 'a' * 64))
