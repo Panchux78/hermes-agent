@@ -84,18 +84,33 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def allowed_telegram_users() -> list[int]:
-    value = os.environ.get("TELEGRAM_ALLOWED_USERS", "")
-    env_file = HERMES_HOME / ".env"
-    if not value and env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
-            if line.startswith("TELEGRAM_ALLOWED_USERS="):
-                value = line.split("=", 1)[1].strip().strip("\"'")
-                break
-    values = [item.strip() for item in value.split(",") if item.strip()]
-    if not values or any(not re.fullmatch(r"[1-9][0-9]{0,19}", item) for item in values):
-        raise RuntimeError("telegram_allowlist_invalid")
-    return [int(item) for item in values]
+def active_telegram_users() -> list[int]:
+    """Enumerate effective internal users through the local administrative role.
+
+    The identifiers are consumed in memory and never printed. The gateway role
+    remains unable to read ``console.tbl_usuarios`` directly.
+    """
+    query = """SET ROLE console_admin;
+    SELECT u.telegram_id
+    FROM console.tbl_usuarios u
+    JOIN console.tbl_roles r ON r.id_rol=u.id_rol
+    LEFT JOIN console.tbl_estudios e ON e.id_estudio=u.id_estudio
+    WHERE u.telegram_id IS NOT NULL AND u.activo AND r.activo
+      AND (r.codigo='admin_global' OR e.activo)
+    ORDER BY u.telegram_id;"""
+    result = run([
+        "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1",
+        "-U", os.environ.get("CONTABOT_CONSOLE_ADMIN_DB_USER", "pancho"),
+        "-d", os.environ.get("CONTABOT_CONSOLE_DATABASE", "contabot"),
+        "-c", query,
+    ])
+    values = result.stdout.decode("ascii", errors="strict").splitlines() if result.returncode == 0 else []
+    if not values or any(not re.fullmatch(r"[1-9][0-9]{0,18}", item) for item in values):
+        raise RuntimeError("telegram_users_unavailable")
+    actors = [int(item) for item in values]
+    if len(actors) != len(set(actors)):
+        raise RuntimeError("telegram_users_duplicated")
+    return actors
 
 
 def load_pg_module():
@@ -124,6 +139,23 @@ def systemd_environment() -> dict[str, str]:
             name, value = token.split("=", 1)
             values[name] = value
     return values
+
+
+def router_psql(sql: str) -> subprocess.CompletedProcess[bytes]:
+    environment = systemd_environment()
+    required = ["CONTABOT_ROUTER_CATALOG_HOST", "CONTABOT_ROUTER_CATALOG_PORT",
+                "CONTABOT_ROUTER_CATALOG_DATABASE", "CONTABOT_ROUTER_CATALOG_USER",
+                "CONTABOT_ROUTER_CATALOG_PGPASSFILE"]
+    if any(not environment.get(name) for name in required):
+        raise RuntimeError("router_profile_missing")
+    pg_env = {key: value for key, value in os.environ.items() if not key.startswith("PG")}
+    pg_env.update(PGPASSFILE=environment["CONTABOT_ROUTER_CATALOG_PGPASSFILE"], PGCONNECT_TIMEOUT="10")
+    return run([
+        "psql", "-X", "-w", "--host=" + environment["CONTABOT_ROUTER_CATALOG_HOST"],
+        "--port=" + environment["CONTABOT_ROUTER_CATALOG_PORT"],
+        "--dbname=" + environment["CONTABOT_ROUTER_CATALOG_DATABASE"],
+        "--username=" + environment["CONTABOT_ROUTER_CATALOG_USER"], "-qAt", "-c", sql,
+    ], env=pg_env)
 
 
 def level0(gate: Gate, phase: str) -> None:
@@ -183,11 +215,19 @@ def function_rows(actor: int, entity: str, capability: str) -> list[str]:
 
 def level1(gate: Gate) -> None:
     try:
-        actors = allowed_telegram_users()
+        actors = active_telegram_users()
+        unknown = next(candidate for candidate in range(1, len(actors) + 2) if candidate not in actors)
+        allowed = all(
+            (result := router_psql(f"SELECT console.fn_telegram_usuario_habilitado({actor});")).returncode == 0
+            and result.stdout.strip() == b"t"
+            for actor in actors
+        )
+        denied = router_psql(f"SELECT console.fn_telegram_usuario_habilitado({unknown});")
+        gate_ok = allowed and denied.returncode == 0 and denied.stdout.strip() == b"f"
     except Exception:
-        gate.check(1, "telegram_allowlist", False)
-        return
-    gate.check(1, "telegram_allowlist", True, f"actors={len(actors)}")
+        actors = []
+        gate_ok = False
+    gate.check(1, "telegram_user_gate", gate_ok, f"actors={len(actors)}")
     database_ok = True
     verified_rollbacks = 0
     try:
@@ -214,20 +254,7 @@ def level1(gate: Gate) -> None:
                f"actors={len(actors)} rollback_checks={verified_rollbacks}")
 
     try:
-        environment = systemd_environment()
-        required = ["CONTABOT_ROUTER_CATALOG_HOST", "CONTABOT_ROUTER_CATALOG_PORT",
-                    "CONTABOT_ROUTER_CATALOG_DATABASE", "CONTABOT_ROUTER_CATALOG_USER",
-                    "CONTABOT_ROUTER_CATALOG_PGPASSFILE"]
-        if any(not environment.get(name) for name in required):
-            raise RuntimeError("router_profile_missing")
-        pg_env = {key: value for key, value in os.environ.items() if not key.startswith("PG")}
-        pg_env.update(PGPASSFILE=environment["CONTABOT_ROUTER_CATALOG_PGPASSFILE"], PGCONNECT_TIMEOUT="10")
-        router = run([
-            "psql", "-X", "-w", "--host=" + environment["CONTABOT_ROUTER_CATALOG_HOST"],
-            "--port=" + environment["CONTABOT_ROUTER_CATALOG_PORT"],
-            "--dbname=" + environment["CONTABOT_ROUTER_CATALOG_DATABASE"],
-            "--username=" + environment["CONTABOT_ROUTER_CATALOG_USER"], "-qAt", "-c", "SELECT 1;",
-        ], env=pg_env)
+        router = router_psql("SELECT 1;")
         router_ok = router.returncode == 0 and router.stdout.strip() == b"1"
     except Exception:
         router_ok = False
