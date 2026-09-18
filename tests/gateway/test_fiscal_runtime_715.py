@@ -164,6 +164,8 @@ def test_publication_versions_ics_without_changing_extension(tmp_path):
 
 @pytest.mark.asyncio
 async def test_ccma_reports_unreadable_amount_without_private_diagnostics(tmp_path, monkeypatch):
+    verify = AsyncMock()
+    monkeypatch.setattr('plugins.platforms.telegram.ccma_dispatch.verify_representation', verify)
     monkeypatch.setenv('HOME',str(tmp_path)); monkeypatch.setenv('HERMES_HOME',str(tmp_path))
     scripts=tmp_path/'skills/productivity/ccma-obligaciones-pagos/scripts'
     scripts.mkdir(parents=True)
@@ -181,7 +183,8 @@ async def test_ccma_reports_unreadable_amount_without_private_diagnostics(tmp_pa
     flow.send=AsyncMock();flow.send_document=AsyncMock()
     await run_ccma(flow,chat_id='1',state_key=('1','1'),credential_line=2,
         credential_sha256=hashlib.sha256(access.read_bytes()).hexdigest(),
-        period_from='01/2026',period_to='01/2026',client_slug='synthetic',client_cuit='00000000000')
+        period_from='01/2026',period_to='01/2026',client_slug='synthetic',client_cuit='00000000000',
+        telegram_id=1,scope_item={'id_contribuyente': 1})
     assert 'importe ilegible; no se generó el libro' in flow.send.await_args.args[1]
     flow.send_document.assert_not_awaited()
     assert not list(tmp_path.rglob('*.xlsx'))
