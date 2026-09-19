@@ -10,6 +10,7 @@ from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label
 from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
+from plugins.platforms.telegram.fiscal_credentials import lookup_connection
 
 
 @pytest.fixture
@@ -51,7 +52,8 @@ async def test_real_menu_to_canonical_identity_period_and_dispatch(adapter, acti
     assert flow.catalog is not adapter._portal_iva_flow
     assert flow.catalog.runtime_python == Path(sys.executable)
     assert adapter._vencimientos_flow.runtime_python == Path(sys.executable)
-    assert adapter._portal_iva_flow.query_connection is None
+    assert adapter._portal_iva_flow.query_connection is lookup_connection
+    assert adapter._agip_ddjj_flow.query_connection is lookup_connection
     row = {
         'id': 3, 'nombre': 'Cliente sintético', 'cuit': '20987654326', 'slug': 'cliente-sintetico',
         'study_id': 1, 'relation_id': 31, 'relation_revision': 1,

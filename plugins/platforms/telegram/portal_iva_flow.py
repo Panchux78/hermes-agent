@@ -21,6 +21,8 @@ from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from hermes_constants import get_hermes_home
+
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.contributor_selector import (
     CONTRIBUTOR_PROMPT,
@@ -35,6 +37,7 @@ from plugins.platforms.telegram.fiscal_scope import (
     assert_marked,
     mark_verified_sql,
 )
+from plugins.platforms.telegram.fiscal_credentials import lookup_connection
 
 try:
     import fcntl
@@ -42,12 +45,17 @@ except ImportError:  # Windows gateway: keep Telegram importable, hide this Linu
     fcntl = None
 
 logger = logging.getLogger(__name__)
-_CLIENTES_ROOT = Path("/home/pancho/clientes")
-_EXECUTOR = Path("/home/pancho/procedimientos/portal-iva/portal_iva.py")
-_UV = Path("/home/pancho/.hermes/bin/uv")
+_CLIENTES_ROOT = Path(os.environ.get("CONTABOT_CLIENTES_ROOT", Path.home() / "clientes"))
+_EXECUTOR = Path(os.environ.get(
+    "CONTABOT_PORTAL_IVA_EXECUTOR", Path.home() / "procedimientos/portal-iva/portal_iva.py"
+))
+_UV = get_hermes_home() / "bin/uv"
 _PERIOD = re.compile(r"(0[1-9]|1[0-2])/[0-9]{4}")
-_LOCK_ROOT = Path("/home/pancho/.local/state/contabot/portal-iva/telegram-locks")
-_CAPTCHA_ROOT = Path("/home/pancho/.local/state/contabot/portal-iva/runs")
+_STATE_ROOT = Path(os.environ.get(
+    "CONTABOT_STATE_ROOT", Path.home() / ".local/state/contabot"
+))
+_LOCK_ROOT = _STATE_ROOT / "portal-iva/telegram-locks"
+_CAPTCHA_ROOT = _STATE_ROOT / "portal-iva/runs"
 _RUN_TIMEOUT_SECONDS = 1800
 _CAPTCHA_TIMEOUT_SECONDS = 300
 _CAPTCHA_SOLUTION = re.compile(r"[A-Za-z0-9]{4,20}")
@@ -82,7 +90,7 @@ class PortalIvaFlow:
                  query_connection=None, runtime_python: Path | None = None) -> None:
         # CCMA/SCT reuse only identity lookup, with their restricted connection.
         # Defaults preserve the existing Portal IVA executor and DB connection.
-        self.query_connection = query_connection
+        self.query_connection = query_connection or lookup_connection
         self.runtime_python = runtime_python
         self.executor = Path(executor)
         self.uv = Path(uv)
@@ -129,10 +137,7 @@ class PortalIvaFlow:
         return await adapter._bot.send_message(**kwargs)
 
     def _query(self, sql: str) -> list[dict[str, Any]]:
-        command = ["sudo", "-n", "-u", "postgres", "psql", "--dbname=contabot"]
-        environment = None
-        if self.query_connection is not None:
-            command, environment = self.query_connection()
+        command, environment = self.query_connection()
         run = subprocess.run(
             [*command, "-At", "-c", sql], env=environment,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False,

@@ -34,6 +34,7 @@ from plugins.platforms.telegram.fiscal_scope import (
     assert_marked,
     mark_verified_sql,
 )
+from plugins.platforms.telegram.fiscal_credentials import lookup_connection
 
 try:
     import fcntl
@@ -41,9 +42,19 @@ except ImportError:  # Windows gateway: keep Telegram importable, hide this Linu
     fcntl = None
 
 logger = logging.getLogger(__name__)
-_CLIENTS_ROOT = "/home/pancho/clientes"
-_LOCK_ROOT = Path("/home/pancho/.local/state/contabot/agip-ddjj/telegram-locks")
-_FAILURE_ROOT = Path("/home/pancho/.local/state/contabot/agip-ddjj/failures")
+_CLIENTS_ROOT = str(Path(os.environ.get("CONTABOT_CLIENTES_ROOT", Path.home() / "clientes")))
+_STATE_ROOT = Path(os.environ.get(
+    "CONTABOT_STATE_ROOT", Path.home() / ".local/state/contabot"
+))
+_LOCK_ROOT = _STATE_ROOT / "agip-ddjj/telegram-locks"
+_FAILURE_ROOT = _STATE_ROOT / "agip-ddjj/failures"
+_DEFAULT_PROJECT_DIR = Path(os.environ.get(
+    "CONTABOT_PROJECT_DIR", Path.home() / "hermes-workspace/Contabot"
+))
+_DEFAULT_RUNTIME_PYTHON = Path(os.environ.get(
+    "CONTABOT_FISCAL_RUNTIME_PYTHON",
+    Path.home() / "hermes-workspace/agip-consulta-2025/.venv-selenium/bin/python",
+))
 _STATE_TTL_SECONDS = 600
 _AGIP_CLAVE_CIUDAD_ENTITY = "AGIP - Clave Ciudad"
 _RUN_TIMEOUT_SECONDS = 1800
@@ -99,7 +110,13 @@ class FlowState:
 
 class AgipDdjjFlow:
     """Inline flow; credentials remain in PostgreSQL and never leave the host."""
-    def __init__(self) -> None:
+    def __init__(self, *, clients_root: Path | None = None,
+                 runtime_python: Path | None = None, worker: Path | None = None,
+                 query_connection=None) -> None:
+        self.clients_root = Path(clients_root or _CLIENTS_ROOT)
+        self.runtime_python = Path(runtime_python or _DEFAULT_RUNTIME_PYTHON)
+        self.worker = Path(worker or (_DEFAULT_PROJECT_DIR / "scripts/agip-ddjj-worker.py"))
+        self.query_connection = query_connection or lookup_connection
         self.states: dict[str, FlowState] = {}
         self.tasks: dict[str, asyncio.Task] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
@@ -115,8 +132,9 @@ class AgipDdjjFlow:
         return base64.b64encode(value.encode()).decode()
 
     def _query(self, sql: str) -> list[dict[str, Any]]:
+        command, environment = self.query_connection()
         run = subprocess.run(
-            ["sudo", "-n", "-u", "postgres", "psql", "--dbname=contabot", "-At", "-c", sql],
+            [*command, "-At", "-c", sql], env=environment,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False,
         )
         if run.returncode:
@@ -487,8 +505,8 @@ class AgipDdjjFlow:
             # The worker receives only opaque internal IDs and reads credentials locally.
             proc = await asyncio.create_subprocess_exec(
                 "xvfb-run", "-a", "-s", "-screen 0 1440x1100x24 -nolisten tcp",
-                "/home/pancho/hermes-workspace/agip-consulta-2025/.venv-selenium/bin/python",
-                "/home/pancho/hermes-workspace/Contabot/scripts/agip-ddjj-worker.py",
+                str(self.runtime_python),
+                str(self.worker),
                 str(state.contributor_id), str(state.represented_id), period,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
