@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 from plugins.platforms.telegram.batch_pdf_xlsx_flow import BatchPdfXlsxFlow
 
 
-def test_start_requests_zip_and_inspection_offers_process_cancel(monkeypatch, tmp_path):
+def test_start_requests_supported_archive_and_inspection_offers_process_cancel(monkeypatch, tmp_path):
     async def scenario():
         import plugins.platforms.telegram.batch_pdf_xlsx_flow as module
         monkeypatch.setattr(module, "InlineKeyboardButton", lambda text, callback_data: {"text": text, "callback_data": callback_data})
@@ -17,8 +17,8 @@ def test_start_requests_zip_and_inspection_offers_process_cancel(monkeypatch, tm
         query = SimpleNamespace(answer=AsyncMock())
         prompt = SimpleNamespace(edit_text=AsyncMock())
         adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock(side_effect=[None, prompt])))
-        telegram_file = SimpleNamespace(download_to_drive=AsyncMock(side_effect=lambda custom_path: Path(custom_path).write_bytes(b"ZIP")))
-        document = SimpleNamespace(file_name="lote.zip", file_size=100, get_file=AsyncMock(return_value=telegram_file))
+        telegram_file = SimpleNamespace(download_to_drive=AsyncMock(side_effect=lambda custom_path: Path(custom_path).write_bytes(b"7Z")))
+        document = SimpleNamespace(file_name="lote.7z", file_size=100, get_file=AsyncMock(return_value=telegram_file))
         message = SimpleNamespace(chat_id=20, message_thread_id=None, from_user=SimpleNamespace(id=10), document=document)
         result = {"batch_id": "abc", "digest": "d" * 64, "groups": [{
             "contributor_name": "Empresa", "entity_name": "Banco", "pdf_count": 12,
@@ -29,14 +29,16 @@ def test_start_requests_zip_and_inspection_offers_process_cancel(monkeypatch, tm
         }], "pdf_count": 12, "problems": [], "status": "AWAITING_CONFIRMATION", "warnings": []}
         monkeypatch.setattr(flow, "_run", AsyncMock(return_value=result))
         monkeypatch.setattr(flow, "_command", lambda *args: list(args))
-        preserved = flow.batch_root / "abc" / "original.zip"
+        preserved = flow.batch_root / "abc" / "original.7z"
         preserved.parent.mkdir(parents=True)
-        preserved.write_bytes(b"ZIP")
+        preserved.write_bytes(b"7Z")
 
         assert await flow.callback(adapter, query, "bx:start", 20, None, "10")
         assert await flow.document(adapter, message)
 
         query.answer.assert_awaited_once_with("Lote de resúmenes bancarios → Excel")
+        request_text = adapter._bot.send_message.await_args_list[0].kwargs["text"]
+        assert "ZIP, RAR o 7Z" in request_text
         prompt.edit_text.assert_awaited_once()
         markup = prompt.edit_text.await_args.kwargs["reply_markup"]
         assert [[button["text"] for button in row] for row in markup] == [
