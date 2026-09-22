@@ -1,4 +1,4 @@
-"""Flujo Telegram para lotes ZIP de resúmenes bancarios."""
+"""Flujo Telegram para lotes ZIP, RAR o 7Z de resúmenes bancarios."""
 from __future__ import annotations
 
 import asyncio
@@ -193,7 +193,7 @@ class BatchPdfXlsxFlow:
         if data == "bx:start":
             self.requests[key] = BatchUploadRequest(user_id=user_id)
             await query.answer("Lote de resúmenes bancarios → Excel")
-            await self._send(adapter, chat_id, "Mandame un ZIP con los resúmenes bancarios. Primero lo voy a revisar; no se convierte nada hasta que confirmes.", thread_id)
+            await self._send(adapter, chat_id, "Mandame un archivo ZIP, RAR o 7Z con los resúmenes bancarios. Primero lo voy a revisar; no se convierte nada hasta que confirmes.", thread_id)
             return True
         if data.startswith("bx:p:"):
             batch_id = data[5:]
@@ -224,7 +224,7 @@ class BatchPdfXlsxFlow:
                 result = await self._run(key, self._command("batch-process", "--batch-id", batch_id, "--confirmation-digest", digest, "--batch-root", str(self.batch_root), "--telegram-user-id", user_id, "--telegram-chat-id", str(chat_id)), progress)
                 if result.get("status") != "COMPLETED":
                     logger.error("[BATCH-XLSX] router blocked: %s", result.get("reason", "unknown"))
-                    await query.edit_message_text("No pude completar el lote. El ZIP original y el avance ya realizado quedaron conservados para revisión.", reply_markup=self._confirmation_keyboard(batch_id))
+                    await query.edit_message_text("No pude completar el lote. El archivo original y el avance ya realizado quedaron conservados para revisión.", reply_markup=self._confirmation_keyboard(batch_id))
                     return True
             outputs = result.get("outputs") if isinstance(result.get("outputs"), list) else []
             await query.edit_message_text(f"Lote procesado. Entregando {len(outputs)} archivo(s)…")
@@ -269,7 +269,7 @@ class BatchPdfXlsxFlow:
         if key not in self.requests:
             return False
         if len(self.operations) >= self.max_concurrent_batches:
-            await self._send(adapter, message.chat_id, "Estoy procesando otros lotes. Volvé a enviar el ZIP en unos minutos; este envío no quedó en cola.", getattr(message, "message_thread_id", None))
+            await self._send(adapter, message.chat_id, "Estoy procesando otros lotes. Volvé a enviar el archivo en unos minutos; este envío no quedó en cola.", getattr(message, "message_thread_id", None))
             return True
         self.operations[key] = asyncio.current_task()
         self.active_ids[key] = uuid.uuid4().hex
@@ -291,8 +291,8 @@ class BatchPdfXlsxFlow:
         document = getattr(message, "document", None)
         name = Path(str(getattr(document, "file_name", "") or "")).name
         size = int(getattr(document, "file_size", 0) or 0)
-        if not document or Path(name).suffix.lower() not in {".zip", ".rar"}:
-            await self._send(adapter, chat_id, "Esperaba un archivo ZIP o RAR con PDFs.", thread_id)
+        if not document or Path(name).suffix.lower() not in {".zip", ".rar", ".7z"}:
+            await self._send(adapter, chat_id, "Esperaba un archivo ZIP, RAR o 7Z con PDFs.", thread_id)
             return True
         if size <= 0 or size > _MAX_ARCHIVE_BYTES:
             await self._send(adapter, chat_id, "El archivo supera el límite de 20 MB o Telegram no informó su tamaño.", thread_id)
@@ -323,7 +323,7 @@ class BatchPdfXlsxFlow:
             return True
         finally:
             batch_id = str(result.get("batch_id", ""))
-            preserved = self.batch_root / batch_id / "original.zip"
+            preserved = self.batch_root / batch_id / f"original{Path(name).suffix.lower()}"
             durable = (batch_id and Path(batch_id).name == batch_id and batch_id not in {".", ".."}
                        and preserved.is_file() and not preserved.is_symlink() and source.is_file()
                        and hashlib.sha256(source.read_bytes()).digest() == hashlib.sha256(preserved.read_bytes()).digest())
