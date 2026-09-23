@@ -35,10 +35,11 @@ from plugins.platforms.telegram.fiscal_scope import (
     AccountNotLinked,
     FiscalScope,
     InvalidCuit,
-    assert_marked,
-    mark_verified_sql,
 )
-from plugins.platforms.telegram.fiscal_credentials import lookup_connection
+from plugins.platforms.telegram.fiscal_credentials import (
+    lookup_connection,
+    verify_representation,
+)
 
 try:
     import fcntl
@@ -792,11 +793,10 @@ class PortalIvaFlow:
                 return
             if result.get("etapa") != "completado":
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
-            verification_sql = mark_verified_sql(
-                state.user_id, verified[0], "ARCA", str(result.get("representado_verificado", ""))
+            await verify_representation(
+                state.user_id, verified[0], "ARCA",
+                str(result.get("representado_verificado", "")),
             )
-            marked = await asyncio.to_thread(self._query, verification_sql)
-            assert_marked(marked)
             state.progress_label = "Validando archivos…"
             await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
             source_deliverables = self._deliverables(slug, cuit, period, result)

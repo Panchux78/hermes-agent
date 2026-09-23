@@ -32,10 +32,11 @@ from plugins.platforms.telegram.fiscal_scope import (
     AccountNotLinked,
     FiscalScope,
     InvalidCuit,
-    assert_marked,
-    mark_verified_sql,
 )
-from plugins.platforms.telegram.fiscal_credentials import lookup_connection
+from plugins.platforms.telegram.fiscal_credentials import (
+    lookup_connection,
+    verify_representation,
+)
 
 try:
     import fcntl
@@ -599,12 +600,10 @@ class AgipDdjjFlow:
                     or current[0].get("relation_id") != state.scope_item.get("relation_id")
                     or current[0].get("relation_revision") != state.scope_item.get("relation_revision")):
                 raise RuntimeError("AGIP_SELECTION_STALE")
-            verification_sql = mark_verified_sql(
+            await verify_representation(
                 state.user_id, current[0], _AGIP_CLAVE_CIUDAD_ENTITY,
                 str(result.get("representado_verificado", "")),
             )
-            marked = await asyncio.to_thread(self._query, verification_sql)
-            assert_marked(marked)
             xlsx = result.get("xlsx")
             path = os.path.realpath(str(xlsx or ""))
             if not (is_valid_delivery_path(path) and os.path.isfile(path)):

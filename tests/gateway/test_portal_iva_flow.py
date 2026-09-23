@@ -12,6 +12,16 @@ from plugins.platforms.telegram.portal_iva_flow import FlowState, PortalIvaFlow
 VALID_CUIT = "20123456786"
 
 
+@pytest.fixture(autouse=True)
+def verify_representation_mock(monkeypatch):
+    verification = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.portal_iva_flow.verify_representation",
+        verification,
+    )
+    return verification
+
+
 def _scope_item(**overrides):
     item = {
         "id": 1, "nombre": "Uno", "cuit": VALID_CUIT, "slug": "uno",
@@ -428,7 +438,9 @@ def test_captcha_path_rejects_escape_and_symlink(tmp_path):
         flow._validated_captcha_path(str(link), nonce)
 
 
-def test_success_delivers_both_csvs_and_updates_same_message(monkeypatch, tmp_path):
+def test_success_delivers_both_csvs_and_updates_same_message(
+    monkeypatch, tmp_path, verify_representation_mock,
+):
     async def scenario():
         flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
         flow.executor.touch(); flow.uv.touch()
@@ -443,6 +455,7 @@ def test_success_delivers_both_csvs_and_updates_same_message(monkeypatch, tmp_pa
         assert adapter.send_document.await_count == 2
         sent_names = [call.kwargs["file_name"] for call in adapter.send_document.await_args_list]
         assert sent_names == ["cliente-portal-iva-ventas.csv", "cliente-portal-iva-compras.csv"]
+        verify_representation_mock.assert_awaited_once()
         assert state.progress_message.edits[-1][0] == (
             "Portal IVA completado.\n"
             "Ventas: sin comprobantes para el período.\n"

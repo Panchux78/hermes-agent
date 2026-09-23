@@ -24,6 +24,16 @@ VALID_CUIT = "30123456781"
 HOLDER_CUIT = "20123456786"
 
 
+@pytest.fixture(autouse=True)
+def verify_representation_mock(monkeypatch):
+    verification = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.agip_ddjj_flow.verify_representation",
+        verification,
+    )
+    return verification
+
+
 def _scope_item(**overrides):
     item = {
         "id": 102, "nombre": "Cliente representado", "cuit": VALID_CUIT,
@@ -240,6 +250,52 @@ def test_worker_starts_in_new_session(monkeypatch):
         assert create.await_args.args[5] == (
             "/home/pancho/hermes-workspace/Contabot/scripts/agip-ddjj-worker.py"
         )
+
+    asyncio.run(scenario())
+
+
+def test_success_uses_verification_profile_before_delivery(
+    monkeypatch, tmp_path, verify_representation_mock,
+):
+    async def scenario():
+        flow = AgipDdjjFlow(clients_root=tmp_path)
+        adapter = FakeAdapter()
+        key = flow._key("10", None, "7")
+        item = _scope_item()
+        output = tmp_path / "resultado.xlsx"
+        output.write_bytes(b"xlsx")
+        state = FlowState(
+            user_id="7", nonce="a" * 10, stage="running",
+            contributor_id=item["representative_id"], represented_id=item["id"],
+            progress_message=FakeMessage(), scope_item=item,
+        )
+        payload = {
+            "ok": True,
+            "xlsx": str(output),
+            "representado_verificado": VALID_CUIT,
+            "message": "Consulta completada.",
+        }
+        process = SimpleNamespace(
+            pid=4242,
+            returncode=0,
+            communicate=AsyncMock(return_value=(json.dumps(payload).encode(), b"")),
+            wait=AsyncMock(return_value=0),
+        )
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+        monkeypatch.setattr(flow, "_acquire_execution_lock", lambda _key: None)
+        monkeypatch.setattr(flow, "_release_execution_lock", lambda _key: None)
+        monkeypatch.setattr(flow, "_by_id", lambda _ident, _uid: [item])
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.agip_ddjj_flow.is_valid_delivery_path",
+            lambda path: path == str(output),
+        )
+
+        await flow._run_query(adapter, "10", None, key, state, "2026-08")
+
+        verify_representation_mock.assert_awaited_once_with(
+            "7", item, "AGIP - Clave Ciudad", VALID_CUIT,
+        )
+        adapter.send_document.assert_awaited_once()
 
     asyncio.run(scenario())
 
