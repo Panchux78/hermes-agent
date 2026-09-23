@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -49,6 +50,17 @@ def test_delivery_filename_truncates_banco_ciudad_before_full_version(tmp_path):
 
     assert actual == f"{stem_without_version[:55]}-v04.xlsx"
     assert len(actual) == 64
+
+
+def test_delivery_filename_does_not_leave_separator_before_version_for_real_credicoop_name(tmp_path):
+    flow = PdfXlsxFlow(project_dir=tmp_path)
+    name = "Resumen_Cta_CC$_191_031_0497349_Del_2026_08_01_Al_2026_08_31-v02.xlsx"
+
+    actual = flow._delivery_filename(tmp_path / name)
+
+    assert actual.endswith("-v02.xlsx")
+    assert not re.search(r"[_\-.]-v02\.xlsx$", actual)
+    assert len(actual) <= 64
 
 
 def _router_process(result: dict, *, returncode: int = 0):
@@ -196,6 +208,12 @@ def test_start_then_matching_pdf_starts_conversion_and_delivers_result(monkeypat
 def test_delivery_filename_mismatch_does_not_send_client_error(monkeypatch, tmp_path):
     async def scenario():
         flow = PdfXlsxFlow(project_dir=tmp_path)
+        flow.router_project_dir = tmp_path
+        history = {"id_corrida": 70, "id_item": 80}
+        monkeypatch.setattr(flow, "_history_start", AsyncMock(return_value=history))
+        monkeypatch.setattr(flow, "_history_attach", AsyncMock())
+        finish = AsyncMock()
+        monkeypatch.setattr(flow, "_history_finish", finish)
         adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()), send_document=AsyncMock())
         query = SimpleNamespace(answer=AsyncMock())
         message = SimpleNamespace(
@@ -206,7 +224,11 @@ def test_delivery_filename_mismatch_does_not_send_client_error(monkeypatch, tmp_
         )
         delivered = tmp_path / "resumen-v03.xlsx"
         delivered.write_bytes(b"xlsx")
-        monkeypatch.setattr(flow, "_convert", AsyncMock(return_value=(delivered, {"rows_ok": 6})))
+        result = {
+            "rows_ok": 6, "id_contribuyente": 4, "periodo": "2026-08",
+            "output_relative_to_clientes": "legajo/output/resumen-v03.xlsx",
+        }
+        monkeypatch.setattr(flow, "_convert", AsyncMock(return_value=(delivered, result)))
         adapter.send_document.return_value = SimpleNamespace(success=True, message_id="77", delivered_filename="resumen_v.xlsx")
 
         await flow.callback(adapter, query, "px:start", 123, None, "99")
@@ -214,6 +236,7 @@ def test_delivery_filename_mismatch_does_not_send_client_error(monkeypatch, tmp_
 
         texts = [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
         assert "El archivo se entregó con un nombre distinto al generado." not in texts
+        assert finish.await_args.kwargs["state"] == "completado"
 
     asyncio.run(scenario())
 
@@ -235,7 +258,8 @@ def test_long_delivery_filename_warns_before_send(monkeypatch, tmp_path):
         monkeypatch.setattr(flow, "_convert", AsyncMock(return_value=(delivered, {"rows_ok": 6})))
         logger_error = MagicMock()
         monkeypatch.setattr(pdf_xlsx_flow.logger, "error", logger_error)
-        remote_name = f"{Path(name).stem.removesuffix('-v06')[:55]}-v06.xlsx"
+        truncated = Path(name).stem.removesuffix("-v06")[:55].rstrip(" _-.")
+        remote_name = f"{truncated}-v06.xlsx"
         adapter.send_document.return_value = SimpleNamespace(success=True, message_id="77", delivered_filename=remote_name)
 
         await flow.callback(adapter, query, "px:start", 123, None, "99")
@@ -418,6 +442,25 @@ def test_internal_review_state_is_not_exposed_to_user(monkeypatch, tmp_path):
 def test_router_business_states_do_not_expose_internal_codes():
     error = ConversionFailure("UNIDENTIFIED", "ROUTER_UNIDENTIFIED", "run")
     assert PdfXlsxFlow._failure_message(error) == "El documento no corresponde todavía a un emisor reconocido."
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("ROUTER_QPDF_CHECK_FAILED", "El PDF está dañado o protegido con contraseña y no se pudo leer. Descargalo de nuevo del banco y volvé a mandarlo."),
+        ("ROUTER_INVALID_PDF", "El PDF está dañado o protegido con contraseña y no se pudo leer. Descargalo de nuevo del banco y volvé a mandarlo."),
+        ("ROUTER_CONTRIBUTOR_NOT_RESOLVED", "No pude identificar con certeza a qué contribuyente pertenece el resumen."),
+        ("ROUTER_LAYOUT_NOT_SUPPORTED", "El formato de este documento todavía no está soportado."),
+        ("ROUTER_DOCUMENT_TIMEOUT", "La conversión tardó más de lo esperado. Volvé a intentarlo."),
+        ("ROUTER_UNKNOWN_INTERNAL_CODE", "No pude procesar el PDF. El diagnóstico quedó registrado para revisión."),
+    ],
+)
+def test_router_failure_messages_are_readable_and_do_not_expose_internal_codes(reason, expected):
+    message = PdfXlsxFlow._failure_message(ConversionFailure("BLOCKED", reason, "run"))
+
+    assert message == expected
+    assert not re.search(r"\b[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b", message)
+    assert "router" not in message.lower()
 
 
 def test_real_pipeline_stages_are_reported_to_telegram(monkeypatch, tmp_path):

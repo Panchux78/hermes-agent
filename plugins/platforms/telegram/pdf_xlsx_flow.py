@@ -94,7 +94,8 @@ class PdfXlsxFlow:
         if versioned:
             version = versioned.group("version")
             budget = 64 - len(version) - len(extension)
-            return f"{versioned.group('base')[:budget]}{version}{extension}"
+            base = versioned.group("base")[:budget].rstrip(" _-.")
+            return f"{base or 'documento'}{version}{extension}"
         return f"{stem[:64 - len(extension)]}{extension}"
 
     @staticmethod
@@ -206,21 +207,11 @@ class PdfXlsxFlow:
                     raise RuntimeError("Telegram no confirmó la entrega del Excel")
                 delivered_filename = getattr(delivery, "delivered_filename", None)
                 if delivered_filename is not None and delivered_filename != delivery_name:
-                    logger.error(
+                    logger.warning(
                         "[PDF-XLSX] stage=delivery status=DELIVERY_FILENAME_MISMATCH expected=%r delivered=%r",
                         delivery_name,
                         delivered_filename,
                     )
-                    if history is not None:
-                        await self._history_finish(
-                            history,
-                            state="incompleto",
-                            reason_code="nombre_entregado_distinto",
-                            reason_text="Telegram devolvió un nombre de archivo distinto del enviado.",
-                            result=result,
-                            converted=True,
-                        )
-                    return True
                 incomplete = result.get("conversion_incomplete") is True
                 if history is not None:
                     await self._history_finish(
@@ -590,11 +581,20 @@ class PdfXlsxFlow:
             "ROUTER_LAYOUT_NOT_SUPPORTED": "El formato de este documento todavía no está soportado.",
             "ROUTER_ROUTE_NOT_CONNECTED": "El formato fue reconocido y quedó preservado; su procesamiento aún no está habilitado.",
             "ROUTER_AMBIGUOUS": "El emisor o formato del documento requiere revisión.",
+            "ROUTER_CONTRIBUTOR_NOT_RESOLVED": "No pude identificar con certeza a qué contribuyente pertenece el resumen.",
+            "ROUTER_QPDF_CHECK_FAILED": "El PDF está dañado o protegido con contraseña y no se pudo leer. Descargalo de nuevo del banco y volvé a mandarlo.",
+            "ROUTER_INVALID_PDF": "El PDF está dañado o protegido con contraseña y no se pudo leer. Descargalo de nuevo del banco y volvé a mandarlo.",
+            "ROUTER_DOCUMENT_TIMEOUT": "La conversión tardó más de lo esperado. Volvé a intentarlo.",
+            "ROUTER_PAGE_TIMEOUT": "La conversión tardó más de lo esperado. Volvé a intentarlo.",
+            "ROUTER_TIMEOUT": "La conversión tardó más de lo esperado. Volvé a intentarlo.",
+            "ROUTER_SUBPROCESS_TIMEOUT": "La conversión tardó más de lo esperado. Volvé a intentarlo.",
+            "ROUTER_LAYOUT_MISMATCH": "El formato del resumen cambió y necesita revisión antes de convertirlo.",
+            "ROUTER_EXTRACTION_FAILURE": "No pude leer todos los movimientos del resumen. El documento quedó preservado para revisión.",
         }
         if error.reason in business_messages:
             return business_messages[error.reason]
         if error.reason.startswith("ROUTER_"):
-            return f"El router no pudo procesar el PDF ({error.reason})."
+            return "No pude procesar el PDF. El diagnóstico quedó registrado para revisión."
         if error.status == "PDF_CIFRADO":
             return "El PDF está cifrado. Enviá una copia sin contraseña."
         if error.status == "VISION_BACKEND_UNAVAILABLE" and error.reason in {
