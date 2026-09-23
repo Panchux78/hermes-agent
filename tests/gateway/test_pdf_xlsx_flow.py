@@ -449,6 +449,7 @@ def test_router_business_states_do_not_expose_internal_codes():
     [
         ("ROUTER_QPDF_CHECK_FAILED", "El PDF está dañado o protegido con contraseña y no se pudo leer. Descargalo de nuevo del banco y volvé a mandarlo."),
         ("ROUTER_INVALID_PDF", "El PDF está dañado o protegido con contraseña y no se pudo leer. Descargalo de nuevo del banco y volvé a mandarlo."),
+        ("ROUTER_INVALID_PDF_SIGNATURE", "El PDF está dañado o protegido con contraseña y no se pudo leer. Descargalo de nuevo del banco y volvé a mandarlo."),
         ("ROUTER_CONTRIBUTOR_NOT_RESOLVED", "No pude identificar con certeza a qué contribuyente pertenece el resumen."),
         ("ROUTER_LAYOUT_NOT_SUPPORTED", "El formato de este documento todavía no está soportado."),
         ("ROUTER_DOCUMENT_TIMEOUT", "La conversión tardó más de lo esperado. Volvé a intentarlo."),

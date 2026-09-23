@@ -593,6 +593,8 @@ class PdfXlsxFlow:
         }
         if error.reason in business_messages:
             return business_messages[error.reason]
+        if error.reason.startswith("ROUTER_INVALID_PDF"):
+            return "El PDF está dañado o protegido con contraseña y no se pudo leer. Descargalo de nuevo del banco y volvé a mandarlo."
         if error.reason.startswith("ROUTER_"):
             return "No pude procesar el PDF. El diagnóstico quedó registrado para revisión."
         if error.status == "PDF_CIFRADO":
