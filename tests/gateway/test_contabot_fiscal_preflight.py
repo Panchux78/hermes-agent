@@ -46,3 +46,18 @@ def test_level1_checks_database_gate_and_continues_other_controls(monkeypatch):
         {"level": 1, "name": "fiscal_roles_and_scopes", "ok": True, "detail": "actors=2 rollback_checks=2"},
         {"level": 1, "name": "router_catalog_connection", "ok": True, "detail": ""},
     ]
+
+
+def test_run_fails_closed_when_program_is_missing():
+    result = preflight.run(["programa-que-no-existe-en-ninguna-maquina"])
+    assert result.returncode == 127
+    assert result.stdout == b""
+
+
+def test_sync_canonical_rejects_missing_copy(tmp_path):
+    assert preflight.sync_canonical(tmp_path / "no-existe") == (False, "canonical_missing")
+
+
+def test_canonical_default_is_the_dedicated_clone_not_an_old_worktree():
+    assert "agora101" not in str(preflight.CONTABOT_REPO)
+    assert str(preflight.CONTABOT_REPO).endswith("canonical/Contabot")

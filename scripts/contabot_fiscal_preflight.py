@@ -23,8 +23,11 @@ from typing import Any
 
 
 HERMES_REPO = Path(os.environ.get("HERMES_AGENT_REPO", "/home/pancho/.hermes/hermes-agent"))
+# Copia canónica: un clon dedicado de ContaBot en `main` que sigue a `origin/main`. Nadie trabaja
+# ahí; el gate la avanza por fast-forward antes de comparar. Antes apuntaba a un worktree de la
+# #101 que quedó viejo y sucio, y el gate daba rojo por la copia, no por el runtime.
 CONTABOT_REPO = Path(os.environ.get(
-    "CONTABOT_CANONICAL_REPO", "/home/pancho/.local/state/contabot/agora101-design/Contabot"
+    "CONTABOT_CANONICAL_REPO", "/home/pancho/.local/state/contabot/canonical/Contabot"
 ))
 CONTABOT_LIVE = Path(os.environ.get("CONTABOT_LIVE_REPO", "/home/pancho/hermes-workspace/Contabot"))
 PORTAL_REPO = Path(os.environ.get("CONTABOT_PORTAL_REPO", "/home/pancho/procedimientos/portal-iva"))
@@ -53,11 +56,35 @@ class Gate:
         print(json.dumps({"ok": self.ok, "phase": phase, "passes": totals}, sort_keys=True))
 
 
+# El gateway corre con el Node propio de Hermes en el PATH; una corrida manual del gate tiene que
+# ver el mismo, o las sondas fallan por entorno y no por el runtime.
+_NODE_BIN = HERMES_HOME / "node" / "bin"
+if _NODE_BIN.is_dir() and str(_NODE_BIN) not in os.environ.get("PATH", "").split(os.pathsep):
+    os.environ["PATH"] = str(_NODE_BIN) + os.pathsep + os.environ.get("PATH", "")
+
+
 def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None,
         timeout: int = 120) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          timeout=timeout, check=False)
+    """Fail closed: un ejecutable ausente o un timeout es un check fallido, no una excepción."""
+    try:
+        return subprocess.run(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=timeout, check=False)
+    except (FileNotFoundError, NotADirectoryError, PermissionError, subprocess.TimeoutExpired):
+        return subprocess.CompletedProcess(command, 127, b"", b"")
+
+
+def sync_canonical(repo: Path) -> tuple[bool, str]:
+    """Avanza la copia canónica a origin/main por fast-forward. Nunca pisa trabajo local."""
+    if not (repo / ".git").exists():
+        return False, "canonical_missing"
+    if run(["git", "fetch", "--quiet", "origin", "main"], cwd=repo, timeout=60).returncode:
+        return False, "canonical_fetch_failed"
+    if git_text(repo, "rev-parse", "--abbrev-ref", "HEAD") != "main":
+        return False, "canonical_not_on_main"
+    if run(["git", "merge", "--ff-only", "--quiet", "origin/main"], cwd=repo).returncode:
+        return False, "canonical_diverged"
+    return True, "canonical_at_origin_main"
 
 
 def git_text(repo: Path, *args: str) -> str:
@@ -159,6 +186,11 @@ def router_psql(sql: str) -> subprocess.CompletedProcess[bytes]:
 
 
 def level0(gate: Gate, phase: str) -> None:
+    try:
+        ok, detail = sync_canonical(CONTABOT_REPO)
+    except Exception:
+        ok, detail = False, "canonical_sync_failed"
+    gate.check(0, "contabot_canonical_synced", ok, detail)
     for name, repo in (("hermes_published", HERMES_REPO), ("contabot_published", CONTABOT_REPO)):
         try:
             ok, detail = git_published(repo)
