@@ -8,8 +8,9 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -17,11 +18,28 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PROJECT_DIR = Path("/home/pancho/hermes-workspace/conversion-documentos-contables-xlsx")
 _DEFAULT_ROUTER_PROJECT_DIR = Path("/home/pancho/hermes-workspace/Contabot")
 _MAX_PDF_BYTES = 5_000_000
+# Un pedido del menú de bancos («mandame el PDF») que no se completa vence solo.
+# Sin vencimiento, un pedido olvidado de una opción se quedaba con los archivos
+# que el usuario mandaba después para otra (caso real del 22/09/2026).
+PENDING_REQUEST_TTL_SECONDS = 15 * 60
 
 
 @dataclass(frozen=True)
 class PdfXlsxRequest:
     user_id: str
+    created_at: float = field(default_factory=lambda: time.monotonic())
+
+
+def pending_request(requests: dict, key: str, *, flow: str):
+    """El pedido pendiente de `key`, o None si no hay o ya venció (y lo descarta)."""
+    request = requests.get(key)
+    if request is None:
+        return None
+    if time.monotonic() - request.created_at > PENDING_REQUEST_TTL_SECONDS:
+        requests.pop(key, None)
+        logger.info("[%s] stage=request status=EXPIRED user=%s", flow, request.user_id)
+        return None
+    return request
 
 
 class ConversionFailure(RuntimeError):
@@ -85,6 +103,13 @@ class PdfXlsxFlow:
             kwargs["message_thread_id"] = thread_id
         await adapter._bot.send_message(**kwargs)
 
+    def cancel_pending(self, chat_id, thread_id, user_id) -> bool:
+        """Descarta el pedido pendiente: el usuario eligió otra opción del menú."""
+        request = self.requests.pop(self._key(chat_id, thread_id, user_id), None)
+        if request is not None:
+            logger.info("[PDF-XLSX] stage=request status=CANCELLED_BY_OTHER_OPTION user=%s", request.user_id)
+        return request is not None
+
     async def callback(self, adapter, query, data: str, chat_id, thread_id, user_id) -> bool:
         if data != "px:start":
             return False
@@ -103,16 +128,18 @@ class PdfXlsxFlow:
         thread_id = getattr(message, "message_thread_id", None)
         user_id = str(getattr(message.from_user, "id", ""))
         key = self._key(chat_id, thread_id, user_id)
-        if key not in self.requests:
+        if pending_request(self.requests, key, flow="PDF-XLSX") is None:
             return False
         document = getattr(message, "document", None)
         name = str(getattr(document, "file_name", "") or "").lower()
         mime_type = str(getattr(document, "mime_type", "") or "").lower()
         size = int(getattr(document, "file_size", 0) or 0)
         if not document or not (name.endswith(".pdf") or mime_type == "application/pdf"):
+            logger.info("[PDF-XLSX] stage=document status=REJECTED reason=not_pdf user=%s", user_id)
             await self._send(adapter, chat_id, "Esperaba un archivo PDF. Mandá el PDF para convertirlo a Excel.", thread_id)
             return True
         if size <= 0 or size > _MAX_PDF_BYTES:
+            logger.info("[PDF-XLSX] stage=document status=REJECTED reason=size bytes=%s user=%s", size, user_id)
             await self._send(adapter, chat_id, "El PDF supera el límite de 5 MB o Telegram no informó su tamaño.", thread_id)
             return True
 

@@ -4779,6 +4779,11 @@ class TelegramAdapter(BasePlatformAdapter):
             ):
                 await query.answer(text="⛔ No estás autorizado para procesar lotes.")
                 return
+            if data == "bx:start":
+                # Elegir «Lote» descarta un pedido de PDF suelto que quedó sin completar.
+                single_flow = getattr(self, "_pdf_xlsx_flow", None)
+                if single_flow is not None:
+                    single_flow.cancel_pending(cb["chat_id"], cb["thread_id"], caller_id)
             if await self._batch_pdf_xlsx_flow.callback(
                 self, query, data, cb["chat_id"], cb["thread_id"], caller_id
             ):
@@ -4796,6 +4801,12 @@ class TelegramAdapter(BasePlatformAdapter):
             ):
                 await query.answer(text="⛔ No estás autorizado para convertir documentos.")
                 return
+            if data == "px:start":
+                # Elegir «Resumen bancario» descarta un pedido de lote que quedó sin
+                # completar: si no, el lote se queda con el PDF (caso real 22/09/2026).
+                batch_flow = getattr(self, "_batch_pdf_xlsx_flow", None)
+                if batch_flow is not None:
+                    batch_flow.cancel_pending(cb["chat_id"], cb["thread_id"], caller_id)
             if await self._pdf_xlsx_flow.callback(
                 self, query, data, cb["chat_id"], cb["thread_id"], caller_id
             ):

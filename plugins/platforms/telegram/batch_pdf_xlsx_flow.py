@@ -12,7 +12,7 @@ import uuid
 import time
 import hashlib
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -20,7 +20,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 
-from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
+from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow, pending_request
 
 logger = logging.getLogger(__name__)
 _PROJECT = Path("/home/pancho/hermes-workspace/Contabot")
@@ -31,6 +31,7 @@ _MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 @dataclass(frozen=True)
 class BatchUploadRequest:
     user_id: str
+    created_at: float = field(default_factory=lambda: time.monotonic())
 
 
 class BatchPdfXlsxFlow:
@@ -147,6 +148,17 @@ class BatchPdfXlsxFlow:
         except ProcessLookupError:
             pass
         await proc.wait()
+
+    def cancel_pending(self, chat_id: Any, thread_id: Any, user_id: Any) -> bool:
+        """Descarta el pedido pendiente: el usuario eligió otra opción del menú.
+
+        Sólo el pedido de «mandame el archivo»; un lote que ya se está
+        procesando no se toca.
+        """
+        request = self.requests.pop(self._key(chat_id, thread_id, user_id), None)
+        if request is not None:
+            logger.info("[BATCH-PDF-XLSX] stage=request status=CANCELLED_BY_OTHER_OPTION user=%s", request.user_id)
+        return request is not None
 
     async def callback(self, adapter, query, data: str, chat_id: Any, thread_id: Any, user_id: str) -> bool:
         key = self._key(chat_id, thread_id, user_id)
@@ -266,7 +278,7 @@ class BatchPdfXlsxFlow:
         if key in self.operations:
             await self._send(adapter, message.chat_id, "Ya estoy trabajando en tu lote. Esperá el resultado o cancelá desde el mensaje de progreso.", getattr(message, "message_thread_id", None))
             return True
-        if key not in self.requests:
+        if pending_request(self.requests, key, flow="BATCH-PDF-XLSX") is None:
             return False
         if len(self.operations) >= self.max_concurrent_batches:
             await self._send(adapter, message.chat_id, "Estoy procesando otros lotes. Volvé a enviar el archivo en unos minutos; este envío no quedó en cola.", getattr(message, "message_thread_id", None))
@@ -292,9 +304,11 @@ class BatchPdfXlsxFlow:
         name = Path(str(getattr(document, "file_name", "") or "")).name
         size = int(getattr(document, "file_size", 0) or 0)
         if not document or Path(name).suffix.lower() not in {".zip", ".rar", ".7z"}:
-            await self._send(adapter, chat_id, "Esperaba un archivo ZIP, RAR o 7Z con PDFs.", thread_id)
+            logger.info("[BATCH-PDF-XLSX] stage=document status=REJECTED reason=not_archive user=%s", user_id)
+            await self._send(adapter, chat_id, "Esperaba un archivo ZIP, RAR o 7Z con PDFs. Si querés convertir un solo PDF, elegí «Resumen bancario → Excel».", thread_id)
             return True
         if size <= 0 or size > _MAX_ARCHIVE_BYTES:
+            logger.info("[BATCH-PDF-XLSX] stage=document status=REJECTED reason=size bytes=%s user=%s", size, user_id)
             await self._send(adapter, chat_id, "El archivo supera el límite de 20 MB o Telegram no informó su tamaño.", thread_id)
             return True
         self.requests.pop(key, None)
