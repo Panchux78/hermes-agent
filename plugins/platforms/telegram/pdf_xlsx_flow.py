@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 import uuid
@@ -71,6 +73,9 @@ class PdfXlsxFlow:
         self.document_timeout_seconds = self._positive_float(
             os.getenv("CONTA_PDF_XLSX_DOCUMENT_TIMEOUT_SECONDS"), 3600.0
         )
+        self.instance_id = str(uuid.uuid4())
+        self._history_recovered = False
+        self._history_lock = asyncio.Lock()
 
     @staticmethod
     def _positive_float(value: str | None, default: float) -> float:
@@ -144,6 +149,22 @@ class PdfXlsxFlow:
             return True
 
         self.requests.pop(key, None)
+        history: dict[str, int] | None = None
+        if self.router_project_dir is not None:
+            try:
+                history = await self._history_start(message, document)
+            except Exception as exc:
+                logger.error(
+                    "[PDF-XLSX] stage=history_start status=ERROR error=%s",
+                    type(exc).__name__,
+                )
+                await self._send(
+                    adapter,
+                    chat_id,
+                    "No pude registrar la operación. No se inició la conversión; requiere mantenimiento local.",
+                    thread_id,
+                )
+                return True
         reported_stages: set[str] = set()
 
         async def report_progress(stage: str, current: int, total: int) -> None:
@@ -158,9 +179,13 @@ class PdfXlsxFlow:
             if stage in messages:
                 await self._send(adapter, chat_id, messages[stage], thread_id)
 
+        output: Path | None = None
+        result: dict[str, Any] | None = None
         try:
             with tempfile.TemporaryDirectory(prefix="contabot-pdf-xlsx-") as work:
                 output, result = await self._convert(document, Path(work), report_progress)
+                if history is not None:
+                    await self._history_attach(history, output, result)
                 delivery_name = self._delivery_filename(output)
                 if delivery_name != output.name:
                     await self._send(
@@ -186,7 +211,43 @@ class PdfXlsxFlow:
                         delivery_name,
                         delivered_filename,
                     )
+                    if history is not None:
+                        await self._history_finish(
+                            history,
+                            state="incompleto",
+                            reason_code="nombre_entregado_distinto",
+                            reason_text="Telegram devolvió un nombre de archivo distinto del enviado.",
+                            result=result,
+                            converted=True,
+                        )
                     return True
+                incomplete = result.get("conversion_incomplete") is True
+                if history is not None:
+                    await self._history_finish(
+                        history,
+                        state="incompleto" if incomplete else "completado",
+                        reason_code="saldos_no_cierran" if incomplete else "conversion_completada",
+                        reason_text=(
+                            "La planilla fue generada, pero la cadena de saldos no cierra."
+                            if incomplete else "La conversión y la entrega finalizaron correctamente."
+                        ),
+                        result=result,
+                        converted=True,
+                    )
+        except asyncio.CancelledError:
+            if history is not None:
+                try:
+                    await asyncio.shield(self._history_finish(
+                        history,
+                        state="cancelado",
+                        reason_code="cancelado_por_usuario",
+                        reason_text="La operación fue cancelada antes de finalizar.",
+                        result=result,
+                        converted=False,
+                    ))
+                except Exception:
+                    logger.exception("[PDF-XLSX] stage=history_cancel status=ERROR")
+            raise
         except ConversionFailure as exc:
             logger.warning(
                 "[PDF-XLSX] run_id=%s stage=convert status=%s reason=%s",
@@ -194,14 +255,149 @@ class PdfXlsxFlow:
                 exc.status,
                 exc.reason,
             )
+            if history is not None:
+                await self._history_finish(
+                    history,
+                    state="fallido",
+                    reason_code=self._history_reason_code(exc.reason),
+                    reason_text=self._failure_message(exc),
+                    result=result,
+                    converted=False,
+                )
             await self._send(adapter, chat_id, self._failure_message(exc), thread_id)
             return True
         except Exception as exc:
             logger.exception("[PDF-XLSX] stage=delivery status=ERROR_TECNICO error=%s", type(exc).__name__)
+            try:
+                if history is not None:
+                    await self._history_finish(
+                    history,
+                    state="incompleto" if output is not None else "fallido",
+                    reason_code="entrega_no_confirmada" if output is not None else "error_tecnico",
+                    reason_text=(
+                        "El Excel fue generado, pero Telegram no confirmó su entrega."
+                        if output is not None else "La conversión terminó por un error técnico."
+                    ),
+                    result=result,
+                    converted=output is not None,
+                )
+            except Exception:
+                logger.exception("[PDF-XLSX] stage=history_finish status=ERROR")
             await self._send(adapter, chat_id, "Ocurrió un error técnico al convertir o entregar el Excel.", thread_id)
             return True
         await self._send(adapter, chat_id, "Excel enviado.", thread_id)
         return True
+
+    def _history_script(self) -> Path:
+        if self.router_project_dir is None:
+            raise RuntimeError("HISTORY_RUNTIME_UNAVAILABLE")
+        script = self.router_project_dir / "skills/accounting/pdf-contable-router/scripts/bot_runs.py"
+        if script.is_symlink() or not script.is_file():
+            raise RuntimeError("HISTORY_RUNTIME_UNAVAILABLE")
+        return script
+
+    async def _history_call(self, *arguments: str) -> dict[str, Any]:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(self._history_script()),
+            *arguments,
+            cwd=str(self.router_project_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            raw, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError("HISTORY_TIMEOUT") from None
+        payload = self._read_result(raw)
+        if proc.returncode != 0 or payload.get("status") != "OK":
+            raise RuntimeError("HISTORY_UNAVAILABLE")
+        return payload
+
+    async def _recover_history_once(self) -> None:
+        if self._history_recovered:
+            return
+        async with self._history_lock:
+            if self._history_recovered:
+                return
+            await self._history_call("recover", "--instance", self.instance_id)
+            self._history_recovered = True
+
+    async def _history_start(self, message, document) -> dict[str, int]:
+        await self._recover_history_once()
+        message_id = getattr(message, "message_id", None)
+        telegram_id = getattr(message.from_user, "id", None)
+        if not isinstance(message_id, int) or not isinstance(telegram_id, int):
+            raise RuntimeError("HISTORY_IDENTITY_UNAVAILABLE")
+        key = hashlib.sha256(f"telegram:{message.chat_id}:{message_id}".encode()).hexdigest()
+        payload = await self._history_call(
+            "start",
+            "--telegram-id", str(telegram_id),
+            "--operation", "resumen_bancario_xlsx",
+            "--idempotency-key", key,
+            "--instance", self.instance_id,
+            "--reference", Path(str(getattr(document, "file_name", "documento.pdf"))).name,
+            "--lease-seconds", str(int(self.document_timeout_seconds) + 120),
+        )
+        run_id, item_id = payload.get("id_corrida"), payload.get("id_item")
+        if not isinstance(run_id, int) or not isinstance(item_id, int):
+            raise RuntimeError("HISTORY_RESPONSE_INVALID")
+        return {"id_corrida": run_id, "id_item": item_id}
+
+    async def _history_attach(self, history: dict[str, int], output: Path, result: dict[str, Any]) -> None:
+        contributor = result.get("id_contribuyente")
+        relative = result.get("output_relative_to_clientes")
+        if not isinstance(contributor, int) or not isinstance(relative, str):
+            raise RuntimeError("HISTORY_RESULT_IDENTITY_INVALID")
+        await self._history_call(
+            "attach",
+            "--run-id", str(history["id_corrida"]),
+            "--item-id", str(history["id_item"]),
+            "--instance", self.instance_id,
+            "--contributor-id", str(contributor),
+            "--output", str(output),
+            "--output-relative", relative,
+        )
+
+    async def _history_finish(
+        self,
+        history: dict[str, int],
+        *,
+        state: str,
+        reason_code: str,
+        reason_text: str,
+        result: dict[str, Any] | None,
+        converted: bool,
+    ) -> None:
+        args = [
+            "finish",
+            "--run-id", str(history["id_corrida"]),
+            "--item-id", str(history["id_item"]),
+            "--instance", self.instance_id,
+            "--state", state,
+            "--reason-code", reason_code,
+            "--reason-text", reason_text,
+            "--effects-json", json.dumps([
+                {"codigo": "convertir", "realizado": converted},
+                {"codigo": "presentar", "realizado": False, "detalle": "Esta operación no presenta declaraciones."},
+                {"codigo": "pagar", "realizado": False, "detalle": "Esta operación no realiza pagos."},
+            ], ensure_ascii=False, separators=(",", ":")),
+        ]
+        if result is not None:
+            if isinstance(result.get("id_contribuyente"), int):
+                args += ["--contributor-id", str(result["id_contribuyente"])]
+            if isinstance(result.get("periodo"), str) and result["periodo"]:
+                args += ["--period", result["periodo"]]
+            if isinstance(result.get("rows_ok"), int):
+                args += ["--delivered-count", str(result["rows_ok"])]
+        await self._history_call(*args)
+
+    @staticmethod
+    def _history_reason_code(reason: str) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "_", reason.lower()).strip("_")
+        return normalized[:80] if len(normalized) >= 3 else "error_conversion"
 
     async def _convert(
         self,

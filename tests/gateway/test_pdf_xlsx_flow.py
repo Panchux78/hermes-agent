@@ -452,3 +452,92 @@ def test_real_pipeline_stages_are_reported_to_telegram(monkeypatch, tmp_path):
         assert "Validando los datos y generando el Excel…" in texts
 
     asyncio.run(scenario())
+
+
+def test_router_conversion_is_recorded_before_delivery_and_closed_after_confirmation(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        flow.router_project_dir = tmp_path
+        history = {"id_corrida": 7, "id_item": 8}
+        start = AsyncMock(return_value=history)
+        order = []
+        attach = AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("attach"))
+        finish = AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("finish"))
+        monkeypatch.setattr(flow, "_history_start", start)
+        monkeypatch.setattr(flow, "_history_attach", attach)
+        monkeypatch.setattr(flow, "_history_finish", finish)
+        output = tmp_path / "resultado.xlsx"
+        output.write_bytes(b"xlsx")
+        result = {
+            "status": "CONVERTED", "rows_ok": 12, "id_contribuyente": 4,
+            "periodo": "2026-08", "output_relative_to_clientes": "legajo/output/resultado.xlsx",
+            "conversion_incomplete": False,
+        }
+        monkeypatch.setattr(flow, "_convert", AsyncMock(return_value=(output, result)))
+        adapter = SimpleNamespace(
+            _bot=SimpleNamespace(send_message=AsyncMock()),
+            send_document=AsyncMock(return_value=SimpleNamespace(success=True, delivered_filename="resultado.xlsx")),
+        )
+        query = SimpleNamespace(answer=AsyncMock())
+        message = SimpleNamespace(
+            message_id=44, chat_id=123, message_thread_id=None,
+            from_user=SimpleNamespace(id=99),
+            document=SimpleNamespace(file_name="resumen.pdf", mime_type="application/pdf", file_size=10),
+        )
+        await flow.callback(adapter, query, "px:start", 123, None, "99")
+        assert await flow.document(adapter, message) is True
+        start.assert_awaited_once_with(message, message.document)
+        attach.assert_awaited_once_with(history, output, result)
+        finish.assert_awaited_once()
+        assert finish.await_args.kwargs["state"] == "completado"
+        assert adapter.send_document.await_count == 1
+        assert order == ["attach", "finish"]
+
+    asyncio.run(scenario())
+
+
+def test_history_failure_blocks_conversion_before_any_effect(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        flow.router_project_dir = tmp_path
+        monkeypatch.setattr(flow, "_history_start", AsyncMock(side_effect=RuntimeError("db")))
+        convert = AsyncMock()
+        monkeypatch.setattr(flow, "_convert", convert)
+        adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()), send_document=AsyncMock())
+        query = SimpleNamespace(answer=AsyncMock())
+        message = SimpleNamespace(
+            message_id=45, chat_id=123, message_thread_id=None,
+            from_user=SimpleNamespace(id=99),
+            document=SimpleNamespace(file_name="resumen.pdf", mime_type="application/pdf", file_size=10),
+        )
+        await flow.callback(adapter, query, "px:start", 123, None, "99")
+        assert await flow.document(adapter, message) is True
+        convert.assert_not_awaited()
+        adapter.send_document.assert_not_awaited()
+        assert adapter._bot.send_message.await_args_list[-1].kwargs["text"].startswith("No pude registrar")
+
+    asyncio.run(scenario())
+
+
+def test_conversion_failure_closes_run_as_failed(monkeypatch, tmp_path):
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        flow.router_project_dir = tmp_path
+        history = {"id_corrida": 9, "id_item": 10}
+        monkeypatch.setattr(flow, "_history_start", AsyncMock(return_value=history))
+        finish = AsyncMock()
+        monkeypatch.setattr(flow, "_history_finish", finish)
+        monkeypatch.setattr(flow, "_convert", AsyncMock(side_effect=ConversionFailure("BLOCKED", "ROUTER_UNIDENTIFIED", "run")))
+        adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()), send_document=AsyncMock())
+        query = SimpleNamespace(answer=AsyncMock())
+        message = SimpleNamespace(
+            message_id=46, chat_id=123, message_thread_id=None,
+            from_user=SimpleNamespace(id=99),
+            document=SimpleNamespace(file_name="desconocido.pdf", mime_type="application/pdf", file_size=10),
+        )
+        await flow.callback(adapter, query, "px:start", 123, None, "99")
+        assert await flow.document(adapter, message) is True
+        assert finish.await_args.kwargs["state"] == "fallido"
+        assert finish.await_args.kwargs["reason_text"] == "El documento no corresponde todavía a un emisor reconocido."
+
+    asyncio.run(scenario())
