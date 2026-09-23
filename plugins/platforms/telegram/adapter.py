@@ -446,6 +446,7 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.agip_ddjj_flow import AgipDdjjFlow
         from plugins.platforms.telegram.admin_maintenance_flow import AdminMaintenanceFlow
         from plugins.platforms.telegram.batch_pdf_xlsx_flow import BatchPdfXlsxFlow
+        from plugins.platforms.telegram.bot_run_history import BotRunHistory
         from plugins.platforms.telegram.pdf_security_flow import PdfSecurityFlow
         from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
         from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
@@ -457,10 +458,11 @@ class TelegramAdapter(BasePlatformAdapter):
         extra = self.config.extra
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        bot_run_history = BotRunHistory()
         self._admin_maintenance_flow = AdminMaintenanceFlow()
-        self._batch_pdf_xlsx_flow = BatchPdfXlsxFlow()
+        self._batch_pdf_xlsx_flow = BatchPdfXlsxFlow(history=bot_run_history)
         self._pdf_security_flow = PdfSecurityFlow()
-        self._pdf_xlsx_flow = PdfXlsxFlow()
+        self._pdf_xlsx_flow = PdfXlsxFlow(history=bot_run_history)
         fiscal_paths = deployment_paths(extra)
         project_dir = fiscal_paths.get("project_dir")
         runtime_python = fiscal_paths.get("runtime_python")
@@ -469,10 +471,12 @@ class TelegramAdapter(BasePlatformAdapter):
             runtime_python=runtime_python,
             worker=(project_dir / "scripts/agip-ddjj-worker.py") if project_dir else None,
             query_connection=lookup_connection,
+            history=bot_run_history,
         )
         portal_kwargs = {
             "query_connection": lookup_connection,
             "runtime_python": runtime_python,
+            "history": bot_run_history,
         }
         if portal_executor is not None:
             portal_kwargs["executor"] = portal_executor
@@ -480,7 +484,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._vencimientos_flow = VencimientosFlow(
             runtime_python=runtime_python
         )
-        self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(**portal_kwargs))
+        self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
+            query_connection=lookup_connection, runtime_python=runtime_python,
+            **({"executor": portal_executor} if portal_executor is not None else {}),
+        ))
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'

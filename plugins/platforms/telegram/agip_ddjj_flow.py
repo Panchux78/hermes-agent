@@ -21,6 +21,7 @@ from typing import Any
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
 from plugins.platforms.telegram.contributor_selector import (
     CONTRIBUTOR_PROMPT,
     MULTIPLE_CONTRIBUTORS_TEXT,
@@ -112,7 +113,7 @@ class AgipDdjjFlow:
     """Inline flow; credentials remain in PostgreSQL and never leave the host."""
     def __init__(self, *, clients_root: Path | None = None,
                  runtime_python: Path | None = None, worker: Path | None = None,
-                 query_connection=None) -> None:
+                 query_connection=None, history: BotRunHistory | None = None) -> None:
         self.clients_root = Path(clients_root or _CLIENTS_ROOT)
         self.runtime_python = Path(runtime_python or _DEFAULT_RUNTIME_PYTHON)
         self.worker = Path(worker or (_DEFAULT_PROJECT_DIR / "scripts/agip-ddjj-worker.py"))
@@ -122,6 +123,7 @@ class AgipDdjjFlow:
         self.processes: dict[str, asyncio.subprocess.Process] = {}
         self.execution_locks: dict[str, str] = {}
         self.execution_lock_fds: dict[str, int] = {}
+        self.history = history
 
     @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
@@ -487,11 +489,37 @@ class AgipDdjjFlow:
         execution_key: str | None = None
         execution_lock_acquired = False
         proc: asyncio.subprocess.Process | None = None
+        history_run: RunHandle | None = None
+        history_closed = False
+
+        async def finish_history(item_state: str, code: str, text: str, *,
+                                 output: Path | None = None) -> None:
+            nonlocal history_closed
+            if history_run is None or history_closed or self.history is None:
+                return
+            await self.history.finish_single(
+                history_run, state=item_state, reason_code=code, reason_text=text,
+                effects=[
+                    {"codigo": "consultar", "realizado": item_state in {"completado", "incompleto"}},
+                    {"codigo": "presentar", "realizado": False, "detalle": "Esta operación no presenta DDJJ."},
+                    {"codigo": "pagar", "realizado": False, "detalle": "Esta operación no realiza pagos."},
+                ],
+                contributor_id=state.represented_id, period=period,
+                output=output,
+                output_relative=(str(output.relative_to(self.clients_root)) if output is not None else None),
+            )
+            history_closed = True
         try:
             if state.cancelled:
                 return
             if state.contributor_id is None or state.represented_id is None:
                 raise RuntimeError("AGIP_STATE_INVALID")
+            if self.history is not None:
+                history_run = await self.history.start(
+                    telegram_id=int(state.user_id), operation="agip_ddjj_iibb",
+                    key_material=f"agip-ddjj:{chat_id}:{thread_id or ''}:{state.nonce}:{period}",
+                    reference=f"DDJJ IIBB {period}", lease_seconds=_RUN_TIMEOUT_SECONDS + 120,
+                )
             execution_key = f"{state.contributor_id}:{state.represented_id}:{period}"
             owner = self.execution_locks.get(execution_key)
             if owner is not None and owner != key:
@@ -521,6 +549,10 @@ class AgipDdjjFlow:
                 )
             except TimeoutError:
                 await self._terminate_process(proc)
+                await finish_history(
+                    "fallido", "tiempo_maximo_superado",
+                    "La consulta superó el tiempo máximo y no entregó un archivo.",
+                )
                 await self._finish(
                     adapter, chat_id, thread_id, state,
                     "Consulta AGIP cancelada porque superó el tiempo máximo. No se entregó ningún archivo.",
@@ -553,6 +585,10 @@ class AgipDdjjFlow:
                     adapter, chat_id, thread_id, state,
                     self._worker_error_message(result, evidence is not None),
                 )
+                await finish_history(
+                    "fallido", self._history_reason_code(result.get("error_code")),
+                    self._worker_error_message(result, evidence is not None),
+                )
                 return
             if state.scope_item is None:
                 raise RuntimeError("AGIP_SCOPE_STATE_INVALID")
@@ -572,6 +608,10 @@ class AgipDdjjFlow:
             xlsx = result.get("xlsx")
             path = os.path.realpath(str(xlsx or ""))
             if not (is_valid_delivery_path(path) and os.path.isfile(path)):
+                await finish_history(
+                    "fallido", "archivo_invalido",
+                    "El Excel no pasó la validación de entrega.",
+                )
                 await self._finish(
                     adapter, chat_id, thread_id, state,
                     "Consulta AGIP no completada: el Excel no pasó la validación de entrega.",
@@ -584,12 +624,22 @@ class AgipDdjjFlow:
             )
             if not delivery.success:
                 logger.error("[AGIP-DDJJ] XLSX delivery failed: %s", type(delivery.error).__name__)
+                await finish_history(
+                    "incompleto", "entrega_no_confirmada",
+                    "El Excel fue generado, pero Telegram no confirmó la entrega.",
+                    output=Path(path),
+                )
                 await self._finish(
                     adapter, chat_id, thread_id, state,
                     "Consulta AGIP no completada: Telegram no confirmó la entrega del Excel.",
                 )
                 return
             logger.info("[AGIP-DDJJ] XLSX delivered message_id=%s", delivery.message_id)
+            await finish_history(
+                "completado", "archivo_entregado",
+                "La consulta y la entrega del Excel finalizaron correctamente.",
+                output=Path(path),
+            )
             await self._finish(
                 adapter, chat_id, thread_id, state,
                 f"{result.get('message')} Excel enviado (mensaje {delivery.message_id}).",
@@ -598,6 +648,12 @@ class AgipDdjjFlow:
             state.cancelled = True
             if proc is not None and proc.returncode is None:
                 await self._terminate_process(proc)
+            try:
+                await asyncio.shield(finish_history(
+                    "cancelado", "cancelado_por_usuario", "La consulta fue cancelada por el usuario.",
+                ))
+            except Exception:
+                logger.exception("[AGIP-DDJJ] history cancellation failed")
             raise
         except Exception as exc:
             logger.error("[AGIP-DDJJ] run failed error_type=%s", type(exc).__name__)
@@ -608,12 +664,23 @@ class AgipDdjjFlow:
                     else "Consulta AGIP no completada por un error técnico."
                 )
                 await self._finish(adapter, chat_id, thread_id, state, message)
+                try:
+                    await finish_history(
+                        "fallido", self._history_reason_code(str(exc)), message,
+                    )
+                except Exception:
+                    logger.exception("[AGIP-DDJJ] history failure close failed")
         finally:
             self.processes.pop(key, None)
             if execution_key and self.execution_locks.get(execution_key) == key:
                 self.execution_locks.pop(execution_key, None)
             if execution_lock_acquired and execution_key:
                 self._release_execution_lock(execution_key)
+
+    @staticmethod
+    def _history_reason_code(reason: object) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "_", str(reason).lower()).strip("_")
+        return normalized[:80] if len(normalized) >= 3 else "error_agip"
 
     def _release(self, key: str, task: asyncio.Task) -> None:
         self.tasks.pop(key, None)

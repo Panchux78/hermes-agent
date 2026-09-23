@@ -24,6 +24,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from hermes_constants import get_hermes_home
 
 from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
 from plugins.platforms.telegram.contributor_selector import (
     CONTRIBUTOR_PROMPT,
     MULTIPLE_CONTRIBUTORS_TEXT,
@@ -87,7 +88,8 @@ class PortalIvaFlow:
 
     def __init__(self, *, executor: Path = _EXECUTOR, uv: Path = _UV,
                  clients_root: Path = _CLIENTES_ROOT, captcha_root: Path = _CAPTCHA_ROOT,
-                 query_connection=None, runtime_python: Path | None = None) -> None:
+                 query_connection=None, runtime_python: Path | None = None,
+                 history: BotRunHistory | None = None) -> None:
         # CCMA/SCT reuse only identity lookup, with their restricted connection.
         # Defaults preserve the existing Portal IVA executor and DB connection.
         self.query_connection = query_connection or lookup_connection
@@ -101,6 +103,7 @@ class PortalIvaFlow:
         self.tasks: dict[str, asyncio.Task] = {}
         self.execution_locks: dict[str, str] = {}
         self.execution_lock_fds: dict[str, int] = {}
+        self.history = history
 
     def available(self) -> bool:
         return fcntl is not None and self.executor.is_file() and self.uv.is_file() and self.clients_root.is_dir()
@@ -693,6 +696,23 @@ class PortalIvaFlow:
         proc: asyncio.subprocess.Process | None = None
         execution_key: str | None = None
         execution_lock_acquired = False
+        history_run: RunHandle | None = None
+        history_items: dict[str, int] = {}
+        history_finished: set[int] = set()
+
+        async def finish_remaining(item_state: str, code: str, text: str) -> None:
+            if history_run is None or self.history is None:
+                return
+            effects = self._history_effects(state.operation, prepared=False)
+            for item_id in history_items.values():
+                if item_id not in history_finished:
+                    await self.history.finish_item(
+                        history_run, item_id, state=item_state, reason_code=code,
+                        reason_text=text, effects=effects,
+                        contributor_id=state.contributor_id, period=state.period,
+                    )
+                    history_finished.add(item_id)
+            await self.history.close(history_run)
         try:
             if state.cancelled:
                 return
@@ -700,6 +720,24 @@ class PortalIvaFlow:
                 raise RuntimeError("PORTAL_IVA_STATE_INVALID")
             contributor_id = state.contributor_id
             slug, cuit, period = state.slug, state.cuit, state.period
+            operation_code = (
+                "portal_iva_generar_csv"
+                if state.operation == "generar"
+                else "portal_iva_descargar_presentados"
+            )
+            if self.history is not None:
+                history_run = await self.history.start(
+                    telegram_id=int(state.user_id), operation=operation_code,
+                    key_material=f"portal-iva:{chat_id}:{thread_id or ''}:{state.nonce}:{state.operation}",
+                    reference=f"{slug}-{period}", lease_seconds=_RUN_TIMEOUT_SECONDS + 120,
+                )
+                prepared_items = await self.history.prepare_items(
+                    history_run, ["Libro IVA Ventas", "Libro IVA Compras"],
+                )
+                history_items = {
+                    label: int(item["id_item"])
+                    for label, item in zip(("ventas", "compras"), prepared_items, strict=True)
+                }
             verified = await asyncio.to_thread(self._by_id, state.contributor_id, state.user_id)
             if state.cancelled:
                 return
@@ -748,6 +786,9 @@ class PortalIvaFlow:
                 # A terminal outcome must create a fresh, visible notification.
                 # Editing an older progress message alone is easy to miss in Telegram.
                 await self._send(adapter, chat_id, failure_message, thread_id)
+                await finish_remaining(
+                    "fallido", self._history_reason_code(result.get("motivo")), failure_message,
+                )
                 return
             if result.get("etapa") != "completado":
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
@@ -758,7 +799,8 @@ class PortalIvaFlow:
             assert_marked(marked)
             state.progress_label = "Validando archivos…"
             await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
-            deliverables = self._deliverables(slug, cuit, period, result)
+            source_deliverables = self._deliverables(slug, cuit, period, result)
+            deliverables = source_deliverables
             if state.cancelled:
                 return
             staging, deliverables = self._stage_delivery_files(deliverables)
@@ -792,11 +834,31 @@ class PortalIvaFlow:
                     "[PORTAL-IVA] completed_with_warnings codes=%s",
                     ",".join(safe_warnings),
                 )
+            if self.history is not None and history_run is not None:
+                source_by_label = {label: (path, rows) for path, rows, label in source_deliverables}
+                for label in ("ventas", "compras"):
+                    path, rows = source_by_label[label]
+                    item_state, reason_code, reason_text = self._history_outcome(label, safe_warnings)
+                    await self.history.finish_item(
+                        history_run, history_items[label],
+                        state=item_state, reason_code=reason_code, reason_text=reason_text,
+                        effects=self._history_effects(state.operation, prepared=True),
+                        contributor_id=contributor_id, period=period, delivered_count=rows,
+                        output=path, output_relative=str(path.relative_to(self.clients_root)),
+                    )
+                    history_finished.add(history_items[label])
+                await self.history.close(history_run)
             await self._edit_progress(state, self._completion_message(deliverables))
         except asyncio.CancelledError:
             state.cancelled = True
             if proc is not None and proc.returncode is None:
                 await self._terminate_process(proc)
+            try:
+                await asyncio.shield(finish_remaining(
+                    "cancelado", "cancelado_por_usuario", "La operación fue cancelada por el usuario.",
+                ))
+            except Exception:
+                logger.exception("[PORTAL-IVA] history cancellation failed")
             raise
         except Exception as exc:
             logger.error(
@@ -812,6 +874,13 @@ class PortalIvaFlow:
                         error_result, f"{state.operation} no se completó.", state.operation,
                     ),
                 )
+                try:
+                    await finish_remaining(
+                        "fallido", self._history_reason_code(str(exc)),
+                        self._error_message(error_result, f"{state.operation} no se completó.", state.operation),
+                    )
+                except Exception:
+                    logger.exception("[PORTAL-IVA] history failure close failed")
         finally:
             if ticker is not None:
                 ticker.cancel()
@@ -822,6 +891,37 @@ class PortalIvaFlow:
                 self._release_execution_lock(execution_key)
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
+
+    @staticmethod
+    def _history_reason_code(reason: object) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "_", str(reason).lower()).strip("_")
+        return normalized[:80] if len(normalized) >= 3 else "error_portal_iva"
+
+    @staticmethod
+    def _history_effects(operation: str, *, prepared: bool) -> list[dict[str, Any]]:
+        if operation == "generar":
+            return [
+                {"codigo": "preparar", "realizado": prepared},
+                {"codigo": "presentar", "realizado": False, "detalle": "Esta operación no presenta la DDJJ."},
+                {"codigo": "pagar", "realizado": False, "detalle": "Esta operación no realiza pagos."},
+            ]
+        return [
+            {"codigo": "consultar", "realizado": prepared},
+            {"codigo": "preparar", "realizado": False, "detalle": "Sólo descarga libros ya presentados."},
+            {"codigo": "presentar", "realizado": False, "detalle": "No modifica la presentación."},
+        ]
+
+    @staticmethod
+    def _history_outcome(label: str, warnings: list[str]) -> tuple[str, str, str]:
+        if f"IMPORTACION_NUMEROS_NO_PARSEADOS_{label}" in warnings:
+            return (
+                "incompleto", f"numeros_no_importados_{label}",
+                f"Hay comprobantes de {label} que no se pudieron importar; revisalos antes de presentar.",
+            )
+        return (
+            "completado", "archivo_entregado",
+            f"El Libro IVA {label.title()} fue entregado correctamente.",
+        )
 
     def _release(self, key: str, task: asyncio.Task) -> None:
         self.tasks.pop(key, None)

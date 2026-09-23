@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
+from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
 
 from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow, pending_request
 
@@ -35,7 +36,7 @@ class BatchUploadRequest:
 
 
 class BatchPdfXlsxFlow:
-    def __init__(self, project_dir: Path = _PROJECT) -> None:
+    def __init__(self, project_dir: Path = _PROJECT, *, history: BotRunHistory | None = None) -> None:
         self.project_dir = Path(os.getenv("CONTA_PDF_ROUTER_PROJECT_DIR", str(project_dir)))
         self.batch_root = Path(os.getenv("CONTABOT_BATCH_ROOT", str(_BATCH_ROOT)))
         self.input_cache = Path(os.getenv("CONTABOT_BATCH_INPUT_CACHE_DIR", "/home/pancho/.hermes/cache/batch-pdf-xlsx-inputs"))
@@ -45,6 +46,8 @@ class BatchPdfXlsxFlow:
         self.active_ids: dict[str, str] = {}
         self.timeout_seconds = 1800
         self.max_concurrent_batches = 2
+        self.clients_root = Path(os.getenv("CONTABOT_CLIENTES_ROOT", "/home/pancho/clientes"))
+        self.history = history
 
     @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
@@ -171,7 +174,17 @@ class BatchPdfXlsxFlow:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
             if data.startswith("bx:c:"):
-                await self._run(key, self._command("batch-cancel", "--batch-id", data[5:], "--batch-root", str(self.batch_root), "--telegram-user-id", user_id, "--telegram-chat-id", str(chat_id)))
+                batch_id = data[5:]
+                await self._run(key, self._command("batch-cancel", "--batch-id", batch_id, "--batch-root", str(self.batch_root), "--telegram-user-id", user_id, "--telegram-chat-id", str(chat_id)))
+                status = await self._status(key, batch_id, user_id, str(chat_id))
+                history_run, history_items = await self._history_open(
+                    status, batch_id, user_id, f"lote-{batch_id}",
+                )
+                await self._history_finish_open_items(
+                    history_run, history_items, state="cancelado",
+                    reason_code="cancelado_por_usuario",
+                    reason_text="El lote fue cancelado por el usuario.",
+                )
             await query.edit_message_text("Lote cancelado. El archivo recibido y el avance quedaron conservados.")
             return True
         if data.startswith("bx:i:"):
@@ -193,6 +206,19 @@ class BatchPdfXlsxFlow:
             return True
         except Exception:
             logger.exception("[BATCH-XLSX] processing or delivery failed")
+            try:
+                batch_id = data[5:]
+                status = await self._status(key, batch_id, user_id, str(chat_id))
+                history_run, history_items = await self._history_open(
+                    status, batch_id, user_id, f"lote-{batch_id}",
+                )
+                await self._history_finish_open_items(
+                    history_run, history_items, state="fallido",
+                    reason_code="error_tecnico",
+                    reason_text="El lote terminó por un error técnico; el original y el avance se conservaron.",
+                )
+            except Exception:
+                logger.exception("[BATCH-XLSX] history failure close failed")
             await query.edit_message_text("No pude completar el lote. El original y el avance se conservaron. Podés reintentar los pendientes.",
                                           reply_markup=self._confirmation_keyboard(data[5:]))
             return True
@@ -213,8 +239,16 @@ class BatchPdfXlsxFlow:
             cancel = self._cancel_keyboard(f"bx:c:{batch_id}")
             await query.edit_message_text("Procesando el lote…", reply_markup=cancel)
             status = await self._status(key, batch_id, user_id, str(chat_id))
+            history_run, history_items = await self._history_open(
+                status, batch_id, user_id, f"lote-{batch_id}",
+            )
             digest = status.get("digest")
             if not isinstance(digest, str):
+                await self._history_finish_open_items(
+                    history_run, history_items, state="fallido",
+                    reason_code="confirmacion_no_disponible",
+                    reason_text="No se pudo recuperar la confirmación del lote.",
+                )
                 await query.edit_message_text("No pude recuperar la confirmación del lote. El archivo original sigue conservado.")
                 return True
 
@@ -236,23 +270,43 @@ class BatchPdfXlsxFlow:
                 result = await self._run(key, self._command("batch-process", "--batch-id", batch_id, "--confirmation-digest", digest, "--batch-root", str(self.batch_root), "--telegram-user-id", user_id, "--telegram-chat-id", str(chat_id)), progress)
                 if result.get("status") != "COMPLETED":
                     logger.error("[BATCH-XLSX] router blocked: %s", result.get("reason", "unknown"))
+                    await self._history_finish_open_items(
+                        history_run, history_items, state="fallido",
+                        reason_code=self._history_reason_code(result.get("reason")),
+                        reason_text="El lote no pudo completar la conversión; el original y el avance se conservaron.",
+                    )
                     await query.edit_message_text("No pude completar el lote. El archivo original y el avance ya realizado quedaron conservados para revisión.", reply_markup=self._confirmation_keyboard(batch_id))
                     return True
             outputs = result.get("outputs") if isinstance(result.get("outputs"), list) else []
             await query.edit_message_text(f"Lote procesado. Entregando {len(outputs)} archivo(s)…")
             delivered = 0
+            added = 0
             for output in outputs:
                 path = Path(str(output.get("path", "")))
-                if output.get("delivered") is True:
+                already_delivered = output.get("delivered") is True
+                if already_delivered:
                     delivered += 1
-                    continue
-                delivery = await adapter.send_document(chat_id=str(chat_id), file_path=str(path), file_name=PdfXlsxFlow._delivery_filename(path), caption=f"{output.get('document_count', 0)} resumen(es), {output.get('row_count', 0)} movimiento(s).", metadata={"thread_id": thread_id} if thread_id is not None else None)
-                if not delivery.success:
-                    await query.edit_message_text("El lote se procesó, pero no pude entregar todos los Excel. Podés volver a tocar Procesar para reintentar los pendientes.", reply_markup=self._confirmation_keyboard(batch_id))
-                    return True
-                await self._run(key, self._command("batch-delivered", "--batch-id", batch_id, "--output-sha256", str(output["sha256"]), "--batch-root", str(self.batch_root), "--telegram-user-id", user_id, "--telegram-chat-id", str(chat_id)))
-                delivered += 1
-            await query.edit_message_text(f"Listo. Se entregaron {delivered} archivo(s) Excel.")
+                else:
+                    delivery = await adapter.send_document(chat_id=str(chat_id), file_path=str(path), file_name=PdfXlsxFlow._delivery_filename(path), caption=f"{output.get('document_count', 0)} resumen(es), {output.get('row_count', 0)} movimiento(s).", metadata={"thread_id": thread_id} if thread_id is not None else None)
+                    if not delivery.success:
+                        await query.edit_message_text("El lote se procesó, pero no pude entregar todos los Excel. Podés volver a tocar Procesar para reintentar los pendientes.", reply_markup=self._confirmation_keyboard(batch_id))
+                        return True
+                    await self._run(key, self._command("batch-delivered", "--batch-id", batch_id, "--output-sha256", str(output["sha256"]), "--batch-root", str(self.batch_root), "--telegram-user-id", user_id, "--telegram-chat-id", str(chat_id)))
+                    delivered += 1
+                    added += 1
+                await self._history_finish_output(
+                    history_run, history_items, status, output,
+                    already_delivered=already_delivered,
+                )
+            await self._history_finish_open_items(
+                history_run, history_items, state="fallido",
+                reason_code="pdf_sin_salida",
+                reason_text="El PDF no quedó asociado a un Excel consolidado.",
+            )
+            await query.edit_message_text(
+                f"Listo. Se entregaron {delivered} archivo(s). "
+                f"Agregados en este intento: {added}; ya entregados: {delivered-added}."
+            )
             return True
         if data.startswith("bx:c:"):
             batch_id = data[5:]
@@ -266,12 +320,125 @@ class BatchPdfXlsxFlow:
                     os.killpg(proc.pid, signal.SIGKILL)
                     await proc.wait()
             result = await self._run(key, self._command("batch-cancel", "--batch-id", batch_id, "--batch-root", str(self.batch_root), "--telegram-user-id", user_id, "--telegram-chat-id", str(chat_id)))
+            status = await self._status(key, batch_id, user_id, str(chat_id))
+            history_run, history_items = await self._history_open(status, batch_id, user_id, f"lote-{batch_id}")
+            await self._history_finish_open_items(
+                history_run, history_items, state="cancelado",
+                reason_code="cancelado_por_usuario", reason_text="El lote fue cancelado por el usuario.",
+            )
             await query.edit_message_text("Lote cancelado. El archivo original quedó conservado." if result.get("status") == "CANCELLED" else "No pude cancelar el lote en su estado actual.")
             return True
         return False
 
     async def _status(self, key: str, batch_id: str, user_id: str, chat_id: str) -> dict[str, Any]:
         return await self._run(key, self._command("batch-status", "--batch-id", batch_id, "--batch-root", str(self.batch_root), "--telegram-user-id", user_id, "--telegram-chat-id", chat_id))
+
+    @staticmethod
+    def _history_references(status: dict[str, Any]) -> list[str]:
+        references: list[str] = []
+        for collection in (status.get("members"), status.get("documents"), status.get("problems")):
+            if not isinstance(collection, list):
+                continue
+            for value in collection:
+                if not isinstance(value, dict):
+                    continue
+                reference = Path(str(value.get("member_name", ""))).as_posix()
+                if reference and reference not in references:
+                    references.append(reference[:255])
+        return references or ["Lote sin PDF identificable"]
+
+    async def _history_open(
+        self, status: dict[str, Any], batch_id: str, user_id: str, reference: str,
+    ) -> tuple[RunHandle | None, dict[str, dict[str, Any]]]:
+        if self.history is None:
+            return None, {}
+        run = await self.history.start_batch(
+            telegram_id=int(user_id), batch_id=batch_id, reference=reference,
+            lease_seconds=self.timeout_seconds + 900,
+        )
+        items = await self.history.prepare_items(run, self._history_references(status))
+        return run, {str(item["referencia"]): item for item in items}
+
+    @staticmethod
+    def _output_matches_document(output: dict[str, Any], document: dict[str, Any]) -> bool:
+        account_key = str(document.get("account_key") or "unknown")
+        alias = "general" if account_key == "unknown" else (
+            "cuenta-" + hashlib.sha256(account_key.encode()).hexdigest()[:8]
+        )
+        return (
+            int(output.get("id_contribuyente", -1)) == int(document.get("id_contribuyente", -2))
+            and str(output.get("entity_code")) == str(document.get("entity_code"))
+            and str(output.get("currency")) == str(document.get("currency"))
+            and str(output.get("account_alias")) == alias
+        )
+
+    async def _history_finish_output(
+        self, run: RunHandle | None, items: dict[str, dict[str, Any]], status: dict[str, Any],
+        output: dict[str, Any], *, already_delivered: bool,
+    ) -> None:
+        if run is None or self.history is None:
+            return
+        path = Path(str(output.get("path", "")))
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError("BATCH_HISTORY_OUTPUT_INVALID")
+        try:
+            relative = str(path.relative_to(self.clients_root))
+        except ValueError as exc:
+            raise RuntimeError("BATCH_HISTORY_OUTPUT_INVALID") from exc
+        documents = status.get("documents") if isinstance(status.get("documents"), list) else []
+        matched = [doc for doc in documents if isinstance(doc, dict) and self._output_matches_document(output, doc)]
+        if not matched:
+            raise RuntimeError("BATCH_HISTORY_GROUP_EMPTY")
+        for document in matched:
+            reference = Path(str(document.get("member_name", ""))).as_posix()[:255]
+            item = items.get(reference)
+            if item is None or item.get("estado") != "en_curso":
+                continue
+            await self.history.finish_item(
+                run, int(item["id_item"]), state="completado",
+                reason_code=("ya_entregado_intento_anterior" if already_delivered else "archivo_entregado"),
+                reason_text=(
+                    f"El resultado ya había sido entregado en un intento anterior al {run.attempt}."
+                    if already_delivered else "El PDF quedó incluido en el Excel consolidado entregado."
+                ),
+                effects=[
+                    {"codigo": "convertir", "realizado": not already_delivered,
+                     "detalle": "El resultado se reutilizó sin repetir la conversión." if already_delivered else "Conversión incluida en el consolidado."},
+                    {"codigo": "entregar", "realizado": not already_delivered,
+                     "detalle": "Ya entregado en un intento anterior." if already_delivered else "Telegram confirmó la entrega."},
+                ],
+                contributor_id=int(document["id_contribuyente"]),
+                period=str(document.get("period", "")).replace("/", "-") or None,
+                delivered_count=int(document.get("rows_ok", output.get("row_count", 0)) or 0),
+                output=path, output_relative=relative,
+            )
+            item["estado"] = "completado"
+
+    async def _history_finish_open_items(
+        self, run: RunHandle | None, items: dict[str, dict[str, Any]], *, state: str,
+        reason_code: str, reason_text: str,
+    ) -> None:
+        if run is None or self.history is None:
+            return
+        for item in items.values():
+            if item.get("estado") != "en_curso":
+                continue
+            await self.history.finish_item(
+                run, int(item["id_item"]), state=state, reason_code=reason_code,
+                reason_text=reason_text,
+                effects=[
+                    {"codigo": "convertir", "realizado": False},
+                    {"codigo": "entregar", "realizado": False},
+                ],
+            )
+            item["estado"] = state
+        await self.history.close(run)
+
+    @staticmethod
+    def _history_reason_code(reason: object) -> str:
+        import re
+        normalized = re.sub(r"[^a-z0-9]+", "_", str(reason).lower()).strip("_")
+        return normalized[:80] if len(normalized) >= 3 else "error_lote"
 
     async def document(self, adapter, message) -> bool:
         key = self._key(message.chat_id, getattr(message, "message_thread_id", None), str(getattr(message.from_user, "id", "")))
@@ -343,6 +510,20 @@ class BatchPdfXlsxFlow:
                        and hashlib.sha256(source.read_bytes()).digest() == hashlib.sha256(preserved.read_bytes()).digest())
             if durable and staging.is_dir() and staging.parent == self.input_cache:
                 shutil.rmtree(staging)
+        history_run: RunHandle | None = None
+        history_items: dict[str, dict[str, Any]] = {}
+        if batch_id:
+            try:
+                status = await self._status(key, batch_id, user_id, str(chat_id))
+                history_run, history_items = await self._history_open(
+                    status, batch_id, user_id, name,
+                )
+            except Exception:
+                logger.exception("[BATCH-XLSX] history start failed")
+                await progress_message.edit_text(
+                    "El lote quedó preservado, pero no pude registrar la operación. No se procesará hasta reparar el historial."
+                )
+                return True
         if result.get("status") != "AWAITING_CONFIRMATION":
             problems = result.get("problems") if isinstance(result.get("problems"), list) else []
             lines = ["No se procesó el lote."]
@@ -351,6 +532,12 @@ class BatchPdfXlsxFlow:
             if not problems:
                 lines.append(f"- {result.get('reason', 'No pude identificar todos los documentos.')}")
             lines.append("El archivo original quedó conservado.")
+            if history_run is not None:
+                await self._history_finish_open_items(
+                    history_run, history_items, state="fallido",
+                    reason_code=self._history_reason_code(result.get("reason") or "lote_con_problemas"),
+                    reason_text="La revisión encontró problemas y el lote no fue procesado.",
+                )
             await progress_message.edit_text("\n".join(lines))
             return True
         groups = result.get("groups") if isinstance(result.get("groups"), list) else []

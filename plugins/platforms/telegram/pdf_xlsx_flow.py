@@ -2,19 +2,19 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
 import re
 import shutil
-import sys
 import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+
+from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
 
 logger = logging.getLogger(__name__)
 _DEFAULT_PROJECT_DIR = Path("/home/pancho/hermes-workspace/conversion-documentos-contables-xlsx")
@@ -57,7 +57,8 @@ class ConversionFailure(RuntimeError):
 class PdfXlsxFlow:
     """One pending PDF→XLSX conversion per authorized Telegram sender."""
 
-    def __init__(self, project_dir: Path = _DEFAULT_PROJECT_DIR) -> None:
+    def __init__(self, project_dir: Path = _DEFAULT_PROJECT_DIR,
+                 *, history: BotRunHistory | None = None) -> None:
         self.project_dir = Path(project_dir)
         router_project_dir = os.getenv("CONTA_PDF_ROUTER_PROJECT_DIR")
         self.router_project_dir = (
@@ -73,9 +74,10 @@ class PdfXlsxFlow:
         self.document_timeout_seconds = self._positive_float(
             os.getenv("CONTA_PDF_XLSX_DOCUMENT_TIMEOUT_SECONDS"), 3600.0
         )
-        self.instance_id = str(uuid.uuid4())
-        self._history_recovered = False
-        self._history_lock = asyncio.Lock()
+        self.history = history or (
+            BotRunHistory(self.router_project_dir) if self.router_project_dir is not None else None
+        )
+        self.instance_id = self.history.instance_id if self.history is not None else str(uuid.uuid4())
 
     @staticmethod
     def _positive_float(value: str | None, default: float) -> float:
@@ -279,77 +281,33 @@ class PdfXlsxFlow:
         await self._send(adapter, chat_id, "Excel enviado.", thread_id)
         return True
 
-    def _history_script(self) -> Path:
-        if self.router_project_dir is None:
-            raise RuntimeError("HISTORY_RUNTIME_UNAVAILABLE")
-        script = self.router_project_dir / "skills/accounting/pdf-contable-router/scripts/bot_runs.py"
-        if script.is_symlink() or not script.is_file():
-            raise RuntimeError("HISTORY_RUNTIME_UNAVAILABLE")
-        return script
-
-    async def _history_call(self, *arguments: str) -> dict[str, Any]:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            str(self._history_script()),
-            *arguments,
-            cwd=str(self.router_project_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            raw, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise RuntimeError("HISTORY_TIMEOUT") from None
-        payload = self._read_result(raw)
-        if proc.returncode != 0 or payload.get("status") != "OK":
-            raise RuntimeError("HISTORY_UNAVAILABLE")
-        return payload
-
-    async def _recover_history_once(self) -> None:
-        if self._history_recovered:
-            return
-        async with self._history_lock:
-            if self._history_recovered:
-                return
-            await self._history_call("recover", "--instance", self.instance_id)
-            self._history_recovered = True
-
     async def _history_start(self, message, document) -> dict[str, int]:
-        await self._recover_history_once()
+        if self.history is None:
+            raise RuntimeError("HISTORY_RUNTIME_UNAVAILABLE")
         message_id = getattr(message, "message_id", None)
         telegram_id = getattr(message.from_user, "id", None)
         if not isinstance(message_id, int) or not isinstance(telegram_id, int):
             raise RuntimeError("HISTORY_IDENTITY_UNAVAILABLE")
-        key = hashlib.sha256(f"telegram:{message.chat_id}:{message_id}".encode()).hexdigest()
-        payload = await self._history_call(
-            "start",
-            "--telegram-id", str(telegram_id),
-            "--operation", "resumen_bancario_xlsx",
-            "--idempotency-key", key,
-            "--instance", self.instance_id,
-            "--reference", Path(str(getattr(document, "file_name", "documento.pdf"))).name,
-            "--lease-seconds", str(int(self.document_timeout_seconds) + 120),
+        handle = await self.history.start(
+            telegram_id=telegram_id,
+            operation="resumen_bancario_xlsx",
+            key_material=f"telegram:{message.chat_id}:{message_id}",
+            reference=Path(str(getattr(document, "file_name", "documento.pdf"))).name,
+            lease_seconds=int(self.document_timeout_seconds) + 120,
         )
-        run_id, item_id = payload.get("id_corrida"), payload.get("id_item")
-        if not isinstance(run_id, int) or not isinstance(item_id, int):
-            raise RuntimeError("HISTORY_RESPONSE_INVALID")
-        return {"id_corrida": run_id, "id_item": item_id}
+        return {"id_corrida": handle.run_id, "id_item": handle.item_id}
 
     async def _history_attach(self, history: dict[str, int], output: Path, result: dict[str, Any]) -> None:
         contributor = result.get("id_contribuyente")
         relative = result.get("output_relative_to_clientes")
         if not isinstance(contributor, int) or not isinstance(relative, str):
             raise RuntimeError("HISTORY_RESULT_IDENTITY_INVALID")
-        await self._history_call(
-            "attach",
-            "--run-id", str(history["id_corrida"]),
-            "--item-id", str(history["id_item"]),
-            "--instance", self.instance_id,
-            "--contributor-id", str(contributor),
-            "--output", str(output),
-            "--output-relative", relative,
+        if self.history is None:
+            raise RuntimeError("HISTORY_RUNTIME_UNAVAILABLE")
+        handle = RunHandle(history["id_corrida"], history["id_item"])
+        await self.history.attach(
+            handle, handle.item_id, contributor_id=contributor,
+            output=output, output_relative=relative,
         )
 
     async def _history_finish(
@@ -362,28 +320,27 @@ class PdfXlsxFlow:
         result: dict[str, Any] | None,
         converted: bool,
     ) -> None:
-        args = [
-            "finish",
-            "--run-id", str(history["id_corrida"]),
-            "--item-id", str(history["id_item"]),
-            "--instance", self.instance_id,
-            "--state", state,
-            "--reason-code", reason_code,
-            "--reason-text", reason_text,
-            "--effects-json", json.dumps([
+        if self.history is None:
+            raise RuntimeError("HISTORY_RUNTIME_UNAVAILABLE")
+        handle = RunHandle(history["id_corrida"], history["id_item"])
+        kwargs: dict[str, Any] = {
+            "state": state,
+            "reason_code": reason_code,
+            "reason_text": reason_text,
+            "effects": [
                 {"codigo": "convertir", "realizado": converted},
                 {"codigo": "presentar", "realizado": False, "detalle": "Esta operación no presenta declaraciones."},
                 {"codigo": "pagar", "realizado": False, "detalle": "Esta operación no realiza pagos."},
-            ], ensure_ascii=False, separators=(",", ":")),
-        ]
+            ],
+        }
         if result is not None:
             if isinstance(result.get("id_contribuyente"), int):
-                args += ["--contributor-id", str(result["id_contribuyente"])]
+                kwargs["contributor_id"] = result["id_contribuyente"]
             if isinstance(result.get("periodo"), str) and result["periodo"]:
-                args += ["--period", result["periodo"]]
+                kwargs["period"] = result["periodo"]
             if isinstance(result.get("rows_ok"), int):
-                args += ["--delivered-count", str(result["rows_ok"])]
-        await self._history_call(*args)
+                kwargs["delivered_count"] = result["rows_ok"]
+        await self.history.finish_single(handle, **kwargs)
 
     @staticmethod
     def _history_reason_code(reason: str) -> str:
