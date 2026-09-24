@@ -140,6 +140,23 @@ class PortalIvaFlow:
             kwargs["reply_markup"] = reply_markup
         return await adapter._bot.send_message(**kwargs)
 
+    async def _reject(self, *, user_id: Any, operation: str, key_material: str,
+                      code: str, text: str, contributor_id: int | None = None) -> None:
+        if self.history is None:
+            return
+        operation_code = (
+            "portal_iva_generar_csv" if operation == "generar"
+            else "portal_iva_descargar_presentados"
+        )
+        try:
+            await self.history.reject(
+                telegram_id=int(user_id), operation=operation_code,
+                key_material=key_material, reference="Portal IVA",
+                reason_code=code, reason_text=text, contributor_id=contributor_id,
+            )
+        except Exception:
+            logger.exception("[PORTAL-IVA] terminal rejection could not be persisted")
+
     def _query(self, sql: str) -> list[dict[str, Any]]:
         command, environment = self.query_connection()
         run = subprocess.run(
@@ -180,6 +197,7 @@ class PortalIvaFlow:
         key = self._key(chat_id, thread_id, user_id)
         if key in self.tasks:
             await query.answer("Ya hay una descarga Portal IVA en curso.")
+            await self._reject(user_id=user_id, operation=operation, key_material=f"active:{key}:{getattr(getattr(query, 'message', None), 'message_id', 0)}", code="consulta_en_curso", text="Ya había una operación Portal IVA en ejecución para este usuario.")
             return
         try:
             await asyncio.to_thread(self._scope().require_actor, user_id)
@@ -236,6 +254,7 @@ class PortalIvaFlow:
         state = self.states.get(key)
         if state and state.stage != "running" and time.monotonic() - state.created_at > 600:
             self.states.pop(key, None)
+            await self._reject(user_id=user_id, operation=state.operation, key_material=f"expired:{state.nonce}", code="seleccion_vencida", text="La selección del contribuyente venció antes de iniciar la operación.", contributor_id=state.contributor_id)
             await query.answer("Esta solicitud venció. Iniciá Portal IVA nuevamente.")
             return True
         if not state or state.nonce != select.group(1) or state.stage != "client":
@@ -245,13 +264,16 @@ class PortalIvaFlow:
             selected_id = int(select.group(2))
             if selected_id not in state.candidates:
                 await query.answer("La opción ya no está disponible.")
+                await self._reject(user_id=user_id, operation=state.operation, key_material=f"stale:{state.nonce}:{selected_id}", code="contribuyente_no_disponible", text="El contribuyente elegido ya no estaba autorizado.")
                 return True
             found = await asyncio.to_thread(self._by_id, selected_id, state.user_id)
         except Exception:
             await query.answer("No pude validar la opción en la base. Probá nuevamente.")
+            await self._reject(user_id=user_id, operation=state.operation, key_material=f"database:{state.nonce}:{select.group(2)}", code="base_no_disponible", text="La base canónica no permitió validar el contribuyente antes de ejecutar.")
             return True
         if not found:
             await query.answer("La opción ya no está disponible.")
+            await self._reject(user_id=user_id, operation=state.operation, key_material=f"revalidate:{state.nonce}:{selected_id}", code="contribuyente_no_autorizado", text="El contribuyente elegido ya no tenía acceso o representación válidos.")
             return True
         await query.answer("Contribuyente seleccionado")
         await self._select(adapter, chat_id, thread_id, state, found[0])
@@ -266,6 +288,7 @@ class PortalIvaFlow:
             return False
         if state.stage not in {"running", "captcha", "delivering"} and time.monotonic() - state.created_at > 600:
             self.states.pop(key, None)
+            await self._reject(user_id=user_id, operation=state.operation, key_material=f"expired:{state.nonce}", code="solicitud_vencida", text="La solicitud venció antes de iniciar la operación.", contributor_id=state.contributor_id)
             await self._send(adapter, chat_id, "La solicitud venció. Iniciá Portal IVA nuevamente.", thread_id)
             return True
         if state.stage == "captcha":
@@ -322,6 +345,8 @@ class PortalIvaFlow:
         state.candidates = offer.candidates
         if offer.status == "empty":
             await self._send(adapter, chat_id, "No hay un contribuyente ARCA activo con acceso y representación válidos que coincida. Probá con nombre, CUIT o slug.", thread_id)
+            if len(re.sub(r"\D", "", message.text or "")) == 11:
+                await self._reject(user_id=user_id, operation=state.operation, key_material=f"unauthorized:{state.nonce}", code="contribuyente_no_autorizado", text="El CUIT solicitado no tenía acceso y representación ARCA autorizados.")
             return True
         if offer.status == "single":
             await self._select(adapter, chat_id, thread_id, state, offer.single)

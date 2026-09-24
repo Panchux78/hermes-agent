@@ -168,6 +168,7 @@ class BatchPdfXlsxFlow:
         if data.startswith(("bx:c:", "bx:i:")) and key in self.operations:
             if self.active_ids.get(key) != data[5:]:
                 await query.answer("Ese botón corresponde a otro lote.")
+                await self._reject_actor(user_id=user_id, chat_id=chat_id, message_id=getattr(getattr(query, "message", None), "message_id", 0), code="confirmacion_no_valida", text="La confirmación correspondía a otro lote.")
                 return True
             await query.answer("Cancelando")
             task = self.operations[key]
@@ -192,11 +193,13 @@ class BatchPdfXlsxFlow:
             return True
         if key in self.operations:
             await query.answer("Ya estoy trabajando en tu lote. Podés cancelarlo en el mensaje de progreso.")
+            await self._reject_actor(user_id=user_id, chat_id=chat_id, message_id=getattr(getattr(query, "message", None), "message_id", 0), code="lote_en_curso", text="Ya había un lote en procesamiento para este usuario.")
             return True
         if not data.startswith("bx:p:"):
             return await self._callback(adapter, query, data, chat_id, thread_id, user_id)
         if len(self.operations) >= self.max_concurrent_batches:
             await query.answer("Estoy procesando otros lotes. Volvé a tocar Procesar en unos minutos.")
+            await self._reject_actor(user_id=user_id, chat_id=chat_id, message_id=getattr(getattr(query, "message", None), "message_id", 0), code="capacidad_agotada", text="La capacidad simultánea de lotes estaba completa.")
             return True
         self.operations[key] = asyncio.current_task()
         self.active_ids[key] = data[5:]
@@ -213,7 +216,7 @@ class BatchPdfXlsxFlow:
                     status, batch_id, user_id, f"lote-{batch_id}",
                 )
                 await self._history_finish_open_items(
-                    history_run, history_items, state="fallido",
+                    history_run, history_items, state="rechazado",
                     reason_code="error_tecnico",
                     reason_text="El lote terminó por un error técnico; el original y el avance se conservaron.",
                 )
@@ -440,15 +443,37 @@ class BatchPdfXlsxFlow:
         normalized = re.sub(r"[^a-z0-9]+", "_", str(reason).lower()).strip("_")
         return normalized[:80] if len(normalized) >= 3 else "error_lote"
 
+    async def _reject(self, message, *, code: str, text: str, reference: str = "lote") -> None:
+        await self._reject_actor(
+            user_id=message.from_user.id, chat_id=message.chat_id,
+            message_id=getattr(message, "message_id", 0), code=code, text=text,
+            reference=reference,
+        )
+
+    async def _reject_actor(self, *, user_id: Any, chat_id: Any, message_id: Any,
+                            code: str, text: str, reference: str = "lote") -> None:
+        if self.history is None:
+            return
+        try:
+            await self.history.reject(
+                telegram_id=int(user_id), operation="lote_resumen_bancario_xlsx",
+                key_material=f"batch:{chat_id}:{message_id}:{code}",
+                reference=reference, reason_code=code, reason_text=text,
+            )
+        except Exception:
+            logger.exception("[BATCH-XLSX] terminal rejection could not be persisted")
+
     async def document(self, adapter, message) -> bool:
         key = self._key(message.chat_id, getattr(message, "message_thread_id", None), str(getattr(message.from_user, "id", "")))
         if key in self.operations:
             await self._send(adapter, message.chat_id, "Ya estoy trabajando en tu lote. Esperá el resultado o cancelá desde el mensaje de progreso.", getattr(message, "message_thread_id", None))
+            await self._reject(message, code="lote_en_curso", text="Ya había un lote en procesamiento para este usuario.")
             return True
         if pending_request(self.requests, key, flow="BATCH-PDF-XLSX") is None:
             return False
         if len(self.operations) >= self.max_concurrent_batches:
             await self._send(adapter, message.chat_id, "Estoy procesando otros lotes. Volvé a enviar el archivo en unos minutos; este envío no quedó en cola.", getattr(message, "message_thread_id", None))
+            await self._reject(message, code="capacidad_agotada", text="La capacidad simultánea de lotes estaba completa.")
             return True
         self.operations[key] = asyncio.current_task()
         self.active_ids[key] = uuid.uuid4().hex
@@ -473,10 +498,12 @@ class BatchPdfXlsxFlow:
         if not document or Path(name).suffix.lower() not in {".zip", ".rar", ".7z"}:
             logger.info("[BATCH-PDF-XLSX] stage=document status=REJECTED reason=not_archive user=%s", user_id)
             await self._send(adapter, chat_id, "Esperaba un archivo ZIP, RAR o 7Z con PDFs. Si querés convertir un solo PDF, elegí «Resumen bancario → Excel».", thread_id)
+            await self._reject(message, code="archivo_invalido", text="El archivo recibido no es ZIP, RAR ni 7Z.", reference=name or "archivo")
             return True
         if size <= 0 or size > _MAX_ARCHIVE_BYTES:
             logger.info("[BATCH-PDF-XLSX] stage=document status=REJECTED reason=size bytes=%s user=%s", size, user_id)
             await self._send(adapter, chat_id, "El archivo supera el límite de 20 MB o Telegram no informó su tamaño.", thread_id)
+            await self._reject(message, code="tamano_invalido", text="El lote está vacío, supera 20 MB o no informa su tamaño.", reference=name)
             return True
         self.requests.pop(key, None)
         keyboard = self._cancel_keyboard(f"bx:i:{self.active_ids[key]}")
@@ -534,7 +561,7 @@ class BatchPdfXlsxFlow:
             lines.append("El archivo original quedó conservado.")
             if history_run is not None:
                 await self._history_finish_open_items(
-                    history_run, history_items, state="fallido",
+                    history_run, history_items, state="rechazado",
                     reason_code=self._history_reason_code(result.get("reason") or "lote_con_problemas"),
                     reason_text="La revisión encontró problemas y el lote no fue procesado.",
                 )

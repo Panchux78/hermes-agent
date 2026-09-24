@@ -118,6 +118,20 @@ class PdfXlsxFlow:
             logger.info("[PDF-XLSX] stage=request status=CANCELLED_BY_OTHER_OPTION user=%s", request.user_id)
         return request is not None
 
+    async def _reject(self, message, *, code: str, text: str) -> None:
+        if self.history is None:
+            return
+        try:
+            document = getattr(message, "document", None)
+            await self.history.reject(
+                telegram_id=int(message.from_user.id), operation="resumen_bancario_xlsx",
+                key_material=f"document:{message.chat_id}:{getattr(message, 'message_id', 0)}:{code}",
+                reference=str(getattr(document, "file_name", "archivo") or "archivo"),
+                reason_code=code, reason_text=text,
+            )
+        except Exception:
+            logger.exception("[PDF-XLSX] terminal rejection could not be persisted")
+
     async def callback(self, adapter, query, data: str, chat_id, thread_id, user_id) -> bool:
         if data != "px:start":
             return False
@@ -145,10 +159,12 @@ class PdfXlsxFlow:
         if not document or not (name.endswith(".pdf") or mime_type == "application/pdf"):
             logger.info("[PDF-XLSX] stage=document status=REJECTED reason=not_pdf user=%s", user_id)
             await self._send(adapter, chat_id, "Esperaba un archivo PDF. Mandá el PDF para convertirlo a Excel.", thread_id)
+            await self._reject(message, code="archivo_invalido", text="El archivo recibido no es un PDF.")
             return True
         if size <= 0 or size > _MAX_PDF_BYTES:
             logger.info("[PDF-XLSX] stage=document status=REJECTED reason=size bytes=%s user=%s", size, user_id)
             await self._send(adapter, chat_id, "El PDF supera el límite de 5 MB o Telegram no informó su tamaño.", thread_id)
+            await self._reject(message, code="tamano_invalido", text="El PDF está vacío, supera 5 MB o no informa su tamaño.")
             return True
 
         self.requests.pop(key, None)

@@ -58,6 +58,28 @@ def test_shared_client_prepares_one_item_per_pdf_and_closes_separately(tmp_path:
     asyncio.run(scenario())
 
 
+def test_shared_client_records_terminal_rejection_without_starting_executor(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        history = BotRunHistory(tmp_path, instance_id="00000000-0000-4000-8000-000000000001")
+        history._call = AsyncMock(return_value={
+            "status": "OK", "id_corrida": 44, "id_item": 45, "nueva": True,
+        })
+
+        run = await history.reject(
+            telegram_id=7, operation="resumen_bancario_xlsx",
+            key_material="mensaje-8", reference="archivo.txt",
+            reason_code="archivo_invalido", reason_text="El archivo recibido no es un PDF.",
+        )
+
+        assert run == RunHandle(44, 45)
+        arguments = history._call.await_args.args
+        assert arguments[0] == "reject"
+        assert arguments[arguments.index("--reason-code") + 1] == "archivo_invalido"
+        assert "mensaje-8" not in arguments
+
+    asyncio.run(scenario())
+
+
 def test_portal_iva_operations_and_warning_results_remain_distinct() -> None:
     generar = PortalIvaFlow._history_effects("generar", prepared=True)
     presentados = PortalIvaFlow._history_effects("descargar-presentados", prepared=True)

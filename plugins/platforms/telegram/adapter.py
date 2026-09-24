@@ -459,6 +459,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
         bot_run_history = BotRunHistory()
+        self._bot_run_history = bot_run_history
         self._admin_maintenance_flow = AdminMaintenanceFlow()
         self._batch_pdf_xlsx_flow = BatchPdfXlsxFlow(history=bot_run_history)
         self._pdf_security_flow = PdfSecurityFlow()
@@ -4713,6 +4714,23 @@ class TelegramAdapter(BasePlatformAdapter):
         await query.answer(text=denial_text)
         return False
 
+    async def _record_bot_rejection(self, query, *, operation: str, code: str, text: str) -> None:
+        """Best effort: sólo actores internos vinculados pueden entrar al historial del estudio."""
+        try:
+            history = getattr(self, "_bot_run_history", None)
+            if history is None:
+                return
+            await history.reject(
+                telegram_id=int(query.from_user.id), operation=operation,
+                key_material=(
+                    f"callback:{getattr(getattr(query, 'message', None), 'chat_id', 0)}:"
+                    f"{getattr(getattr(query, 'message', None), 'message_id', 0)}:{code}"
+                ),
+                reference="Pedido por Telegram", reason_code=code, reason_text=text,
+            )
+        except Exception:
+            logger.info("[Telegram] rejection not persisted operation=%s code=%s", operation, code)
+
     async def _handle_callback_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
         """Dispatch inline keyboard button clicks on the callback_data prefix."""
         query = update.callback_query
@@ -4785,6 +4803,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 user_name=cb["user_name"],
             ):
                 await query.answer(text="⛔ No estás autorizado para procesar lotes.")
+                await self._record_bot_rejection(query, operation="lote_resumen_bancario_xlsx", code="usuario_no_autorizado", text="El usuario no estaba autorizado para procesar lotes.")
                 return
             if data == "bx:start":
                 # Elegir «Lote» descarta un pedido de PDF suelto que quedó sin completar.
@@ -4807,6 +4826,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 user_name=cb["user_name"],
             ):
                 await query.answer(text="⛔ No estás autorizado para convertir documentos.")
+                await self._record_bot_rejection(query, operation="resumen_bancario_xlsx", code="usuario_no_autorizado", text="El usuario no estaba autorizado para convertir documentos.")
                 return
             if data == "px:start":
                 # Elegir «Resumen bancario» descarta un pedido de lote que quedó sin
@@ -4830,6 +4850,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 user_name=cb["user_name"],
             ):
                 await query.answer(text="⛔ No estás autorizado para consultar DDJJ.")
+                await self._record_bot_rejection(query, operation="agip_ddjj_iibb", code="usuario_no_autorizado", text="El usuario no estaba autorizado para consultar DDJJ IIBB.")
                 return
             if await self._agip_ddjj_flow.callback(
                 self, query, data, cb["chat_id"], cb["thread_id"], caller_id
@@ -4858,9 +4879,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 user_name=cb["user_name"],
             ):
                 await query.answer(text="⛔ No estás autorizado para consultar Portal IVA.")
+                operation = "portal_iva_generar_csv" if data == "pi:generar" else "portal_iva_descargar_presentados"
+                await self._record_bot_rejection(query, operation=operation, code="usuario_no_autorizado", text="El usuario no estaba autorizado para operar Portal IVA.")
                 return
             if not self._portal_iva_flow.available():
                 await query.answer(text="Portal IVA no está disponible en este servidor.")
+                operation = "portal_iva_generar_csv" if data == "pi:generar" else "portal_iva_descargar_presentados"
+                await self._record_bot_rejection(query, operation=operation, code="runtime_no_disponible", text="Portal IVA no estaba disponible en el servidor.")
                 return
             if await self._portal_iva_flow.callback(
                 self, query, data, cb["chat_id"], cb["thread_id"], caller_id

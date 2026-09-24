@@ -97,6 +97,26 @@ class BotRunHistory:
             raise RuntimeError("HISTORY_RESPONSE_INVALID")
         return RunHandle(run_id, item_id, attempt, previous_run_id)
 
+    async def reject(
+        self, *, telegram_id: int, operation: str, key_material: str,
+        reference: str, reason_code: str, reason_text: str,
+        contributor_id: int | None = None,
+    ) -> RunHandle:
+        """Persiste, de forma idempotente, un rechazo previo al ejecutor."""
+        args = [
+            "reject", "--telegram-id", str(telegram_id), "--operation", operation,
+            "--idempotency-key", self.key("rejection", key_material),
+            "--instance", self.instance_id, "--reference", Path(reference).name,
+            "--reason-code", reason_code, "--reason-text", reason_text,
+        ]
+        if contributor_id is not None:
+            args += ["--contributor-id", str(contributor_id)]
+        payload = await self._call(*args)
+        run_id, item_id = payload.get("id_corrida"), payload.get("id_item")
+        if not isinstance(run_id, int) or not isinstance(item_id, int):
+            raise RuntimeError("HISTORY_RESPONSE_INVALID")
+        return RunHandle(run_id, item_id)
+
     async def prepare_items(self, run: RunHandle, references: list[str]) -> list[dict[str, Any]]:
         payload = await self._call(
             "prepare-items", "--run-id", str(run.run_id), "--instance", self.instance_id,
@@ -167,7 +187,7 @@ class BotRunHistory:
             "close", "--run-id", str(run.run_id), "--instance", self.instance_id,
         )
         state = payload.get("estado")
-        if state not in {"completada", "fallida", "incompleta", "cancelada", "interrumpida"}:
+        if state not in {"completada", "fallida", "incompleta", "cancelada", "interrumpida", "rechazada"}:
             raise RuntimeError("HISTORY_RESPONSE_INVALID")
         return str(state)
 
