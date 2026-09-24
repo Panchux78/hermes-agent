@@ -57,6 +57,32 @@ def test_start_requests_supported_archive_and_inspection_offers_process_cancel(m
     asyncio.run(scenario())
 
 
+def test_pending_batch_rejects_pdf_with_real_reason_before_executor(tmp_path):
+    async def scenario():
+        history = SimpleNamespace(reject=AsyncMock())
+        flow = BatchPdfXlsxFlow(project_dir=tmp_path, history=history)
+        flow._run = AsyncMock()
+        adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()))
+        query = SimpleNamespace(answer=AsyncMock())
+        message = SimpleNamespace(
+            chat_id=20,
+            message_id=21,
+            message_thread_id=None,
+            from_user=SimpleNamespace(id=10),
+            document=SimpleNamespace(file_name="extracto.pdf", file_size=100),
+        )
+
+        await flow.callback(adapter, query, "bx:start", 20, None, "10")
+        assert await flow.document(adapter, message) is True
+
+        flow._run.assert_not_awaited()
+        assert history.reject.await_args.kwargs["operation"] == "lote_resumen_bancario_xlsx"
+        assert history.reject.await_args.kwargs["reason_code"] == "lote_pendiente"
+        assert "pedido de lote pendiente" in history.reject.await_args.kwargs["reason_text"]
+
+    asyncio.run(scenario())
+
+
 def test_blocked_inspection_lists_problem_and_preserved_archive(monkeypatch, tmp_path):
     async def scenario():
         flow = BatchPdfXlsxFlow(project_dir=tmp_path)

@@ -63,6 +63,35 @@ def test_delivery_filename_does_not_leave_separator_before_version_for_real_cred
     assert len(actual) <= 64
 
 
+def test_invalid_file_is_rejected_before_single_pdf_executor(tmp_path):
+    async def scenario():
+        history = SimpleNamespace(instance_id="instance-1", reject=AsyncMock())
+        flow = PdfXlsxFlow(project_dir=tmp_path, history=history)
+        flow._convert = AsyncMock()
+        adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()))
+        query = SimpleNamespace(answer=AsyncMock())
+        message = SimpleNamespace(
+            chat_id=123,
+            message_id=456,
+            message_thread_id=None,
+            from_user=SimpleNamespace(id=99),
+            document=SimpleNamespace(
+                file_name="no-es-pdf.txt",
+                mime_type="text/plain",
+                file_size=10,
+            ),
+        )
+
+        await flow.callback(adapter, query, "px:start", 123, None, "99")
+        assert await flow.document(adapter, message) is True
+
+        flow._convert.assert_not_awaited()
+        assert history.reject.await_args.kwargs["operation"] == "resumen_bancario_xlsx"
+        assert history.reject.await_args.kwargs["reason_code"] == "archivo_invalido"
+
+    asyncio.run(scenario())
+
+
 def _router_process(result: dict, *, returncode: int = 0):
     return SimpleNamespace(
         returncode=returncode,

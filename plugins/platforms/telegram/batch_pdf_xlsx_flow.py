@@ -497,8 +497,17 @@ class BatchPdfXlsxFlow:
         size = int(getattr(document, "file_size", 0) or 0)
         if not document or Path(name).suffix.lower() not in {".zip", ".rar", ".7z"}:
             logger.info("[BATCH-PDF-XLSX] stage=document status=REJECTED reason=not_archive user=%s", user_id)
-            await self._send(adapter, chat_id, "Esperaba un archivo ZIP, RAR o 7Z con PDFs. Si querés convertir un solo PDF, elegí «Resumen bancario → Excel».", thread_id)
-            await self._reject(message, code="archivo_invalido", text="El archivo recibido no es ZIP, RAR ni 7Z.", reference=name or "archivo")
+            text = (
+                "Había un pedido de lote pendiente y el archivo no era ZIP, RAR ni 7Z. "
+                "Para convertir un solo PDF, elegí «Resumen bancario → Excel»."
+            )
+            await self._send(adapter, chat_id, text, thread_id)
+            await self._reject(
+                message,
+                code="lote_pendiente",
+                text=text,
+                reference=name or "archivo",
+            )
             return True
         if size <= 0 or size > _MAX_ARCHIVE_BYTES:
             logger.info("[BATCH-PDF-XLSX] stage=document status=REJECTED reason=size bytes=%s user=%s", size, user_id)

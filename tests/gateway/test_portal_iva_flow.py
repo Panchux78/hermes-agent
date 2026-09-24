@@ -244,6 +244,30 @@ def test_callback_selection_expires_and_double_start_is_blocked():
     asyncio.run(scenario())
 
 
+def test_each_portal_operation_records_active_rejection_before_executor():
+    async def scenario():
+        expected = {
+            "generar": "portal_iva_generar_csv",
+            "descargar-presentados": "portal_iva_descargar_presentados",
+        }
+        for operation, operation_code in expected.items():
+            history = SimpleNamespace(reject=AsyncMock())
+            flow = PortalIvaFlow(history=history)
+            flow._run = AsyncMock()
+            adapter = FakeAdapter()
+            key = flow._key("10", None, "7")
+            flow.tasks[key] = asyncio.current_task()
+            query = _query("pi:generar" if operation == "generar" else "pi:descargar")
+
+            await flow.start(adapter, query, "10", None, "7", operation)
+
+            flow._run.assert_not_awaited()
+            assert history.reject.await_args.kwargs["operation"] == operation_code
+            assert history.reject.await_args.kwargs["reason_code"] == "consulta_en_curso"
+
+    asyncio.run(scenario())
+
+
 def test_unlinked_actor_and_forged_current_selection_are_rejected():
     async def scenario():
         flow = PortalIvaFlow()

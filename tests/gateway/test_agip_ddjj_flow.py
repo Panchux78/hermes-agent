@@ -178,7 +178,8 @@ def test_delivery_accepts_the_v5_consultation_path_and_versions():
 
 def test_expired_state_is_rejected_before_starting_worker():
     async def scenario():
-        flow = AgipDdjjFlow()
+        history = SimpleNamespace(reject=AsyncMock())
+        flow = AgipDdjjFlow(history=history)
         adapter = FakeAdapter()
         key = flow._key("10", None, "7")
         flow.states[key] = FlowState(
@@ -195,6 +196,8 @@ def test_expired_state_is_rejected_before_starting_worker():
         assert key not in flow.states
         assert "venció" in adapter._bot.send_message.await_args.kwargs["text"]
         assert flow.tasks == {}
+        assert history.reject.await_args.kwargs["operation"] == "agip_ddjj_iibb"
+        assert history.reject.await_args.kwargs["reason_code"] == "solicitud_vencida"
 
     asyncio.run(scenario())
 
