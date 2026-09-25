@@ -3461,10 +3461,6 @@ class TelegramAdapter(BasePlatformAdapter):
             # gateway wraps in a connect timeout — means one slow call blows the whole connect and the
             # adapter never comes up, even though polling/webhook is already live (#46298).
             self._start_post_connect_housekeeping()
-            if self._portal_iva_batch_worker and self._portal_iva_batch_worker.is_file():
-                self._restart_task_attr(
-                    "_portal_iva_batch_worker_task", self._portal_iva_batch_worker_loop()
-                )
             return True
         except Exception as e:
             self._release_platform_lock()
@@ -3638,7 +3634,6 @@ class TelegramAdapter(BasePlatformAdapter):
         # Release the bot-token lock immediately so a wedged close cannot block the reconnect watcher.
         # The rest of teardown is best-effort against a half-dead transport. See #80598.
         self._release_platform_lock()
-        await self._cancel_task_attr("_portal_iva_batch_worker_task", "Portal IVA batch worker")
         # Cancel and await both polling lifecycle owners right after the fence, before any other teardown
         # await lets them start a new generation.
         current_task = asyncio.current_task()

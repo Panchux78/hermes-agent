@@ -35,9 +35,29 @@ def _scope_item(**overrides):
 def _scope_query(sql):
     if "fn_actor_telegram_vinculado" in sql:
         return [{"linked": True}]
+    if "fn_actor_telegram_permiso" in sql:
+        return [{"allowed": True}]
     if "fn_verificar_representacion_fiscal" in sql:
         return [{"verified": True}]
     return []
+
+
+def test_actor_without_execute_permission_is_rejected_before_state_creation():
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        def query(sql):
+            if "fn_actor_telegram_vinculado" in sql:
+                return [{"linked": True}]
+            if "fn_actor_telegram_permiso" in sql:
+                return [{"allowed": False}]
+            return []
+        flow._query = query
+        callback = _query("pi:generar")
+        await flow.start(adapter, callback, "10", None, "7", "generar")
+        assert not flow.states
+        callback.answer.assert_awaited_once_with("No tenés permiso para ejecutar operaciones fiscales.")
+    asyncio.run(scenario())
 
 
 class FakeMessage:
@@ -828,6 +848,25 @@ def test_batch_command_is_shell_free_and_contains_every_selected_slug(tmp_path):
     ]
 
 
+def test_failed_telegram_batch_is_registered_for_study_notification():
+    flow = PortalIvaFlow()
+    captured = []
+    flow._query = lambda sql: captured.append(sql) or [51]
+    flow._register_terminal_batch(
+        321,
+        [{"id": 1}, {"id": 2}],
+        ["2026-05", "2026-06"],
+        "fallido",
+        "lote_no_completado",
+    )
+    assert "fn_portal_iva_lote_registrar_telegram" in captured[0]
+    import base64
+    encoded = captured[0].split("decode('", 1)[1].split("'", 1)[0]
+    payload = json.loads(base64.b64decode(encoded))
+    assert len(payload["casos"]) == 4
+    assert {case["estado"] for case in payload["casos"]} == {"fallido"}
+
+
 def test_batch_deliverables_rejects_hash_mismatch_and_accepts_csv_xlsx_and_f2083(tmp_path):
     root = tmp_path / "clientes"
     target = root / "uno" / "2026-05"
@@ -844,7 +883,7 @@ def test_batch_deliverables_rejects_hash_mismatch_and_accepts_csv_xlsx_and_f2083
         "casos": [{"ok": True, "cliente": "uno", "periodo": "2026-05", "archivos": [{
             "entregable_path": str(csv_path), "entregable_sha256": hashlib.sha256(csv_path.read_bytes()).hexdigest(),
             "filas": 1, "libro": "ventas",
-        }], "f2083": {"ruta": str(f2083_path), "sha256": hashlib.sha256(f2083_path.read_bytes()).hexdigest()}}],
+        }], "f2083": {"estado": "disponible", "ruta": str(f2083_path), "sha256": hashlib.sha256(f2083_path.read_bytes()).hexdigest()}}],
         "xlsx": [{"cliente": "uno", "ruta": str(xlsx_path), "sha256": hashlib.sha256(xlsx_path.read_bytes()).hexdigest()}],
     }
     assert len(flow._batch_deliverables(result)) == 3
@@ -862,4 +901,13 @@ def test_batch_without_presented_periods_has_no_deliverables(tmp_path):
                    "estado": "no_disponible", "archivos": [], "f2083": None}],
         "xlsx": [],
     }
+    assert flow._batch_deliverables(result) == []
+
+
+def test_batch_does_not_treat_explicitly_missing_f2083_as_a_file(tmp_path):
+    root = tmp_path / "clientes"
+    root.mkdir()
+    flow = PortalIvaFlow(clients_root=root)
+    result = {"casos": [{"ok": True, "cliente": "uno", "periodo": "2026-05",
+                          "archivos": [], "f2083": {"estado": "no_disponible"}}], "xlsx": []}
     assert flow._batch_deliverables(result) == []

@@ -67,6 +67,17 @@ class FiscalScope:
         if len(rows) != 1 or rows[0] != {"linked": True}:
             raise AccountNotLinked("telegram_actor_not_linked")
 
+    def require_permission(self, telegram_id: Any, permission: str) -> None:
+        actor = self._telegram_id(telegram_id)
+        if not re.fullmatch(r"[a-z_]+\.[a-z_]+", permission):
+            raise PermissionError("telegram_permission_invalid")
+        rows = self.query(
+            "SELECT json_build_object('allowed',console.fn_actor_telegram_permiso("
+            f"{actor},{_literal(permission)}))::text;"
+        )
+        if len(rows) != 1 or rows[0] != {"allowed": True}:
+            raise PermissionError("telegram_permission_denied")
+
     def search(self, telegram_id: Any, term: str) -> list[dict[str, Any]]:
         actor = self._telegram_id(telegram_id)
         normalized = validate_search_term(term)

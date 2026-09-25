@@ -181,6 +181,24 @@ class PortalIvaFlow:
     def _by_id(self, item_id: int, telegram_id: Any) -> list[dict[str, Any]]:
         return self._scope().by_id(telegram_id, item_id)
 
+    def _register_terminal_batch(self, run_id: int, clients: list[dict[str, Any]],
+                                 periods: list[str], state: str, reason: str) -> None:
+        if state not in {"fallido", "cancelado"} or not clients or not periods:
+            raise RuntimeError("PORTAL_IVA_TERMINAL_BATCH_INVALID")
+        payload = {"casos": [
+            {"id_contribuyente": int(client["id"]), "periodo": period, "ok": False,
+             "estado": state, "motivo": reason}
+            for client in clients for period in periods
+        ]}
+        encoded = self._sql_scalar(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        rows = self._query(
+            "SELECT console.fn_portal_iva_lote_registrar_telegram("
+            f"{int(run_id)},'{periods[0]}-01'::date,'{periods[-1]}-01'::date,"
+            f"convert_from(decode('{encoded}','base64'),'UTF8')::jsonb)::text;"
+        )
+        if len(rows) != 1 or not isinstance(rows[0], int):
+            raise RuntimeError("PORTAL_IVA_TERMINAL_BATCH_NOT_RECORDED")
+
     @staticmethod
     def _cancel_keyboard(nonce: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"pi:cancel:{nonce}")]])
@@ -206,9 +224,13 @@ class PortalIvaFlow:
             return
         try:
             await asyncio.to_thread(self._scope().require_actor, user_id)
+            await asyncio.to_thread(self._scope().require_permission, user_id, "operaciones.ejecutar")
         except AccountNotLinked:
             await query.answer("Cuenta no vinculada")
             await self._send(adapter, chat_id, ACCOUNT_NOT_LINKED_MESSAGE, thread_id)
+            return
+        except PermissionError:
+            await query.answer("No tenés permiso para ejecutar operaciones fiscales.")
             return
         self.states[key] = FlowState(
             user_id=user_id, nonce=uuid.uuid4().hex[:10], stage="client", operation=operation,
@@ -804,7 +826,7 @@ class PortalIvaFlow:
                     raise RuntimeError("PORTAL_IVA_DELIVERY_HASH_INVALID")
                 output.append((path, int(record.get("filas", 0)), f"{case['cliente']} · {case['periodo']} · {record['libro']}"))
             f2083 = case.get("f2083")
-            if isinstance(f2083, dict):
+            if isinstance(f2083, dict) and f2083.get("estado") == "disponible":
                 path = Path(str(f2083.get("ruta", "")))
                 resolved = path.resolve(strict=True)
                 if path.is_symlink() or not path.is_file() or not resolved.is_relative_to(root) or path.suffix.lower() != ".pdf":
@@ -826,6 +848,8 @@ class PortalIvaFlow:
         proc = None; ticker = None; staging = None; history_run = None
         history_items: dict[tuple[int, str], int] = {}
         history_finished: set[int] = set()
+        verified_clients: list[dict[str, Any]] = []
+        periods: list[str] = []
 
         async def finish_remaining(item_state: str, code: str, text: str) -> None:
             if self.history is None or history_run is None:
@@ -842,7 +866,6 @@ class PortalIvaFlow:
         try:
             if not state.selected_clients or not state.period_from or not state.period_to:
                 raise RuntimeError("PORTAL_IVA_STATE_INVALID")
-            verified_clients = []
             for selected in state.selected_clients:
                 rows = await asyncio.to_thread(self._by_id, int(selected["id"]), state.user_id)
                 if len(rows) != 1 or rows[0].get("relation_revision") != selected.get("relation_revision"):
@@ -899,10 +922,22 @@ class PortalIvaFlow:
             await self._edit_progress(state, f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos. Resultados enviados.")
         except asyncio.CancelledError:
             if proc and proc.returncode is None: await self._terminate_process(proc)
+            if history_run is not None and verified_clients and periods:
+                try:
+                    await asyncio.to_thread(self._register_terminal_batch, history_run.run_id, verified_clients,
+                                            periods, "cancelado", "cancelado_por_usuario")
+                except Exception:
+                    logger.exception("[PORTAL-IVA] lote cancelado no pudo registrarse para aviso")
             await finish_remaining("cancelado", "cancelado_por_usuario", "El usuario canceló el lote.")
             raise
         except Exception:
             logger.exception("[PORTAL-IVA] lote no completado")
+            if history_run is not None and verified_clients and periods:
+                try:
+                    await asyncio.to_thread(self._register_terminal_batch, history_run.run_id, verified_clients,
+                                            periods, "fallido", "lote_no_completado")
+                except Exception:
+                    logger.exception("[PORTAL-IVA] lote fallido no pudo registrarse para aviso")
             await finish_remaining("fallido", "lote_no_completado", "El lote no pudo completarse.")
             await self._edit_progress(state, "No pude completar el lote. El avance y la evidencia quedaron preservados.")
         finally:
