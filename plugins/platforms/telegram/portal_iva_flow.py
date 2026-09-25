@@ -82,6 +82,9 @@ class FlowState:
     created_at: float = field(default_factory=time.monotonic)
     candidates: dict[int, dict[str, Any]] = field(default_factory=dict)
     scope_item: dict[str, Any] | None = None
+    selected_clients: list[dict[str, Any]] = field(default_factory=list)
+    period_from: str | None = None
+    period_to: str | None = None
 
 
 class PortalIvaFlow:
@@ -96,6 +99,7 @@ class PortalIvaFlow:
         self.query_connection = query_connection or lookup_connection
         self.runtime_python = runtime_python
         self.executor = Path(executor)
+        self.batch_executor = self.executor.with_name("portal_iva_lote.py")
         self.uv = Path(uv)
         self.clients_root = Path(clients_root)
         self.captcha_root = Path(captcha_root)
@@ -146,6 +150,7 @@ class PortalIvaFlow:
             return
         operation_code = (
             "portal_iva_generar_csv" if operation == "generar"
+            else "portal_iva_lote_presentados" if operation == "descargar-lote"
             else "portal_iva_descargar_presentados"
         )
         try:
@@ -191,7 +196,7 @@ class PortalIvaFlow:
         )
 
     async def start(self, adapter, query, chat_id: Any, thread_id: Any, user_id: str, operation: str) -> None:
-        if operation not in {"generar", "descargar-presentados"}:
+        if operation not in {"generar", "descargar-presentados", "descargar-lote"}:
             await query.answer("Operación Portal IVA inválida.")
             return
         key = self._key(chat_id, thread_id, user_id)
@@ -218,7 +223,7 @@ class PortalIvaFlow:
 
     async def callback(self, adapter, query, data: str, chat_id: Any, thread_id: Any, user_id: str) -> bool:
         key = self._key(chat_id, thread_id, user_id)
-        operation = {"pi:generar": "generar", "pi:descargar": "descargar-presentados"}.get(data)
+        operation = {"pi:generar": "generar", "pi:descargar": "descargar-presentados", "pi:lote": "descargar-lote"}.get(data)
         if operation:
             await self.start(adapter, query, chat_id, thread_id, user_id, operation)
             return True
@@ -257,7 +262,7 @@ class PortalIvaFlow:
             await self._reject(user_id=user_id, operation=state.operation, key_material=f"expired:{state.nonce}", code="seleccion_vencida", text="La selección del contribuyente venció antes de iniciar la operación.", contributor_id=state.contributor_id)
             await query.answer("Esta solicitud venció. Iniciá Portal IVA nuevamente.")
             return True
-        if not state or state.nonce != select.group(1) or state.stage != "client":
+        if not state or state.nonce != select.group(1) or state.stage not in {"client", "batch_clients"}:
             await query.answer("Esta selección venció. Iniciá Portal IVA nuevamente.")
             return True
         try:
@@ -311,6 +316,29 @@ class PortalIvaFlow:
         if state.stage in {"running", "delivering"}:
             await self._send(adapter, chat_id, "Portal IVA ya está en ejecución para esta solicitud.", thread_id)
             return True
+        if state.stage in {"batch_from", "batch_to"}:
+            visible_period = (message.text or "").strip()
+            if not _PERIOD.fullmatch(visible_period):
+                await self._send(adapter, chat_id, "Ingresá el período como MM/AAAA. Ejemplo: 08/2026.", thread_id)
+                return True
+            period = f"{visible_period[3:]}-{visible_period[:2]}"
+            if state.stage == "batch_from":
+                state.period_from = period
+                state.stage = "batch_to"
+                await self._send(adapter, chat_id, "Ingresá el último período como MM/AAAA.", thread_id)
+                return True
+            state.period_to = period
+            if state.period_from is None or state.period_from > state.period_to:
+                state.stage = "batch_from"
+                await self._send(adapter, chat_id, "El rango no es válido. Ingresá nuevamente el primer período como MM/AAAA.", thread_id)
+                return True
+            state.stage = "running"
+            state.progress_label = "Preparando lote de Libros IVA…"
+            state.progress_message = await self._send(adapter, chat_id, state.progress_label, thread_id, self._cancel_keyboard(state.nonce))
+            task = asyncio.create_task(self._run_batch(adapter, chat_id, thread_id, key, state))
+            self.tasks[key] = task
+            task.add_done_callback(lambda done: self._release(key, done))
+            return True
         if state.stage == "period":
             visible_period = (message.text or "").strip()
             if not _PERIOD.fullmatch(visible_period):
@@ -332,6 +360,13 @@ class PortalIvaFlow:
             task = asyncio.create_task(self._run(adapter, chat_id, thread_id, key, state))
             self.tasks[key] = task
             task.add_done_callback(lambda done: self._release(key, done))
+            return True
+        if state.operation == "descargar-lote" and state.stage == "batch_clients" and (message.text or "").strip().casefold() == "listo":
+            if not state.selected_clients:
+                await self._send(adapter, chat_id, "Elegí al menos un contribuyente.", thread_id)
+                return True
+            state.stage = "batch_from"
+            await self._send(adapter, chat_id, "Ingresá el primer período como MM/AAAA.", thread_id)
             return True
         try:
             candidates = await asyncio.to_thread(self._search, message.text or "", state.user_id)
@@ -361,6 +396,23 @@ class PortalIvaFlow:
         return True
 
     async def _select(self, adapter, chat_id: Any, thread_id: Any, state: FlowState, item: dict[str, Any]) -> None:
+        if state.operation == "descargar-lote":
+            if state.selected_clients and (
+                int(state.selected_clients[0]["study_id"]) != int(item["study_id"])
+                or int(state.selected_clients[0]["representative_id"]) != int(item["representative_id"])
+            ):
+                await self._send(
+                    adapter, chat_id,
+                    "Un lote sólo puede contener contribuyentes del mismo estudio y acceso fiscal. "
+                    "Terminá este lote o cancelalo para iniciar otro.",
+                    thread_id,
+                )
+                return
+            if not any(int(current["id"]) == int(item["id"]) for current in state.selected_clients):
+                state.selected_clients.append(dict(item))
+            state.stage = "batch_clients"
+            await self._send(adapter, chat_id, f"Agregado: {item['nombre']}. Escribí otro nombre/slug o LISTO para continuar.", thread_id)
+            return
         state.contributor_id = int(item["id"])
         state.slug = str(item["slug"])
         state.cuit = str(item["cuit"])
@@ -379,6 +431,18 @@ class PortalIvaFlow:
             "python3", str(self.executor), "--cliente", slug, "--periodo", period,
             "--operacion", operation, "--captcha-stdin",
         ]
+
+    def _batch_command(self, state: FlowState, history_run_id: int | None = None) -> list[str]:
+        if not self.batch_executor.is_file() or not state.period_from or not state.period_to:
+            raise RuntimeError("PORTAL_IVA_BATCH_RUNTIME_UNAVAILABLE")
+        command = [str(self.uv), "run", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
+                   "python3", str(self.batch_executor)]
+        for client in state.selected_clients:
+            command += ["--cliente", str(client["slug"])]
+        command += ["--desde", state.period_from, "--hasta", state.period_to, "--captcha-stdin"]
+        if history_run_id is not None:
+            command += ["--history-run-id", str(history_run_id)]
+        return command
 
     def _acquire_execution_lock(self, key: str) -> None:
         if fcntl is None:
@@ -714,6 +778,137 @@ class PortalIvaFlow:
         if reason:
             return f"{prefix} no se completó. La evidencia quedó preservada para revisión."
         return fallback
+
+    @staticmethod
+    def _period_range(start: str, end: str) -> list[str]:
+        year, month = map(int, start.split("-")); stop = tuple(map(int, end.split("-")))
+        result = []
+        while (year, month) <= stop:
+            result.append(f"{year:04d}-{month:02d}")
+            month += 1
+            if month == 13: year, month = year + 1, 1
+        return result
+
+    def _batch_deliverables(self, result: dict[str, Any]) -> list[tuple[Path, int, str]]:
+        root = self.clients_root.resolve(strict=True)
+        output: list[tuple[Path, int, str]] = []
+        for case in result.get("casos", []):
+            if not isinstance(case, dict) or not case.get("ok"):
+                continue
+            for record in case.get("archivos", []):
+                path = Path(str(record.get("entregable_path", "")))
+                resolved = path.resolve(strict=True)
+                if path.is_symlink() or not path.is_file() or not resolved.is_relative_to(root):
+                    raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+                if hashlib.sha256(path.read_bytes()).hexdigest() != record.get("entregable_sha256"):
+                    raise RuntimeError("PORTAL_IVA_DELIVERY_HASH_INVALID")
+                output.append((path, int(record.get("filas", 0)), f"{case['cliente']} · {case['periodo']} · {record['libro']}"))
+            f2083 = case.get("f2083")
+            if isinstance(f2083, dict):
+                path = Path(str(f2083.get("ruta", "")))
+                resolved = path.resolve(strict=True)
+                if path.is_symlink() or not path.is_file() or not resolved.is_relative_to(root) or path.suffix.lower() != ".pdf":
+                    raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+                if hashlib.sha256(path.read_bytes()).hexdigest() != f2083.get("sha256"):
+                    raise RuntimeError("PORTAL_IVA_DELIVERY_HASH_INVALID")
+                output.append((path, 0, f"{case['cliente']} · {case['periodo']} · F.2083"))
+        for workbook in result.get("xlsx", []):
+            path = Path(str(workbook.get("ruta", "")))
+            resolved = path.resolve(strict=True)
+            if path.is_symlink() or not path.is_file() or not resolved.is_relative_to(root) or path.suffix.lower() != ".xlsx":
+                raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+            if hashlib.sha256(path.read_bytes()).hexdigest() != workbook.get("sha256"):
+                raise RuntimeError("PORTAL_IVA_DELIVERY_HASH_INVALID")
+            output.append((path, 0, f"{workbook['cliente']} · consolidado"))
+        return output
+
+    async def _run_batch(self, adapter, chat_id: Any, thread_id: Any, key: str, state: FlowState) -> None:
+        proc = None; ticker = None; staging = None; history_run = None
+        history_items: dict[tuple[int, str], int] = {}
+        history_finished: set[int] = set()
+
+        async def finish_remaining(item_state: str, code: str, text: str) -> None:
+            if self.history is None or history_run is None:
+                return
+            for item in history_items.values():
+                if item in history_finished:
+                    continue
+                await self.history.finish_item(
+                    history_run, item, state=item_state, reason_code=code,
+                    reason_text=text, effects=[], delivered_count=0,
+                )
+                history_finished.add(item)
+            await self.history.close(history_run)
+        try:
+            if not state.selected_clients or not state.period_from or not state.period_to:
+                raise RuntimeError("PORTAL_IVA_STATE_INVALID")
+            verified_clients = []
+            for selected in state.selected_clients:
+                rows = await asyncio.to_thread(self._by_id, int(selected["id"]), state.user_id)
+                if len(rows) != 1 or rows[0].get("relation_revision") != selected.get("relation_revision"):
+                    raise RuntimeError("PORTAL_IVA_SELECTION_STALE")
+                verified_clients.append(rows[0])
+            if len({(int(client["study_id"]), int(client["representative_id"])) for client in verified_clients}) != 1:
+                raise RuntimeError("PORTAL_IVA_SELECTION_STALE")
+            periods = self._period_range(state.period_from, state.period_to)
+            if self.history is not None:
+                history_run = await self.history.start(
+                    telegram_id=int(state.user_id), operation="portal_iva_lote_presentados",
+                    key_material=f"portal-iva-lote:{chat_id}:{thread_id or ''}:{state.nonce}",
+                    reference=f"{len(verified_clients)} contribuyentes · {state.period_from} a {state.period_to}",
+                    lease_seconds=_RUN_TIMEOUT_SECONDS + 120,
+                )
+                refs = [f"{client['slug']} · {period}" for client in verified_clients for period in periods]
+                items = await self.history.prepare_items(history_run, refs)
+                pairs = [(client, period) for client in verified_clients for period in periods]
+                history_items = {(int(client["id"]), period): int(item["id_item"])
+                                 for (client, period), item in zip(pairs, items, strict=True)}
+            proc = await asyncio.create_subprocess_exec(*self._batch_command(state, history_run.run_id if history_run else None), stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
+            self.processes[key] = proc
+            ticker = asyncio.create_task(self._ticker(state, time.monotonic()))
+            raw, _ = await asyncio.wait_for(self._communicate_with_progress(
+                proc, state, adapter=adapter, chat_id=chat_id, thread_id=thread_id), timeout=_RUN_TIMEOUT_SECONDS)
+            result = self._parse_result(raw)
+            if proc.returncode or not result.get("ok"):
+                raise RuntimeError("PORTAL_IVA_BATCH_FAILED")
+            source = self._batch_deliverables(result)
+            if source:
+                staging, deliverables = self._stage_delivery_files(source)
+                state.stage = "delivering"
+                await self._edit_progress(state, "Lote completado. Entregando resultados…")
+                for path, rows, label in deliverables:
+                    delivery = await adapter.send_document(chat_id=str(chat_id), file_path=str(path), file_name=path.name,
+                        caption=label + (f" · {rows} fila(s)" if rows else ""),
+                        metadata={"thread_id": thread_id} if thread_id is not None else None)
+                    if not delivery.success:
+                        raise RuntimeError("PORTAL_IVA_DELIVERY_FAILED")
+            if self.history is not None and history_run is not None:
+                for case in result.get("casos", []):
+                    item = history_items[(int(case["id_contribuyente"]), str(case["periodo"]))]
+                    success = bool(case.get("ok"))
+                    await self.history.finish_item(history_run, item,
+                        state="completado" if success else "fallido", reason_code="ok" if success else self._history_reason_code(case.get("motivo")),
+                        reason_text="Libros IVA descargados." if success else str(case.get("motivo", "No completado."))[:500],
+                        effects=[{"tipo": "consulta_read_only", "realizado": True}],
+                        contributor_id=int(case["id_contribuyente"]), period=str(case["periodo"]),
+                        delivered_count=sum(int(x.get("filas", 0)) for x in case.get("archivos", [])))
+                    history_finished.add(item)
+                await self.history.close(history_run)
+            summary = result.get("resumen", {})
+            await self._edit_progress(state, f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos. Resultados enviados.")
+        except asyncio.CancelledError:
+            if proc and proc.returncode is None: await self._terminate_process(proc)
+            await finish_remaining("cancelado", "cancelado_por_usuario", "El usuario canceló el lote.")
+            raise
+        except Exception:
+            logger.exception("[PORTAL-IVA] lote no completado")
+            await finish_remaining("fallido", "lote_no_completado", "El lote no pudo completarse.")
+            await self._edit_progress(state, "No pude completar el lote. El avance y la evidencia quedaron preservados.")
+        finally:
+            if ticker: ticker.cancel()
+            if staging: shutil.rmtree(staging, ignore_errors=True)
+            self.processes.pop(key, None)
 
     async def _run(self, adapter, chat_id: Any, thread_id: Any, key: str, state: FlowState) -> None:
         ticker = None

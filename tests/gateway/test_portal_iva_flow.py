@@ -747,3 +747,119 @@ def test_unavailable_period_without_offered_list_keeps_the_previous_message():
     assert PortalIvaFlow._error_message(
         {"motivo": "PERIODO_NO_DISPONIBLE_2026-05"}, "fallback", "generar"
     ) == "Generar CSV de período nuevo: el período no está disponible para esta operación."
+
+
+def test_batch_selects_multiple_contributors_then_asks_for_month_range(monkeypatch):
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="client", operation="descargar-lote")
+        key = flow._key("10", None, "7")
+        flow.states[key] = state
+        await flow._select(adapter, "10", None, state, _scope_item())
+        await flow._select(adapter, "10", None, state, _scope_item(id=2, slug="dos", nombre="Dos"))
+        assert [item["id"] for item in state.selected_clients] == [1, 2]
+        assert state.stage == "batch_clients"
+        assert await flow.text(adapter, _message("LISTO"))
+        assert state.stage == "batch_from"
+
+        def fake_task(coro):
+            coro.close()
+            return SimpleNamespace(add_done_callback=lambda _callback: None)
+
+        monkeypatch.setattr(asyncio, "create_task", fake_task)
+        assert await flow.text(adapter, _message("2026-05"))
+        assert state.stage == "batch_from"
+        assert await flow.text(adapter, _message("05/2026"))
+        assert state.stage == "batch_to"
+        assert await flow.text(adapter, _message("06/2026"))
+        assert state.stage == "running"
+        assert state.period_from == "2026-05" and state.period_to == "2026-06"
+
+    asyncio.run(scenario())
+
+
+def test_batch_rejects_contributors_from_another_study():
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="batch_clients", operation="descargar-lote",
+                          selected_clients=[_scope_item(study_id=1)])
+        await flow._select(adapter, "10", None, state, _scope_item(id=2, study_id=2, slug="dos", nombre="Dos"))
+        assert len(state.selected_clients) == 1
+        assert "mismo estudio y acceso fiscal" in adapter._bot.send_message.await_args.kwargs["text"]
+
+    asyncio.run(scenario())
+
+
+def test_batch_rejects_contributors_with_another_fiscal_holder():
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="batch_clients", operation="descargar-lote",
+                          selected_clients=[_scope_item(study_id=1, representative_id=1)])
+        await flow._select(
+            adapter, "10", None, state,
+            _scope_item(id=2, study_id=1, representative_id=2, slug="dos", nombre="Dos"),
+        )
+        assert len(state.selected_clients) == 1
+        assert "mismo estudio y acceso fiscal" in adapter._bot.send_message.await_args.kwargs["text"]
+
+    asyncio.run(scenario())
+
+
+def test_batch_command_is_shell_free_and_contains_every_selected_slug(tmp_path):
+    executor = tmp_path / "portal_iva.py"
+    executor.touch()
+    batch_executor = tmp_path / "portal_iva_lote.py"
+    batch_executor.touch()
+    uv = tmp_path / "uv"
+    uv.touch()
+    root = tmp_path / "clientes"
+    root.mkdir()
+    flow = PortalIvaFlow(executor=executor, uv=uv, clients_root=root)
+    state = FlowState(user_id="7", nonce="a" * 10, stage="running", operation="descargar-lote",
+                      selected_clients=[{"slug": "uno"}, {"slug": "dos"}],
+                      period_from="2026-05", period_to="2026-06")
+    assert flow._batch_command(state, 321) == [
+        str(uv), "run", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
+        "python3", str(batch_executor), "--cliente", "uno", "--cliente", "dos",
+        "--desde", "2026-05", "--hasta", "2026-06", "--captcha-stdin", "--history-run-id", "321",
+    ]
+
+
+def test_batch_deliverables_rejects_hash_mismatch_and_accepts_csv_xlsx_and_f2083(tmp_path):
+    root = tmp_path / "clientes"
+    target = root / "uno" / "2026-05"
+    target.mkdir(parents=True)
+    csv_path = target / "ventas.csv"
+    csv_path.write_text("cabecera\n", encoding="utf-8")
+    xlsx_path = target / "lote.xlsx"
+    xlsx_path.write_bytes(b"PK synthetic")
+    f2083_path = target / "f2083.pdf"
+    f2083_path.write_bytes(b"%PDF-1.7\nsynthetic")
+    import hashlib
+    flow = PortalIvaFlow(clients_root=root)
+    result = {
+        "casos": [{"ok": True, "cliente": "uno", "periodo": "2026-05", "archivos": [{
+            "entregable_path": str(csv_path), "entregable_sha256": hashlib.sha256(csv_path.read_bytes()).hexdigest(),
+            "filas": 1, "libro": "ventas",
+        }], "f2083": {"ruta": str(f2083_path), "sha256": hashlib.sha256(f2083_path.read_bytes()).hexdigest()}}],
+        "xlsx": [{"cliente": "uno", "ruta": str(xlsx_path), "sha256": hashlib.sha256(xlsx_path.read_bytes()).hexdigest()}],
+    }
+    assert len(flow._batch_deliverables(result)) == 3
+    result["xlsx"][0]["sha256"] = "0" * 64
+    with pytest.raises(RuntimeError, match="PORTAL_IVA_DELIVERY_HASH_INVALID"):
+        flow._batch_deliverables(result)
+
+
+def test_batch_without_presented_periods_has_no_deliverables(tmp_path):
+    root = tmp_path / "clientes"
+    root.mkdir()
+    flow = PortalIvaFlow(clients_root=root)
+    result = {
+        "casos": [{"ok": False, "cliente": "uno", "periodo": "2026-05",
+                   "estado": "no_disponible", "archivos": [], "f2083": None}],
+        "xlsx": [],
+    }
+    assert flow._batch_deliverables(result) == []

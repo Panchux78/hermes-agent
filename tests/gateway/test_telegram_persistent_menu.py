@@ -236,6 +236,9 @@ def test_implemented_tax_actions_reuse_existing_flows(monkeypatch):
     assert TelegramAdapter._menu_panel_keyboard("arca_consultar")[1] == [
         {"text": aligned_menu_label("arca_consultar", "📥", "CSV de períodos presentados"), "callback_data": "pi:descargar"}
     ]
+    assert TelegramAdapter._menu_panel_keyboard("arca_consultar")[2] == [
+        {"text": aligned_menu_label("arca_consultar", "📚", "Lote de Libros IVA"), "callback_data": "pi:lote"}
+    ]
     assert TelegramAdapter._menu_panel_keyboard("arca_preparar")[0] == [
         {"text": "🧾  Preparar período nuevo", "callback_data": "pi:generar"}
     ]

@@ -9,6 +9,7 @@ import logging
 import os
 import html as _html
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -468,6 +469,12 @@ class TelegramAdapter(BasePlatformAdapter):
         project_dir = fiscal_paths.get("project_dir")
         runtime_python = fiscal_paths.get("runtime_python")
         portal_executor = fiscal_paths.get("portal_iva_executor")
+        self._portal_iva_batch_worker = (
+            project_dir / "scripts/portal-iva/portal_iva_lote_worker.py"
+            if project_dir else None
+        )
+        self._portal_iva_batch_worker_python = runtime_python or _Path(sys.executable)
+        self._portal_iva_batch_worker_task = None
         self._agip_ddjj_flow = AgipDdjjFlow(
             runtime_python=runtime_python,
             worker=(project_dir / "scripts/agip-ddjj-worker.py") if project_dir else None,
@@ -986,6 +993,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         aligned_menu_label(page, "📥", "CSV de períodos presentados"), callback_data="pi:descargar"
                     )
                 ],
+                [InlineKeyboardButton(aligned_menu_label(page, "📚", "Lote de Libros IVA"), callback_data="pi:lote")],
                 [InlineKeyboardButton(aligned_menu_label(page, "📊", "CCMA Obligaciones y pagos"), callback_data="fq:ccma")],
                 [InlineKeyboardButton(aligned_menu_label(page, "📋", "SCT Estado de cumplimiento"), callback_data="fq:sct")],
             ]
@@ -3453,6 +3461,10 @@ class TelegramAdapter(BasePlatformAdapter):
             # gateway wraps in a connect timeout — means one slow call blows the whole connect and the
             # adapter never comes up, even though polling/webhook is already live (#46298).
             self._start_post_connect_housekeeping()
+            if self._portal_iva_batch_worker and self._portal_iva_batch_worker.is_file():
+                self._restart_task_attr(
+                    "_portal_iva_batch_worker_task", self._portal_iva_batch_worker_loop()
+                )
             return True
         except Exception as e:
             self._release_platform_lock()
@@ -3484,6 +3496,39 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.info("[%s] Set bot status indicator to %r", self.name, text)
         except Exception as e:
             logger.debug("[%s] Failed to set bot status indicator to %r: %s", self.name, text, _redact_telegram_error_text(e))
+
+    async def _portal_iva_batch_worker_loop(self) -> None:
+        """Consume pedidos del panel; el proceso fiscal conserva su propio lease."""
+        while True:
+            proc = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    str(self._portal_iva_batch_worker_python),
+                    str(self._portal_iva_batch_worker), "--once",
+                    cwd=str(self._portal_iva_batch_worker.parents[2]),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                )
+                stdout, _stderr = await proc.communicate()
+                if proc.returncode:
+                    logger.error("[PORTAL-IVA-LOTE] worker finalizó con error")
+                elif stdout:
+                    try:
+                        payload = json.loads(stdout.decode("utf-8"))
+                        if payload.get("status") == "ok":
+                            logger.info("[PORTAL-IVA-LOTE] lote %s finalizado", payload.get("id_lote"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        logger.error("[PORTAL-IVA-LOTE] respuesta inválida del worker")
+            except asyncio.CancelledError:
+                if proc is not None and proc.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(proc.wait(), 5)
+                raise
+            except Exception:
+                logger.exception("[PORTAL-IVA-LOTE] fallo del worker")
+            await asyncio.sleep(5)
 
     @staticmethod
     def _collect_live_tasks(candidates, current_task) -> list:
@@ -3593,6 +3638,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Release the bot-token lock immediately so a wedged close cannot block the reconnect watcher.
         # The rest of teardown is best-effort against a half-dead transport. See #80598.
         self._release_platform_lock()
+        await self._cancel_task_attr("_portal_iva_batch_worker_task", "Portal IVA batch worker")
         # Cancel and await both polling lifecycle owners right after the fence, before any other teardown
         # await lets them start a new generation.
         current_task = asyncio.current_task()
@@ -4879,12 +4925,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 user_name=cb["user_name"],
             ):
                 await query.answer(text="⛔ No estás autorizado para consultar Portal IVA.")
-                operation = "portal_iva_generar_csv" if data == "pi:generar" else "portal_iva_descargar_presentados"
+                operation = {"pi:generar": "portal_iva_generar_csv", "pi:lote": "portal_iva_lote_presentados"}.get(data, "portal_iva_descargar_presentados")
                 await self._record_bot_rejection(query, operation=operation, code="usuario_no_autorizado", text="El usuario no estaba autorizado para operar Portal IVA.")
                 return
             if not self._portal_iva_flow.available():
                 await query.answer(text="Portal IVA no está disponible en este servidor.")
-                operation = "portal_iva_generar_csv" if data == "pi:generar" else "portal_iva_descargar_presentados"
+                operation = {"pi:generar": "portal_iva_generar_csv", "pi:lote": "portal_iva_lote_presentados"}.get(data, "portal_iva_descargar_presentados")
                 await self._record_bot_rejection(query, operation=operation, code="runtime_no_disponible", text="Portal IVA no estaba disponible en el servidor.")
                 return
             if await self._portal_iva_flow.callback(
