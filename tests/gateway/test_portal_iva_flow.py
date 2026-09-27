@@ -807,12 +807,12 @@ def test_batch_rejects_contributors_from_another_study():
                           selected_clients=[_scope_item(study_id=1)])
         await flow._select(adapter, "10", None, state, _scope_item(id=2, study_id=2, slug="dos", nombre="Dos"))
         assert len(state.selected_clients) == 1
-        assert "mismo estudio y acceso fiscal" in adapter._bot.send_message.await_args.kwargs["text"]
+        assert "mismo estudio" in adapter._bot.send_message.await_args.kwargs["text"]
 
     asyncio.run(scenario())
 
 
-def test_batch_rejects_contributors_with_another_fiscal_holder():
+def test_batch_accepts_contributors_with_another_fiscal_holder():
     async def scenario():
         flow = PortalIvaFlow()
         adapter = FakeAdapter()
@@ -822,8 +822,8 @@ def test_batch_rejects_contributors_with_another_fiscal_holder():
             adapter, "10", None, state,
             _scope_item(id=2, study_id=1, representative_id=2, slug="dos", nombre="Dos"),
         )
-        assert len(state.selected_clients) == 1
-        assert "mismo estudio y acceso fiscal" in adapter._bot.send_message.await_args.kwargs["text"]
+        assert len(state.selected_clients) == 2
+        assert "Agregado: Dos" in adapter._bot.send_message.await_args.kwargs["text"]
 
     asyncio.run(scenario())
 

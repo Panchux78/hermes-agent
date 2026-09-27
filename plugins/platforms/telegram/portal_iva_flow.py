@@ -419,13 +419,10 @@ class PortalIvaFlow:
 
     async def _select(self, adapter, chat_id: Any, thread_id: Any, state: FlowState, item: dict[str, Any]) -> None:
         if state.operation == "descargar-lote":
-            if state.selected_clients and (
-                int(state.selected_clients[0]["study_id"]) != int(item["study_id"])
-                or int(state.selected_clients[0]["representative_id"]) != int(item["representative_id"])
-            ):
+            if state.selected_clients and int(state.selected_clients[0]["study_id"]) != int(item["study_id"]):
                 await self._send(
                     adapter, chat_id,
-                    "Un lote sólo puede contener contribuyentes del mismo estudio y acceso fiscal. "
+                    "Un lote sólo puede contener contribuyentes del mismo estudio. "
                     "Terminá este lote o cancelalo para iniciar otro.",
                     thread_id,
                 )
@@ -844,6 +841,24 @@ class PortalIvaFlow:
             output.append((path, 0, f"{workbook['cliente']} · consolidado"))
         return output
 
+    def _batch_evidence(self, result: dict[str, Any]) -> list[tuple[Path, str]]:
+        root = self.captcha_root.resolve(strict=True)
+        output: list[tuple[Path, str]] = []
+        for case in result.get("casos", []):
+            if case.get("motivo_codigo") != "respuesta_arca_inesperada":
+                continue
+            path = Path(str(case.get("evidencia_captura", "")))
+            try:
+                resolved = path.resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            if path.is_symlink() or not resolved.is_relative_to(root) or resolved.suffix.lower() != ".png":
+                continue
+            if not resolved.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
+                continue
+            output.append((resolved, f"captura-arca-{case.get('cliente')}-{case.get('periodo')}.png"))
+        return output
+
     async def _run_batch(self, adapter, chat_id: Any, thread_id: Any, key: str, state: FlowState) -> None:
         proc = None; ticker = None; staging = None; history_run = None
         history_items: dict[tuple[int, str], int] = {}
@@ -878,7 +893,7 @@ class PortalIvaFlow:
                 if len(rows) != 1 or rows[0].get("relation_revision") != selected.get("relation_revision"):
                     raise RuntimeError("PORTAL_IVA_SELECTION_STALE")
                 verified_clients.append(rows[0])
-            if len({(int(client["study_id"]), int(client["representative_id"])) for client in verified_clients}) != 1:
+            if len({int(client["study_id"]) for client in verified_clients}) != 1:
                 raise RuntimeError("PORTAL_IVA_SELECTION_STALE")
             periods = self._period_range(state.period_from, state.period_to)
             if self.history is not None:
@@ -913,20 +928,36 @@ class PortalIvaFlow:
                         metadata={"thread_id": thread_id} if thread_id is not None else None)
                     if not delivery.success:
                         raise RuntimeError("PORTAL_IVA_DELIVERY_FAILED")
+            for path, name in self._batch_evidence(result):
+                delivery = await adapter.send_document(
+                    chat_id=str(chat_id), file_path=str(path), file_name=name,
+                    caption="ARCA respondió algo que no esperábamos. Captura para revisión.",
+                    metadata={"thread_id": thread_id} if thread_id is not None else None,
+                )
+                if not delivery.success:
+                    raise RuntimeError("PORTAL_IVA_EVIDENCE_DELIVERY_FAILED")
             if self.history is not None and history_run is not None:
                 for case in result.get("casos", []):
                     item = history_items[(int(case["id_contribuyente"]), str(case["periodo"]))]
                     success = bool(case.get("ok"))
+                    case_state = "completado" if success else ("rechazado" if case.get("estado") == "no_presentado" else "fallido")
                     await self.history.finish_item(history_run, item,
-                        state="completado" if success else "fallido", reason_code="ok" if success else self._history_reason_code(case.get("motivo")),
-                        reason_text="Libros IVA descargados." if success else str(case.get("motivo", "No completado."))[:500],
+                        state=case_state, reason_code="ok" if success else self._history_reason_code(case.get("motivo_codigo") or case.get("motivo")),
+                        reason_text="Libros IVA descargados." if success else str(case.get("motivo_texto", "ARCA respondió algo que no esperábamos."))[:500],
                         effects=[{"tipo": "consulta_read_only", "realizado": True}],
                         contributor_id=int(case["id_contribuyente"]), period=str(case["periodo"]),
                         delivered_count=sum(int(x.get("filas", 0)) for x in case.get("archivos", [])))
                     history_finished.add(item)
                 await self.history.close(history_run)
             summary = result.get("resumen", {})
-            await self._edit_progress(state, f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos. Resultados enviados.")
+            pending = [case for case in result.get("casos", []) if not case.get("ok")]
+            detail = "\n".join(
+                f"• {case.get('cliente')} · {case.get('periodo')}: {case.get('motivo_texto', 'ARCA respondió algo que no esperábamos.')}"
+                + (f" {case.get('accion_sugerida')}" if case.get("accion_sugerida") else "")
+                for case in pending[:8]
+            )
+            suffix = f"\n{detail}" if detail else ""
+            await self._edit_progress(state, f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos. Resultados enviados.{suffix}")
         except asyncio.CancelledError:
             if proc and proc.returncode is None: await self._terminate_process(proc)
             if history_run is not None and verified_clients and periods:
