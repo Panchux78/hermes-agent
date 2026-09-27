@@ -96,11 +96,15 @@ class FiscalScope:
             'study_id',s.id_estudio,'relation_id',s.id_representacion,
             'relation_revision',s.revision_representacion,
             'verified',s.fecha_verificacion IS NOT NULL,
-            'representative_id',s.id_representante,'holder_cuit',s.cuit_representante
+            'representative_id',s.id_representante,'holder_cuit',s.cuit_representante,
+            'access_id',b.id_acceso
           )::text
           FROM console.fn_buscar_contribuyente_fiscal(
             {actor},{_literal(self.entity)},{term_sql},{contributor_sql}
-          ) s;
+          ) s
+          LEFT JOIN LATERAL console.fn_portal_iva_lote_binding_telegram(
+            {actor},s.id_contribuyente
+          ) b ON {"TRUE" if self.entity == "ARCA" else "FALSE"};
         """)
         safe: list[dict[str, Any]] = []
         for row in rows:

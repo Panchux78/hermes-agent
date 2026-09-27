@@ -17,7 +17,7 @@ def item(**overrides):
         "id": 12, "nombre": "Cliente sintético", "cuit": "20987654326",
         "slug": "cliente-sintetico", "study_id": 1, "relation_id": 101,
         "relation_revision": 3, "verified": False, "representative_id": 11,
-        "holder_cuit": "20123456786",
+        "holder_cuit": "20123456786", "access_id": 31,
     }
     value.update(overrides)
     return value
@@ -46,7 +46,7 @@ def test_scoped_search_and_by_id_use_actor_inside_database_function():
     assert "fn_buscar_contribuyente_fiscal" in query.call_args.args[0]
     assert "(\n            7," in query.call_args.args[0]
     assert scope.by_id("7", 12) == [item()]
-    assert query.call_args.args[0].rstrip().endswith("s;")
+    assert "fn_portal_iva_lote_binding_telegram" in query.call_args.args[0]
     assert ",12\n" in query.call_args.args[0]
 
 

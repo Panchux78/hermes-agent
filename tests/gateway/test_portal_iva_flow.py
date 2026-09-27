@@ -27,6 +27,7 @@ def _scope_item(**overrides):
         "id": 1, "nombre": "Uno", "cuit": VALID_CUIT, "slug": "uno",
         "study_id": 1, "relation_id": 11, "relation_revision": 1,
         "verified": False, "representative_id": 1, "holder_cuit": VALID_CUIT,
+        "access_id": 10,
     }
     item.update(overrides)
     return item
@@ -867,12 +868,15 @@ def test_batch_command_is_shell_free_and_contains_every_selected_slug(tmp_path):
     root.mkdir()
     flow = PortalIvaFlow(executor=executor, uv=uv, clients_root=root)
     state = FlowState(user_id="7", nonce="a" * 10, stage="running", operation="descargar-lote",
-                      selected_clients=[{"slug": "uno"}, {"slug": "dos"}],
+                      selected_clients=[{"slug": "uno", "access_id": 10, "representative_id": 20},
+                                        {"slug": "dos", "access_id": 11, "representative_id": 21}],
                       period_from="2026-05", period_to="2026-06")
     assert flow._batch_command(state, 321) == [
         str(uv), "run", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
-        "python3", str(batch_executor), "--cliente", "uno", "--cliente", "dos",
-        "--desde", "2026-05", "--hasta", "2026-06", "--captcha-stdin", "--history-run-id", "321",
+        "python3", str(batch_executor),
+        "--caso", "uno:2026-05:10:20", "--caso", "uno:2026-06:10:20",
+        "--caso", "dos:2026-05:11:21", "--caso", "dos:2026-06:11:21",
+        "--captcha-stdin", "--history-run-id", "321",
     ]
 
 

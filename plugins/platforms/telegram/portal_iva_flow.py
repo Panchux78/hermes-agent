@@ -456,9 +456,16 @@ class PortalIvaFlow:
             raise RuntimeError("PORTAL_IVA_BATCH_RUNTIME_UNAVAILABLE")
         command = [str(self.uv), "run", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
                    "python3", str(self.batch_executor)]
+        periods = self._period_range(state.period_from, state.period_to)
         for client in state.selected_clients:
-            command += ["--cliente", str(client["slug"])]
-        command += ["--desde", state.period_from, "--hasta", state.period_to, "--captcha-stdin"]
+            if not client.get("access_id") or not client.get("representative_id"):
+                raise RuntimeError("PORTAL_IVA_BATCH_BINDING_UNAVAILABLE")
+            for period in periods:
+                command += ["--caso", (
+                    f"{client['slug']}:{period}:{int(client['access_id'])}:"
+                    f"{int(client['representative_id'])}"
+                )]
+        command += ["--captcha-stdin"]
         if history_run_id is not None:
             command += ["--history-run-id", str(history_run_id)]
         return command
@@ -895,6 +902,9 @@ class PortalIvaFlow:
                 verified_clients.append(rows[0])
             if len({int(client["study_id"]) for client in verified_clients}) != 1:
                 raise RuntimeError("PORTAL_IVA_SELECTION_STALE")
+            # El comando usa exclusivamente el binding revalidado en este instante,
+            # no la selección conservada desde mensajes anteriores.
+            state.selected_clients = verified_clients
             periods = self._period_range(state.period_from, state.period_to)
             if self.history is not None:
                 history_run = await self.history.start(
