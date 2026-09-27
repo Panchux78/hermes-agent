@@ -857,6 +857,43 @@ def test_batch_revalidates_execute_permission_immediately_before_running():
     asyncio.run(scenario())
 
 
+def test_batch_revalidation_replaces_stale_binding_before_command(monkeypatch):
+    async def scenario():
+        flow = PortalIvaFlow()
+        flow._query = _scope_query
+        stale = _scope_item(access_id=10, representative_id=20)
+        fresh = _scope_item(access_id=88, representative_id=77)
+        flow._by_id = lambda _item_id, _user_id: [fresh]
+        captured = {}
+        flow._batch_command = lambda state, _run_id: captured.setdefault(
+            "selected", [(item["access_id"], item["representative_id"])
+                         for item in state.selected_clients]) or ["fake"]
+
+        class Proc:
+            returncode = 0
+            pid = 4321
+        async def subprocess_exec(*_args, **_kwargs): return Proc()
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
+        async def communicate(*_args, **_kwargs):
+            return (json.dumps({"ok": True, "casos": [], "xlsx": [],
+                                "resumen": {"completados": 0, "total": 0}}).encode(), b"")
+        flow._communicate_with_progress = communicate
+        async def ticker(*_args): await asyncio.sleep(60)
+        flow._ticker = ticker
+        flow._batch_deliverables = lambda _result: []
+        flow._batch_evidence = lambda _result: []
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running",
+                          operation="descargar-lote", selected_clients=[stale],
+                          period_from="2026-05", period_to="2026-05",
+                          progress_message=FakeMessage())
+        await flow._run_batch(FakeAdapter(), "10", None, "key", state)
+        assert captured["selected"] == [(88, 77)]
+        assert [(item["access_id"], item["representative_id"])
+                for item in state.selected_clients] == [(88, 77)]
+
+    asyncio.run(scenario())
+
+
 def test_batch_command_is_shell_free_and_contains_every_selected_slug(tmp_path):
     executor = tmp_path / "portal_iva.py"
     executor.touch()
