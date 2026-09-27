@@ -828,6 +828,34 @@ def test_batch_rejects_contributors_with_another_fiscal_holder():
     asyncio.run(scenario())
 
 
+def test_batch_revalidates_execute_permission_immediately_before_running():
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        queries = []
+
+        def query(sql):
+            queries.append(sql)
+            if "fn_actor_telegram_vinculado" in sql:
+                return [{"linked": True}]
+            if "fn_actor_telegram_permiso" in sql:
+                return [{"allowed": False}]
+            return []
+
+        flow._query = query
+        state = FlowState(
+            user_id="7", nonce="a" * 10, stage="running",
+            operation="descargar-lote", selected_clients=[_scope_item()],
+            period_from="2026-05", period_to="2026-06",
+            progress_message=FakeMessage(),
+        )
+        await flow._run_batch(adapter, "10", None, "key", state)
+        assert any("fn_actor_telegram_permiso" in sql for sql in queries)
+        assert state.progress_message.edits[-1][0].startswith("No pude completar el lote")
+
+    asyncio.run(scenario())
+
+
 def test_batch_command_is_shell_free_and_contains_every_selected_slug(tmp_path):
     executor = tmp_path / "portal_iva.py"
     executor.touch()

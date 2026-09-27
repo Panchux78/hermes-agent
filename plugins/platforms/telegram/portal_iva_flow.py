@@ -864,6 +864,13 @@ class PortalIvaFlow:
                 history_finished.add(item)
             await self.history.close(history_run)
         try:
+            # El permiso se vuelve a comprobar justo antes de ejecutar: entre
+            # la apertura del flujo y la confirmación del rango pudo retirarse.
+            await asyncio.to_thread(
+                self._scope().require_permission,
+                state.user_id,
+                "operaciones.ejecutar",
+            )
             if not state.selected_clients or not state.period_from or not state.period_to:
                 raise RuntimeError("PORTAL_IVA_STATE_INVALID")
             for selected in state.selected_clients:
