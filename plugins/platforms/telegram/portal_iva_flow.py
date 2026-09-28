@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -96,6 +97,13 @@ class FlowState:
     selected_clients: list[dict[str, Any]] = field(default_factory=list)
     period_from: str | None = None
     period_to: str | None = None
+    batch_total: int = 0
+    batch_done: int = 0
+    batch_success: int = 0
+    batch_unavailable: int = 0
+    batch_failed: int = 0
+    batch_active: str = ""
+    batch_seen: set[tuple[int, str]] = field(default_factory=set)
 
 
 class PortalIvaFlow:
@@ -629,13 +637,57 @@ class PortalIvaFlow:
         except Exception:
             logger.warning("[PORTAL-IVA] progress edit failed")
 
-    async def _ticker(self, state: FlowState, started: float) -> None:
+    async def _ticker(self, state: FlowState, started: float, adapter=None,
+                      chat_id: Any = None, thread_id: Any = None) -> None:
+        next_batch_notice = 120
         while not state.cancelled:
             await asyncio.sleep(10)
             if state.cancelled:
                 return
             elapsed = int(time.monotonic() - started)
             await self._edit_progress(state, f"{state.progress_label} {elapsed} s", keyboard=self._cancel_keyboard(state.nonce))
+            if state.operation == "descargar-lote" and adapter is not None and elapsed >= next_batch_notice:
+                next_batch_notice = elapsed + 120
+                try:
+                    await self._send(adapter, chat_id,
+                                     f"El lote sigue en curso ({elapsed // 60} min). {state.progress_label}",
+                                     thread_id, self._cancel_keyboard(state.nonce))
+                except Exception:
+                    logger.warning("[PORTAL-IVA] batch notice failed")
+
+    async def _batch_progress_event(self, state: FlowState, kind: str, payload: dict[str, Any]) -> None:
+        try:
+            contributor_id = int(payload["id_contribuyente"])
+            period = str(payload["periodo"])
+        except (KeyError, TypeError, ValueError):
+            return
+        client = next((item for item in state.selected_clients if int(item["id"]) == contributor_id), None)
+        if client is None or not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period):
+            return
+        if state.period_from and period < state.period_from:
+            return
+        if state.period_to and period > state.period_to:
+            return
+        key = (contributor_id, period)
+        if kind == "case_start":
+            state.batch_active = f"{client['slug']} · {period[5:]}/{period[:4]}"
+        elif kind == "case" and key not in state.batch_seen:
+            state.batch_seen.add(key)
+            state.batch_done += 1
+            if payload.get("ok") is True:
+                state.batch_success += 1
+            elif payload.get("estado") in {"no_disponible", "no_presentado"}:
+                state.batch_unavailable += 1
+            else:
+                state.batch_failed += 1
+        else:
+            return
+        state.progress_label = (
+            f"Lote: {state.batch_done}/{state.batch_total} períodos revisados "
+            f"({state.batch_success} con libros, {state.batch_unavailable} sin libro, "
+            f"{state.batch_failed} con error). Ahora: {state.batch_active}."
+        )
+        await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
 
     @staticmethod
     def _parse_result(raw: bytes) -> dict[str, Any]:
@@ -728,7 +780,8 @@ class PortalIvaFlow:
             state.captcha_response = None
 
     async def _communicate_with_progress(self, proc, state: FlowState, *, adapter=None,
-                                         chat_id: Any = None, thread_id: Any = None) -> tuple[bytes, bytes]:
+                                         chat_id: Any = None, thread_id: Any = None,
+                                         batch_event=None) -> tuple[bytes, bytes]:
         """Separate structured progress from the final JSON on either pipe.
 
         xvfb-run merges the wrapped command's stderr into stdout, so the
@@ -760,6 +813,20 @@ class PortalIvaFlow:
                         state.progress_label = text
                         await self._edit_progress(state, text, keyboard=self._cancel_keyboard(state.nonce))
                     return
+                if batch_event is not None:
+                    for prefix, kind in ((b"PORTAL_IVA_CASE_START:", "case_start"),
+                                         (b"PORTAL_IVA_CASE:", "case")):
+                        if line.startswith(prefix):
+                            if len(line) <= 65536:
+                                try:
+                                    payload = json.loads(line[len(prefix):])
+                                except (UnicodeDecodeError, json.JSONDecodeError):
+                                    return
+                                if isinstance(payload, dict):
+                                    await batch_event(kind, payload)
+                            return
+                    if line.startswith(b"PORTAL_IVA_GROUP:"):
+                        return
                 if len(captured) + len(line) <= _PIPE_CAPTURE_LIMIT:
                     captured.extend(line)
 
@@ -989,6 +1056,58 @@ class PortalIvaFlow:
             output.append((path, 0, f"{workbook['cliente']} · consolidado"))
         return output
 
+    def _stage_batch_archive(self, deliverables: list[tuple[Path, int, str]],
+                             name: str = "libros-iva-lote.zip",
+                             evidence: list[tuple[Path, str]] | None = None) -> tuple[Path, Path]:
+        """Send one ZIP while leaving each validated original in Documentos."""
+        if Path(name).name != name or not name.endswith(".zip"):
+            raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+        root = self.clients_root.resolve(strict=True)
+        staging = Path(tempfile.mkdtemp(prefix="portal-iva-telegram-"))
+        archive = staging / name
+        seen: set[str] = set()
+        try:
+            descriptor = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "wb") as target, zipfile.ZipFile(
+                target, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
+            ) as package:
+                def add_file(source: Path, archive_name: str) -> None:
+                    if archive_name in seen:
+                        raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+                    seen.add(archive_name)
+                    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+                    with os.fdopen(source_fd, "rb") as original:
+                        if not stat.S_ISREG(os.fstat(original.fileno()).st_mode):
+                            raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+                        with package.open(archive_name, "w") as member:
+                            shutil.copyfileobj(original, member)
+
+                for source, _, _ in deliverables:
+                    relative = source.relative_to(self.clients_root)
+                    if len(relative.parts) < 3 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", relative.parts[0]) \
+                            or not re.fullmatch(r"\d{11}", relative.parts[1]):
+                        raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+                    cursor = self.clients_root
+                    for part in relative.parts:
+                        cursor = cursor / part
+                        if cursor.is_symlink():
+                            raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+                    if not source.resolve(strict=True).is_relative_to(root):
+                        raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+                    archive_name = "/".join((relative.parts[0], *relative.parts[2:]))
+                    add_file(source, archive_name)
+                evidence_root = self.captcha_root.resolve(strict=True) if evidence else None
+                for source, evidence_name in evidence or []:
+                    if Path(evidence_name).name != evidence_name or not re.fullmatch(
+                        r"captura-arca-[a-z0-9-]+-\d{4}-(0[1-9]|1[0-2])\.png", evidence_name
+                    ) or source.is_symlink() or not source.resolve(strict=True).is_relative_to(evidence_root):
+                        raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+                    add_file(source, f"evidencia/{evidence_name}")
+            return staging, archive
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+
     def _batch_evidence(self, result: dict[str, Any]) -> list[tuple[Path, str]]:
         root = self.captcha_root.resolve(strict=True)
         output: list[tuple[Path, str]] = []
@@ -1049,6 +1168,9 @@ class PortalIvaFlow:
             # no la selección conservada desde mensajes anteriores.
             state.selected_clients = verified_clients
             periods = self._period_range(state.period_from, state.period_to)
+            state.batch_total = len(verified_clients) * len(periods)
+            state.progress_label = f"Lote: 0/{state.batch_total} períodos revisados. Conectando con ARCA…"
+            await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
             if self.history is not None:
                 history_run = await self.history.start(
                     telegram_id=int(state.user_id), operation="portal_iva_lote_presentados",
@@ -1067,9 +1189,12 @@ class PortalIvaFlow:
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True, limit=_PIPE_STREAM_LIMIT)
             self.processes[key] = proc
-            ticker = asyncio.create_task(self._ticker(state, time.monotonic()))
+            ticker = asyncio.create_task(self._ticker(state, time.monotonic(), adapter, chat_id, thread_id))
+            async def on_batch_event(kind, payload):
+                await self._batch_progress_event(state, kind, payload)
             await asyncio.wait_for(self._communicate_with_progress(
-                proc, state, adapter=adapter, chat_id=chat_id, thread_id=thread_id), timeout=_RUN_TIMEOUT_SECONDS)
+                proc, state, adapter=adapter, chat_id=chat_id, thread_id=thread_id,
+                batch_event=on_batch_event), timeout=_RUN_TIMEOUT_SECONDS)
             result = self._read_batch_result(result_file)
             database_authoritative = (
                 type(result.get("id_lote")) is int and result["id_lote"] > 0
@@ -1077,24 +1202,38 @@ class PortalIvaFlow:
             if proc.returncode or not result.get("ok"):
                 raise RuntimeError("PORTAL_IVA_BATCH_FAILED")
             source = self._batch_deliverables(result)
-            if source:
-                staging, deliverables = self._stage_delivery_files(source)
+            evidence = self._batch_evidence(result)
+            if source or evidence:
                 state.stage = "delivering"
-                await self._edit_progress(state, "Lote completado. Entregando resultados…")
-                for path, rows, label in deliverables:
-                    delivery = await adapter.send_document(chat_id=str(chat_id), file_path=str(path), file_name=path.name,
-                        caption=label + (f" · {rows} fila(s)" if rows else ""),
+                if len(source) + len(evidence) > 2:
+                    archive_name = f"libros-iva-{state.period_from.replace('-', '')}-a-{state.period_to.replace('-', '')}.zip"
+                    staging, archive = self._stage_batch_archive(source, archive_name, evidence)
+                    await self._edit_progress(state, f"Lote completado. Enviando un ZIP con {len(source) + len(evidence)} archivos…")
+                    delivery = await adapter.send_document(
+                        chat_id=str(chat_id), file_path=str(archive), file_name=archive.name,
+                        caption=(f"{len(source) + len(evidence)} archivos en un ZIP "
+                                 f"({len(source)} resultados, {len(evidence)} capturas). "
+                                 "Los resultados también quedaron sueltos en Documentos."),
                         metadata={"thread_id": thread_id} if thread_id is not None else None)
                     if not delivery.success:
                         raise RuntimeError("PORTAL_IVA_DELIVERY_FAILED")
-            for path, name in self._batch_evidence(result):
-                delivery = await adapter.send_document(
-                    chat_id=str(chat_id), file_path=str(path), file_name=name,
-                    caption="ARCA respondió algo que no esperábamos. Captura para revisión.",
-                    metadata={"thread_id": thread_id} if thread_id is not None else None,
-                )
-                if not delivery.success:
-                    raise RuntimeError("PORTAL_IVA_EVIDENCE_DELIVERY_FAILED")
+                else:
+                    if source:
+                        staging, deliverables = self._stage_delivery_files(source)
+                        await self._edit_progress(state, "Lote completado. Entregando resultados…")
+                        for path, rows, label in deliverables:
+                            delivery = await adapter.send_document(chat_id=str(chat_id), file_path=str(path), file_name=path.name,
+                                caption=label + (f" · {rows} fila(s)" if rows else ""),
+                                metadata={"thread_id": thread_id} if thread_id is not None else None)
+                            if not delivery.success:
+                                raise RuntimeError("PORTAL_IVA_DELIVERY_FAILED")
+                    for path, name in evidence:
+                        delivery = await adapter.send_document(
+                            chat_id=str(chat_id), file_path=str(path), file_name=name,
+                            caption="ARCA respondió algo que no esperábamos. Captura para revisión.",
+                            metadata={"thread_id": thread_id} if thread_id is not None else None)
+                        if not delivery.success:
+                            raise RuntimeError("PORTAL_IVA_EVIDENCE_DELIVERY_FAILED")
             if self.history is not None and history_run is not None and not database_authoritative:
                 for case in result.get("casos", []):
                     item = history_items[(int(case["id_contribuyente"]), str(case["periodo"]))]

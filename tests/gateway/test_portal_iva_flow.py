@@ -1,6 +1,7 @@
 import asyncio
 import json
 import shutil
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -472,6 +473,65 @@ def test_large_unexpected_stdout_line_does_not_kill_batch_or_later_progress():
         assert [edit[0] for edit in state.progress_message.edits] == [
             "Descargando Libro IVA Ventas…",
         ]
+
+    asyncio.run(scenario())
+
+
+def test_batch_events_update_case_counts_without_leaking_event_json():
+    async def scenario():
+        stdout = asyncio.StreamReader()
+        stdout.feed_data(
+            b'PORTAL_IVA_CASE_START:{"id_contribuyente":1,"periodo":"2026-01"}\n'
+            b'PORTAL_IVA_CASE:{"id_contribuyente":1,"periodo":"2026-01","ok":true}\n'
+            b'PORTAL_IVA_CASE:{"id_contribuyente":1,"periodo":"2026-01","ok":true}\n'
+            b'{"ok":true}\n'
+        )
+        stdout.feed_eof()
+        stderr = asyncio.StreamReader()
+        stderr.feed_eof()
+        proc = SimpleNamespace(stdout=stdout, stderr=stderr, wait=AsyncMock(return_value=0))
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running",
+                          operation="descargar-lote", progress_message=FakeMessage(),
+                          selected_clients=[_scope_item()], period_from="2026-01", period_to="2026-02")
+        flow = PortalIvaFlow()
+        state.batch_total = 2
+        events = []
+
+        async def on_event(kind, payload):
+            events.append((kind, payload))
+            await flow._batch_progress_event(state, kind, payload)
+
+        raw, captured = await flow._communicate_with_progress(proc, state, batch_event=on_event)
+        assert raw == b'{"ok":true}\n'
+        assert captured == b""
+        assert state.batch_done == 1
+        assert state.batch_success == 1
+        assert "1/2" in state.progress_label
+        assert len(events) == 3
+
+    asyncio.run(scenario())
+
+
+def test_batch_ticker_sends_periodic_notice_not_only_silent_edits(monkeypatch):
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running",
+                          operation="descargar-lote", progress_message=FakeMessage(),
+                          progress_label="Lote: 2/16 períodos revisados.")
+        ticks = 0
+
+        async def one_tick(_seconds):
+            nonlocal ticks
+            ticks += 1
+            if ticks == 2:
+                state.cancelled = True
+
+        monkeypatch.setattr(asyncio, "sleep", one_tick)
+        monkeypatch.setattr("plugins.platforms.telegram.portal_iva_flow.time.monotonic", lambda: 121)
+        await flow._ticker(state, 0, adapter=adapter, chat_id="10", thread_id=None)
+        adapter._bot.send_message.assert_awaited_once()
+        assert "2/16" in adapter._bot.send_message.await_args.kwargs["text"]
 
     asyncio.run(scenario())
 
@@ -1103,6 +1163,90 @@ def test_batch_deliverables_rejects_hash_mismatch_and_accepts_csv_xlsx_and_f2083
     result["xlsx"][0]["sha256"] = "0" * 64
     with pytest.raises(RuntimeError, match="PORTAL_IVA_DELIVERY_HASH_INVALID"):
         flow._batch_deliverables(result)
+
+
+def test_batch_archive_contains_files_once_without_cuit_in_names(tmp_path):
+    root = tmp_path / "clientes"
+    files = []
+    for slug, cuit in (("uno", "20123456786"), ("dos", "20987654321")):
+        directory = root / slug / cuit / "arca" / "2026" / "01" / "consultas"
+        directory.mkdir(parents=True)
+        for name in ("ventas.csv", "compras.csv"):
+            path = directory / name
+            path.write_text(slug + name, encoding="utf-8")
+            files.append((path, 1, name))
+    evidence_root = tmp_path / "runs"
+    evidence_root.mkdir()
+    capture = evidence_root / "capture.png"
+    capture.write_bytes(b"\x89PNG\r\n\x1a\n")
+    flow = PortalIvaFlow(clients_root=root, captcha_root=evidence_root)
+    staging, archive = flow._stage_batch_archive(
+        files, evidence=[(capture, "captura-arca-uno-2026-01.png")]
+    )
+    try:
+        with zipfile.ZipFile(archive) as package:
+            names = package.namelist()
+            assert len(names) == len(files) + 1 == len(set(names))
+            assert all("20123456786" not in name and "20987654321" not in name for name in names)
+            assert package.read("uno/arca/2026/01/consultas/ventas.csv") == b"unoventas.csv"
+            assert package.read("evidencia/captura-arca-uno-2026-01.png") == b"\x89PNG\r\n\x1a\n"
+        assert all(path.exists() for path, _, _ in files)
+        assert capture.exists()
+    finally:
+        shutil.rmtree(staging)
+
+
+def test_batch_delivery_sends_one_zip_instead_of_individual_files(monkeypatch, tmp_path):
+    async def scenario():
+        root = tmp_path / "clientes"
+        directory = root / "uno" / VALID_CUIT / "arca" / "2026" / "01" / "consultas"
+        directory.mkdir(parents=True)
+        files = []
+        for name in ("ventas.csv", "compras.csv", "f2083.pdf"):
+            path = directory / name
+            path.write_bytes(name.encode())
+            files.append((path, 1, name))
+        flow = PortalIvaFlow(clients_root=root, batch_result_root=tmp_path / "results")
+        flow._query = _scope_query
+        flow._by_id = lambda _item_id, _user_id: [_scope_item()]
+        flow._batch_command = lambda *_args: ["fake"]
+        flow._batch_deliverables = lambda _result: files
+        flow._batch_evidence = lambda _result: []
+        flow._read_batch_result = lambda _path: {
+            "ok": True, "casos": [], "xlsx": [],
+            "resumen": {"completados": 1, "total": 1},
+        }
+
+        class Proc:
+            returncode = 0
+            pid = 4321
+
+        async def subprocess_exec(*_args, **_kwargs):
+            return Proc()
+
+        async def communicate(*_args, **_kwargs):
+            return b"", b""
+
+        async def ticker(*_args, **_kwargs):
+            await asyncio.sleep(60)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
+        flow._communicate_with_progress = communicate
+        flow._ticker = ticker
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running",
+                          operation="descargar-lote", selected_clients=[_scope_item()],
+                          period_from="2026-01", period_to="2026-01",
+                          progress_message=FakeMessage())
+        adapter = FakeAdapter()
+        await flow._run_batch(adapter, "10", None, "key", state)
+
+        adapter.send_document.assert_awaited_once()
+        call = adapter.send_document.await_args.kwargs
+        assert call["file_name"].endswith(".zip")
+        assert "3 archivos" in call["caption"]
+        assert all(path.exists() for path, _, _ in files)
+
+    asyncio.run(scenario())
 
 
 def test_batch_without_presented_periods_has_no_deliverables(tmp_path):
