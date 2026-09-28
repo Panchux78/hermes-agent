@@ -453,7 +453,7 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
         from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
         from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
-        from plugins.platforms.telegram.fiscal_credentials import lookup_connection
+        from plugins.platforms.telegram.fiscal_credentials import lookup_connection, verification_connection
         from plugins.platforms.telegram.contabot_deployment import deployment_paths
 
         extra = self.config.extra
@@ -483,6 +483,7 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         portal_kwargs = {
             "query_connection": lookup_connection,
+            "write_connection": verification_connection,
             "runtime_python": runtime_python,
             "history": bot_run_history,
         }

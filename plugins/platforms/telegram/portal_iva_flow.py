@@ -39,6 +39,7 @@ from plugins.platforms.telegram.fiscal_scope import (
 from plugins.platforms.telegram.fiscal_credentials import (
     lookup_connection,
     sanitized_psql_failure,
+    verification_connection,
     verify_representation,
 )
 
@@ -52,6 +53,8 @@ _CLIENTES_ROOT = Path(os.environ.get("CONTABOT_CLIENTES_ROOT", Path.home() / "cl
 _EXECUTOR = Path(os.environ.get(
     "CONTABOT_PORTAL_IVA_EXECUTOR", Path.home() / "procedimientos/portal-iva/portal_iva.py"
 ))
+_BATCH_EXECUTOR_RAW = os.environ.get("CONTABOT_PORTAL_IVA_BATCH_EXECUTOR")
+_BATCH_EXECUTOR = Path(_BATCH_EXECUTOR_RAW) if _BATCH_EXECUTOR_RAW else None
 _UV = get_hermes_home() / "bin/uv"
 _PERIOD = re.compile(r"(0[1-9]|1[0-2])/[0-9]{4}")
 _STATE_ROOT = Path(os.environ.get(
@@ -95,16 +98,18 @@ class FlowState:
 class PortalIvaFlow:
     """Privileged Telegram flow; credentials are read only by portal_iva.py."""
 
-    def __init__(self, *, executor: Path = _EXECUTOR, uv: Path = _UV,
+    def __init__(self, *, executor: Path = _EXECUTOR, batch_executor: Path | None = _BATCH_EXECUTOR,
+                 uv: Path = _UV,
                  clients_root: Path = _CLIENTES_ROOT, captcha_root: Path = _CAPTCHA_ROOT,
-                 query_connection=None, runtime_python: Path | None = None,
+                 query_connection=None, write_connection=None, runtime_python: Path | None = None,
                  history: BotRunHistory | None = None) -> None:
         # CCMA/SCT reuse only identity lookup, with their restricted connection.
         # Defaults preserve the existing Portal IVA executor and DB connection.
         self.query_connection = query_connection or lookup_connection
+        self.write_connection = write_connection or verification_connection
         self.runtime_python = runtime_python
         self.executor = Path(executor)
-        self.batch_executor = self.executor.with_name("portal_iva_lote.py")
+        self.batch_executor = Path(batch_executor) if batch_executor is not None else self.executor.with_name("portal_iva_lote.py")
         self.uv = Path(uv)
         self.clients_root = Path(clients_root)
         self.captcha_root = Path(captcha_root)
@@ -167,8 +172,9 @@ class PortalIvaFlow:
         except Exception:
             logger.exception("[PORTAL-IVA] terminal rejection could not be persisted")
 
-    def _query(self, sql: str) -> list[dict[str, Any]]:
-        command, environment = self.query_connection()
+    @staticmethod
+    def _run_query(sql: str, connection) -> list[dict[str, Any]]:
+        command, environment = connection()
         run = subprocess.run(
             [*command, "-At", "-v", "VERBOSITY=sqlstate", "-c", sql], env=environment,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False,
@@ -186,6 +192,12 @@ class PortalIvaFlow:
             )
             raise RuntimeError(code)
         return [json.loads(line) for line in run.stdout.splitlines() if line.strip()]
+
+    def _query(self, sql: str) -> list[dict[str, Any]]:
+        return self._run_query(sql, self.query_connection)
+
+    def _write_query(self, sql: str) -> list[dict[str, Any]]:
+        return self._run_query(sql, self.write_connection)
 
     def _scope(self) -> FiscalScope:
         return FiscalScope(self._query, "ARCA")
@@ -206,7 +218,7 @@ class PortalIvaFlow:
             for client in clients for period in periods
         ]}
         encoded = self._sql_scalar(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-        rows = self._query(
+        rows = self._write_query(
             "SELECT console.fn_portal_iva_lote_registrar_telegram("
             f"{int(run_id)},'{periods[0]}-01'::date,'{periods[-1]}-01'::date,"
             f"convert_from(decode('{encoded}','base64'),'UTF8')::jsonb)::text;"
@@ -268,6 +280,21 @@ class PortalIvaFlow:
                     f"start:{getattr(getattr(query, 'message', None), 'message_id', 0)}:{operation}"
                 ),
                 code="base_fiscal_no_disponible", text=text,
+            )
+            return
+        if operation == "descargar-lote" and not self.batch_executor.is_file():
+            await query.answer("El lote de Portal IVA requiere mantenimiento local.")
+            text = (
+                "El lote de Libros IVA no pudo iniciarse porque falta su ejecutor local. "
+                "No se consultó ARCA y no se creó ningún borrador."
+            )
+            await self._send(adapter, chat_id, text, thread_id)
+            await self._reject(
+                user_id=user_id, operation=operation,
+                key_material=(
+                    f"runtime:{getattr(getattr(query, 'message', None), 'message_id', 0)}:{operation}"
+                ),
+                code="ejecutor_lote_no_disponible", text=text,
             )
             return
         self.states[key] = FlowState(

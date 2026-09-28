@@ -93,12 +93,32 @@ def test_psql_failure_diagnostic_exposes_only_sqlstate():
 
 def test_batch_start_explains_why_a_client_may_be_missing():
     async def scenario():
-        flow = PortalIvaFlow()
+        flow = PortalIvaFlow(batch_executor=Path(__file__))
         flow._query = _scope_query
         adapter = FakeAdapter()
         await flow.start(adapter, _query("pi:lote"), "10", None, "7", "descargar-lote")
         message = adapter._bot.send_message.await_args.kwargs["text"]
         assert "Si un cliente no aparece en la lista, su clave de ARCA no está cargada o todavía no fue verificada." in message
+
+    asyncio.run(scenario())
+
+
+def test_batch_start_fails_fast_when_executor_is_missing(tmp_path):
+    async def scenario():
+        history = SimpleNamespace(reject=AsyncMock())
+        flow = PortalIvaFlow(batch_executor=tmp_path / "missing.py", history=history)
+        flow._query = _scope_query
+        adapter = FakeAdapter()
+        callback = _query("pi:lote")
+
+        await flow.start(adapter, callback, "10", None, "7", "descargar-lote")
+
+        assert not flow.states
+        callback.answer.assert_awaited_once_with(
+            "El lote de Portal IVA requiere mantenimiento local."
+        )
+        assert "falta su ejecutor local" in adapter._bot.send_message.await_args.kwargs["text"]
+        assert history.reject.await_args.kwargs["reason_code"] == "ejecutor_lote_no_disponible"
 
     asyncio.run(scenario())
 
@@ -977,9 +997,12 @@ def test_batch_command_is_shell_free_and_contains_every_selected_slug(tmp_path):
 
 
 def test_failed_telegram_batch_is_registered_for_study_notification():
-    flow = PortalIvaFlow()
+    flow = PortalIvaFlow(
+        query_connection=lambda: (_ for _ in ()).throw(AssertionError("lookup must stay read-only")),
+        write_connection=lambda: ([], {}),
+    )
     captured = []
-    flow._query = lambda sql: captured.append(sql) or [51]
+    flow._write_query = lambda sql: captured.append(sql) or [51]
     flow._register_terminal_batch(
         321,
         [{"id": 1}, {"id": 2}],
@@ -993,6 +1016,24 @@ def test_failed_telegram_batch_is_registered_for_study_notification():
     payload = json.loads(base64.b64decode(encoded))
     assert len(payload["casos"]) == 4
     assert {case["estado"] for case in payload["casos"]} == {"fallido"}
+
+
+def test_terminal_batch_uses_verification_connection(monkeypatch):
+    lookup = lambda: (["lookup"], {"PGAPPNAME": "lookup"})
+    verification = lambda: (["verification"], {"PGAPPNAME": "verification"})
+    flow = PortalIvaFlow(query_connection=lookup, write_connection=verification)
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append((command, kwargs["env"]))
+        return SimpleNamespace(returncode=0, stdout="51\n", stderr="")
+
+    monkeypatch.setattr("subprocess.run", run)
+    flow._register_terminal_batch(
+        321, [{"id": 1}], ["2026-05"], "fallido", "lote_no_completado"
+    )
+    assert seen[0][0][0] == "verification"
+    assert seen[0][1]["PGAPPNAME"] == "verification"
 
 
 def test_batch_deliverables_rejects_hash_mismatch_and_accepts_csv_xlsx_and_f2083(tmp_path):

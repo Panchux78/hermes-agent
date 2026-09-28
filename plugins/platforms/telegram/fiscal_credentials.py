@@ -27,6 +27,12 @@ def lookup_connection():
     return psql_invocation('lookup')
 
 
+def verification_connection():
+    """Constrained write capability for verified fiscal state transitions."""
+    from contabot_pg import psql_invocation
+    return psql_invocation('verification')
+
+
 class FiscalDatabaseError(RuntimeError):
     """Safe local diagnostic, never a password, SQL statement or raw stderr."""
 
