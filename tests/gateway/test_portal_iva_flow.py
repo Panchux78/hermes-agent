@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -936,15 +937,15 @@ def test_batch_revalidates_execute_permission_immediately_before_running():
     asyncio.run(scenario())
 
 
-def test_batch_revalidation_replaces_stale_binding_before_command(monkeypatch):
+def test_batch_revalidation_replaces_stale_binding_before_command(monkeypatch, tmp_path):
     async def scenario():
-        flow = PortalIvaFlow()
+        flow = PortalIvaFlow(batch_result_root=tmp_path / "results")
         flow._query = _scope_query
         stale = _scope_item(access_id=10, representative_id=20)
         fresh = _scope_item(access_id=88, representative_id=77)
         flow._by_id = lambda _item_id, _user_id: [fresh]
         captured = {}
-        flow._batch_command = lambda state, _run_id: captured.setdefault(
+        flow._batch_command = lambda state, _run_id, _result_file: captured.setdefault(
             "selected", [(item["access_id"], item["representative_id"])
                          for item in state.selected_clients]) or ["fake"]
 
@@ -954,9 +955,12 @@ def test_batch_revalidation_replaces_stale_binding_before_command(monkeypatch):
         async def subprocess_exec(*_args, **_kwargs): return Proc()
         monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
         async def communicate(*_args, **_kwargs):
-            return (json.dumps({"ok": True, "casos": [], "xlsx": [],
-                                "resumen": {"completados": 0, "total": 0}}).encode(), b"")
+            return (b"diagnostico previo\nsalida que no es JSON\n", b"")
         flow._communicate_with_progress = communicate
+        flow._read_batch_result = lambda _path: {
+            "ok": True, "casos": [], "xlsx": [],
+            "resumen": {"completados": 0, "total": 0},
+        }
         async def ticker(*_args): await asyncio.sleep(60)
         flow._ticker = ticker
         flow._batch_deliverables = lambda _result: []
@@ -987,13 +991,29 @@ def test_batch_command_is_shell_free_and_contains_every_selected_slug(tmp_path):
                       selected_clients=[{"slug": "uno", "access_id": 10, "representative_id": 20},
                                         {"slug": "dos", "access_id": 11, "representative_id": 21}],
                       period_from="2026-05", period_to="2026-06")
-    assert flow._batch_command(state, 321) == [
+    result_file = tmp_path / "result.json"
+    assert flow._batch_command(state, 321, result_file) == [
         str(uv), "run", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
         "python3", str(batch_executor),
         "--caso", "uno:2026-05:10:20", "--caso", "uno:2026-06:10:20",
         "--caso", "dos:2026-05:11:21", "--caso", "dos:2026-06:11:21",
-        "--captcha-stdin", "--history-run-id", "321",
+        "--captcha-stdin", "--result-file", str(result_file),
+        "--history-run-id", "321",
     ]
+
+
+def test_batch_result_file_is_authoritative_and_rejects_insecure_metadata(tmp_path):
+    root = tmp_path / "results"
+    root.mkdir(mode=0o700)
+    flow = PortalIvaFlow(batch_result_root=root)
+    directory, target = flow._new_batch_result_target()
+    target.write_text('{"ok":true,"id_lote":51}\n', encoding="utf-8")
+    target.chmod(0o600)
+    assert flow._read_batch_result(target) == {"ok": True, "id_lote": 51}
+    target.chmod(0o640)
+    with pytest.raises(RuntimeError, match="RESULT_FILE_INVALID"):
+        flow._read_batch_result(target)
+    shutil.rmtree(directory)
 
 
 def test_failed_telegram_batch_is_registered_for_study_notification():

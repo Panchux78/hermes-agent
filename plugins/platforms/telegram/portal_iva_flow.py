@@ -62,6 +62,7 @@ _STATE_ROOT = Path(os.environ.get(
 ))
 _LOCK_ROOT = _STATE_ROOT / "portal-iva/telegram-locks"
 _CAPTCHA_ROOT = _STATE_ROOT / "portal-iva/runs"
+_BATCH_RESULT_ROOT = _STATE_ROOT / "portal-iva/telegram-results"
 _RUN_TIMEOUT_SECONDS = 1800
 _CAPTCHA_TIMEOUT_SECONDS = 300
 _CAPTCHA_SOLUTION = re.compile(r"[A-Za-z0-9]{4,20}")
@@ -101,6 +102,7 @@ class PortalIvaFlow:
     def __init__(self, *, executor: Path = _EXECUTOR, batch_executor: Path | None = _BATCH_EXECUTOR,
                  uv: Path = _UV,
                  clients_root: Path = _CLIENTES_ROOT, captcha_root: Path = _CAPTCHA_ROOT,
+                 batch_result_root: Path = _BATCH_RESULT_ROOT,
                  query_connection=None, write_connection=None, runtime_python: Path | None = None,
                  history: BotRunHistory | None = None) -> None:
         # CCMA/SCT reuse only identity lookup, with their restricted connection.
@@ -113,6 +115,7 @@ class PortalIvaFlow:
         self.uv = Path(uv)
         self.clients_root = Path(clients_root)
         self.captcha_root = Path(captcha_root)
+        self.batch_result_root = Path(batch_result_root)
         self.states: dict[str, FlowState] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
         self.tasks: dict[str, asyncio.Task] = {}
@@ -526,7 +529,8 @@ class PortalIvaFlow:
             "--operacion", operation, "--captcha-stdin",
         ]
 
-    def _batch_command(self, state: FlowState, history_run_id: int | None = None) -> list[str]:
+    def _batch_command(self, state: FlowState, history_run_id: int | None,
+                       result_file: Path) -> list[str]:
         if not self.batch_executor.is_file() or not state.period_from or not state.period_to:
             raise RuntimeError("PORTAL_IVA_BATCH_RUNTIME_UNAVAILABLE")
         command = [str(self.uv), "run", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
@@ -540,10 +544,42 @@ class PortalIvaFlow:
                     f"{client['slug']}:{period}:{int(client['access_id'])}:"
                     f"{int(client['representative_id'])}"
                 )]
-        command += ["--captcha-stdin"]
+        command += ["--captcha-stdin", "--result-file", str(result_file)]
         if history_run_id is not None:
             command += ["--history-run-id", str(history_run_id)]
         return command
+
+    def _new_batch_result_target(self) -> tuple[Path, Path]:
+        root = self.batch_result_root
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = root.lstat()
+        if (root.is_symlink() or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid() or info.st_mode & 0o077):
+            raise RuntimeError("PORTAL_IVA_RESULT_ROOT_INVALID")
+        directory = Path(tempfile.mkdtemp(prefix="run-", dir=root))
+        directory.chmod(0o700)
+        return directory, directory / "result.json"
+
+    @staticmethod
+    def _read_batch_result(path: Path) -> dict[str, Any]:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(descriptor)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o077 or info.st_size > 4 * 1024 * 1024):
+                raise RuntimeError("PORTAL_IVA_RESULT_FILE_INVALID")
+            chunks: list[bytes] = []
+            remaining = info.st_size + 1
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 64 * 1024))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+        finally:
+            os.close(descriptor)
+        return PortalIvaFlow._parse_result(raw)
 
     def _acquire_execution_lock(self, key: str) -> None:
         if fcntl is None:
@@ -942,7 +978,9 @@ class PortalIvaFlow:
         return output
 
     async def _run_batch(self, adapter, chat_id: Any, thread_id: Any, key: str, state: FlowState) -> None:
-        proc = None; ticker = None; staging = None; history_run = None
+        proc = None; ticker = None; staging = None; history_run = None; result_dir = None
+        result: dict[str, Any] | None = None
+        database_authoritative = False
         history_items: dict[tuple[int, str], int] = {}
         history_finished: set[int] = set()
         verified_clients: list[dict[str, Any]] = []
@@ -993,13 +1031,18 @@ class PortalIvaFlow:
                 pairs = [(client, period) for client in verified_clients for period in periods]
                 history_items = {(int(client["id"]), period): int(item["id_item"])
                                  for (client, period), item in zip(pairs, items, strict=True)}
-            proc = await asyncio.create_subprocess_exec(*self._batch_command(state, history_run.run_id if history_run else None), stdin=asyncio.subprocess.PIPE,
+            result_dir, result_file = self._new_batch_result_target()
+            proc = await asyncio.create_subprocess_exec(*self._batch_command(
+                state, history_run.run_id if history_run else None, result_file), stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
             self.processes[key] = proc
             ticker = asyncio.create_task(self._ticker(state, time.monotonic()))
-            raw, _ = await asyncio.wait_for(self._communicate_with_progress(
+            await asyncio.wait_for(self._communicate_with_progress(
                 proc, state, adapter=adapter, chat_id=chat_id, thread_id=thread_id), timeout=_RUN_TIMEOUT_SECONDS)
-            result = self._parse_result(raw)
+            result = self._read_batch_result(result_file)
+            database_authoritative = (
+                type(result.get("id_lote")) is int and result["id_lote"] > 0
+            )
             if proc.returncode or not result.get("ok"):
                 raise RuntimeError("PORTAL_IVA_BATCH_FAILED")
             source = self._batch_deliverables(result)
@@ -1021,7 +1064,7 @@ class PortalIvaFlow:
                 )
                 if not delivery.success:
                     raise RuntimeError("PORTAL_IVA_EVIDENCE_DELIVERY_FAILED")
-            if self.history is not None and history_run is not None:
+            if self.history is not None and history_run is not None and not database_authoritative:
                 for case in result.get("casos", []):
                     item = history_items[(int(case["id_contribuyente"]), str(case["periodo"]))]
                     success = bool(case.get("ok"))
@@ -1045,27 +1088,38 @@ class PortalIvaFlow:
             await self._edit_progress(state, f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos. Resultados enviados.{suffix}")
         except asyncio.CancelledError:
             if proc and proc.returncode is None: await self._terminate_process(proc)
-            if history_run is not None and verified_clients and periods:
+            if not database_authoritative and history_run is not None and verified_clients and periods:
                 try:
                     await asyncio.to_thread(self._register_terminal_batch, history_run.run_id, verified_clients,
                                             periods, "cancelado", "cancelado_por_usuario")
+                    database_authoritative = True
                 except Exception:
                     logger.exception("[PORTAL-IVA] lote cancelado no pudo registrarse para aviso")
-            await finish_remaining("cancelado", "cancelado_por_usuario", "El usuario canceló el lote.")
+            if not database_authoritative:
+                try:
+                    await finish_remaining("cancelado", "cancelado_por_usuario", "El usuario canceló el lote.")
+                except Exception:
+                    logger.exception("[PORTAL-IVA] lote cancelado no pudo cerrar historial")
             raise
         except Exception:
             logger.exception("[PORTAL-IVA] lote no completado")
-            if history_run is not None and verified_clients and periods:
+            if not database_authoritative and history_run is not None and verified_clients and periods:
                 try:
                     await asyncio.to_thread(self._register_terminal_batch, history_run.run_id, verified_clients,
                                             periods, "fallido", "lote_no_completado")
+                    database_authoritative = True
                 except Exception:
                     logger.exception("[PORTAL-IVA] lote fallido no pudo registrarse para aviso")
-            await finish_remaining("fallido", "lote_no_completado", "El lote no pudo completarse.")
+            if not database_authoritative:
+                try:
+                    await finish_remaining("fallido", "lote_no_completado", "El lote no pudo completarse.")
+                except Exception:
+                    logger.exception("[PORTAL-IVA] lote fallido no pudo cerrar historial")
             await self._edit_progress(state, "No pude completar el lote. El avance y la evidencia quedaron preservados.")
         finally:
             if ticker: ticker.cancel()
             if staging: shutil.rmtree(staging, ignore_errors=True)
+            if result_dir: shutil.rmtree(result_dir, ignore_errors=True)
             self.processes.pop(key, None)
 
     async def _run(self, adapter, chat_id: Any, thread_id: Any, key: str, state: FlowState) -> None:
