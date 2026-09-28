@@ -8,6 +8,7 @@ import pytest
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.menu_buttons import (
     BRAILLE_PATTERN_BLANK,
+    HAIR_SPACE,
     MENU_ALIGNMENT_PADDING,
     aligned_menu_label,
 )
@@ -265,6 +266,7 @@ def test_arca_query_fixed_buttons_have_explicit_visual_compensation():
     expected = {
         "Vencimientos": (12, 0),
         "CSV de períodos presentados": (1, 0),
+        "Lote de Libros IVA": (7, 3),
         "CCMA Obligaciones y pagos": (1, 3),
         "SCT Estado de cumplimiento": (1, 2),
     }
@@ -274,6 +276,10 @@ def test_arca_query_fixed_buttons_have_explicit_visual_compensation():
 
     label = aligned_menu_label("arca_consultar", "📅", "Vencimientos")
     assert label == f"📅  Vencimientos{BRAILLE_PATTERN_BLANK * 12}"
+    batch_label = aligned_menu_label("arca_consultar", "📚", "Lote de Libros IVA")
+    assert batch_label == (
+        f"📚  Lote de Libros IVA{HAIR_SPACE * 3}{BRAILLE_PATTERN_BLANK * 7}"
+    )
 
 
 def test_pdf_tools_are_separate_from_accounting_preparation(monkeypatch):
