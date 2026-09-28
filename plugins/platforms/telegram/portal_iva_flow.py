@@ -38,6 +38,7 @@ from plugins.platforms.telegram.fiscal_scope import (
 )
 from plugins.platforms.telegram.fiscal_credentials import (
     lookup_connection,
+    sanitized_psql_failure,
     verify_representation,
 )
 
@@ -169,11 +170,21 @@ class PortalIvaFlow:
     def _query(self, sql: str) -> list[dict[str, Any]]:
         command, environment = self.query_connection()
         run = subprocess.run(
-            [*command, "-At", "-c", sql], env=environment,
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False,
+            [*command, "-At", "-v", "VERBOSITY=sqlstate", "-c", sql], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False,
         )
         if run.returncode:
-            raise RuntimeError("PORTAL_IVA_DATABASE_UNAVAILABLE")
+            sqlstate, first_line = sanitized_psql_failure(run.stderr)
+            logger.error(
+                "[PORTAL-IVA] database query failed returncode=%s sqlstate=%s first_line=%s",
+                run.returncode, sqlstate, first_line,
+            )
+            code = (
+                "PORTAL_IVA_DATABASE_PERMISSIONS"
+                if sqlstate == "42501"
+                else "PORTAL_IVA_DATABASE_UNAVAILABLE"
+            )
+            raise RuntimeError(code)
         return [json.loads(line) for line in run.stdout.splitlines() if line.strip()]
 
     def _scope(self) -> FiscalScope:
@@ -235,6 +246,29 @@ class PortalIvaFlow:
             return
         except PermissionError:
             await query.answer("No tenés permiso para ejecutar operaciones fiscales.")
+            return
+        except Exception as exc:
+            code = self._safe_error_code(exc)
+            logger.error("[PORTAL-IVA] start failed code=%s", code)
+            try:
+                await query.answer("Portal IVA no pudo iniciarse.")
+            except Exception:
+                logger.info("[PORTAL-IVA] callback answer failed after start error")
+            text = (
+                "Portal IVA no pudo iniciarse porque no se pudo acceder a la "
+                "configuración fiscal local. No se consultó ARCA; requiere mantenimiento local."
+            )
+            try:
+                await self._send(adapter, chat_id, text, thread_id)
+            except Exception:
+                logger.info("[PORTAL-IVA] user notification failed after start error")
+            await self._reject(
+                user_id=user_id, operation=operation,
+                key_material=(
+                    f"start:{getattr(getattr(query, 'message', None), 'message_id', 0)}:{operation}"
+                ),
+                code="base_fiscal_no_disponible", text=text,
+            )
             return
         self.states[key] = FlowState(
             user_id=user_id, nonce=uuid.uuid4().hex[:10], stage="client", operation=operation,

@@ -10,6 +10,17 @@ from plugins.platforms.telegram.fiscal_scope import assert_marked, mark_verified
 logger = logging.getLogger(__name__)
 
 
+def sanitized_psql_failure(stderr: str | bytes) -> tuple[str, str]:
+    """Return a log-safe SQLSTATE and first-line category, never raw stderr."""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    match = re.search(r"\b([0-9][0-9A-Z]{4})\b", stderr or "")
+    if match:
+        sqlstate = match.group(1)
+        return sqlstate, f"ERROR {sqlstate}"
+    return "unknown", "psql_error"
+
+
 def lookup_connection():
     """Same portable profile, without privileged lookup fallback."""
     from contabot_pg import psql_invocation

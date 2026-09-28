@@ -653,6 +653,7 @@ class TestRegisterHandlers:
     _HANDLER_ATTRS = (
         "_handle_text_message", "_handle_command", "_handle_location_message",
         "_handle_media_message", "_handle_callback_query", "_on_platform_update",
+        "_handle_application_error",
     )
 
     def _adapter_with_handlers(self) -> TelegramAdapter:
@@ -680,6 +681,7 @@ class TestRegisterHandlers:
         assert len(calls) == 7
         assert len([c for c in calls if c.kwargs.get("group") == 99]) == 1
         assert len([c for c in calls if not c.kwargs]) == 6
+        app.add_error_handler.assert_called_once_with(a._handle_application_error)
 
     def test_rebuild_re_registers_observer(self):
         """A second call on a fresh app (e.g. a future rebuild) re-registers
@@ -693,6 +695,29 @@ class TestRegisterHandlers:
 
         assert rebuilt_app.add_handler.call_count == 7
         assert len(self._observer_calls(rebuilt_app)) == 1
+        rebuilt_app.add_error_handler.assert_called_once_with(a._handle_application_error)
+
+    def test_unhandled_callback_error_is_acknowledged_and_reported(self):
+        async def scenario():
+            adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+            adapter._bot = SimpleNamespace(send_message=AsyncMock())
+            adapter._bot_run_history = SimpleNamespace(reject=AsyncMock())
+            query = SimpleNamespace(
+                answer=AsyncMock(),
+                from_user=SimpleNamespace(id=7),
+                message=SimpleNamespace(chat_id=10, message_id=20),
+            )
+
+            await adapter._handle_application_error(
+                SimpleNamespace(callback_query=query),
+                SimpleNamespace(error=RuntimeError("private detail")),
+            )
+
+            query.answer.assert_awaited_once_with(text="No pude completar esta acción.")
+            assert "error técnico" in adapter._bot.send_message.await_args.kwargs["text"]
+            assert adapter._bot_run_history.reject.await_args.kwargs["reason_code"] == "error_tecnico"
+
+        asyncio.run(scenario())
 
     def test_transient_init_rebuild_uses_shared_registration(self, monkeypatch):
         """The real connect retry path must call the shared registration method

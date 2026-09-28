@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from plugins.platforms.telegram.portal_iva_flow import FlowState, PortalIvaFlow
+from plugins.platforms.telegram.fiscal_credentials import sanitized_psql_failure
 
 
 VALID_CUIT = "20123456786"
@@ -59,6 +60,35 @@ def test_actor_without_execute_permission_is_rejected_before_state_creation():
         assert not flow.states
         callback.answer.assert_awaited_once_with("No tenés permiso para ejecutar operaciones fiscales.")
     asyncio.run(scenario())
+
+
+def test_database_failure_at_start_answers_and_records_rejection():
+    async def scenario():
+        history = SimpleNamespace(reject=AsyncMock())
+        flow = PortalIvaFlow(history=history)
+        adapter = FakeAdapter()
+        flow._query = lambda _sql: (_ for _ in ()).throw(
+            RuntimeError("PORTAL_IVA_DATABASE_PERMISSIONS")
+        )
+        callback = _query("pi:lote")
+
+        await flow.start(adapter, callback, "10", None, "7", "descargar-lote")
+
+        assert not flow.states
+        callback.answer.assert_awaited_once_with("Portal IVA no pudo iniciarse.")
+        assert "configuración fiscal local" in adapter._bot.send_message.await_args.kwargs["text"]
+        assert history.reject.await_args.kwargs["reason_code"] == "base_fiscal_no_disponible"
+
+    asyncio.run(scenario())
+
+
+def test_psql_failure_diagnostic_exposes_only_sqlstate():
+    assert sanitized_psql_failure("ERROR:  42501: permission denied for function secret\n") == (
+        "42501", "ERROR 42501"
+    )
+    assert sanitized_psql_failure("password=hunter2\nprivate SQL") == (
+        "unknown", "psql_error"
+    )
 
 
 def test_batch_start_explains_why_a_client_may_be_missing():

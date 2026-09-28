@@ -35,6 +35,7 @@ from plugins.platforms.telegram.fiscal_scope import (
 )
 from plugins.platforms.telegram.fiscal_credentials import (
     lookup_connection,
+    sanitized_psql_failure,
     verify_representation,
 )
 
@@ -137,10 +138,15 @@ class AgipDdjjFlow:
     def _query(self, sql: str) -> list[dict[str, Any]]:
         command, environment = self.query_connection()
         run = subprocess.run(
-            [*command, "-At", "-c", sql], env=environment,
+            [*command, "-At", "-v", "VERBOSITY=sqlstate", "-c", sql], env=environment,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False,
         )
         if run.returncode:
+            sqlstate, first_line = sanitized_psql_failure(run.stderr)
+            logger.error(
+                "[AGIP-DDJJ] database query failed returncode=%s sqlstate=%s first_line=%s",
+                run.returncode, sqlstate, first_line,
+            )
             raise RuntimeError("No se pudo consultar la base canónica")
         return [json.loads(line) for line in run.stdout.splitlines() if line.strip()]
 

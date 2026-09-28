@@ -3169,6 +3169,32 @@ class TelegramAdapter(BasePlatformAdapter):
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
         # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
         app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
+        app.add_error_handler(self._handle_application_error)
+
+    async def _handle_application_error(self, update, context) -> None:
+        """Acknowledge callbacks even when an unexpected PTB error escapes."""
+        error = getattr(context, "error", None)
+        logger.error(
+            "[%s] unhandled Telegram update error type=%s",
+            self.name, type(error).__name__ if error is not None else "unknown",
+        )
+        query = getattr(update, "callback_query", None)
+        if query is None:
+            return
+        message = "No pude completar esta acción por un error técnico. El diagnóstico quedó registrado."
+        try:
+            await query.answer(text="No pude completar esta acción.")
+        except Exception:
+            logger.info("[%s] failed to acknowledge callback after application error", self.name)
+        chat_id = getattr(getattr(query, "message", None), "chat_id", None)
+        if chat_id is not None and getattr(self, "_bot", None) is not None:
+            try:
+                await self._bot.send_message(chat_id=chat_id, text=message)
+            except Exception:
+                logger.info("[%s] failed to notify callback user after application error", self.name)
+        await self._record_bot_rejection(
+            query, operation="telegram_callback", code="error_tecnico", text=message,
+        )
 
     async def _build_ptb_requests(self) -> tuple:
         """Build the (general, getUpdates) HTTPXRequest pair: fallback-IP transport, explicit proxy, or
