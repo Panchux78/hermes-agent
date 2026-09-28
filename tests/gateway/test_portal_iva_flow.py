@@ -452,6 +452,30 @@ def test_progress_merged_by_xvfb_is_removed_from_stdout_and_reported():
     asyncio.run(scenario())
 
 
+def test_large_unexpected_stdout_line_does_not_kill_batch_or_later_progress():
+    async def scenario():
+        stdout = asyncio.StreamReader(limit=64 * 1024)
+        stdout.feed_data(b"x" * 250_000 + b"\nPORTAL_IVA_PROGRESS:descargar_ventas\n"
+                         b"PORTAL_IVA_RESULT_READY\n")
+        stdout.feed_eof()
+        stderr = asyncio.StreamReader(limit=64 * 1024)
+        stderr.feed_eof()
+        proc = SimpleNamespace(stdout=stdout, stderr=stderr, wait=AsyncMock(return_value=0))
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running",
+                          progress_message=FakeMessage())
+
+        raw, captured_stderr = await PortalIvaFlow()._communicate_with_progress(proc, state)
+
+        assert len(raw) > 250_000
+        assert raw.endswith(b"PORTAL_IVA_RESULT_READY\n")
+        assert captured_stderr == b""
+        assert [edit[0] for edit in state.progress_message.edits] == [
+            "Descargando Libro IVA Ventas…",
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_captcha_is_sent_and_reply_resumes_same_process(tmp_path):
     async def scenario():
         nonce = "a" * 16

@@ -64,6 +64,8 @@ _LOCK_ROOT = _STATE_ROOT / "portal-iva/telegram-locks"
 _CAPTCHA_ROOT = _STATE_ROOT / "portal-iva/runs"
 _BATCH_RESULT_ROOT = _STATE_ROOT / "portal-iva/telegram-results"
 _RUN_TIMEOUT_SECONDS = 1800
+_PIPE_STREAM_LIMIT = 256 * 1024
+_PIPE_CAPTURE_LIMIT = 4 * 1024 * 1024
 _CAPTCHA_TIMEOUT_SECONDS = 300
 _CAPTCHA_SOLUTION = re.compile(r"[A-Za-z0-9]{4,20}")
 _UNVERIFIED_KEY_HELP = (
@@ -737,10 +739,10 @@ class PortalIvaFlow:
 
         async def consume(stream) -> bytes:
             captured = bytearray()
-            while True:
-                line = await stream.readline()
-                if not line:
-                    return bytes(captured)
+            pending = bytearray()
+            discarding = False
+
+            async def handle_line(line: bytes) -> None:
                 captcha_marker = b"PORTAL_IVA_CAPTCHA:"
                 if line.startswith(captcha_marker):
                     if adapter is None:
@@ -749,7 +751,7 @@ class PortalIvaFlow:
                         adapter, proc, state, chat_id, thread_id,
                         line[len(captcha_marker):].strip(),
                     )
-                    continue
+                    return
                 marker = b"PORTAL_IVA_PROGRESS:"
                 if line.startswith(marker):
                     stage = line[len(marker):].decode("ascii", errors="ignore").strip()
@@ -757,8 +759,36 @@ class PortalIvaFlow:
                     if text:
                         state.progress_label = text
                         await self._edit_progress(state, text, keyboard=self._cancel_keyboard(state.nonce))
-                    continue
-                captured.extend(line)
+                    return
+                if len(captured) + len(line) <= _PIPE_CAPTURE_LIMIT:
+                    captured.extend(line)
+
+            while True:
+                chunk = await stream.read(65536)
+                if not chunk:
+                    if pending and not discarding:
+                        await handle_line(bytes(pending))
+                    return bytes(captured)
+                offset = 0
+                while offset < len(chunk):
+                    end = chunk.find(b"\n", offset)
+                    if discarding:
+                        if end < 0:
+                            break
+                        discarding = False
+                        offset = end + 1
+                        continue
+                    if end < 0:
+                        pending.extend(chunk[offset:])
+                        if len(pending) > _PIPE_CAPTURE_LIMIT:
+                            pending.clear()
+                            discarding = True
+                        break
+                    pending.extend(chunk[offset:end + 1])
+                    if len(pending) <= _PIPE_CAPTURE_LIMIT:
+                        await handle_line(bytes(pending))
+                    pending.clear()
+                    offset = end + 1
 
         stdout_task = asyncio.create_task(consume(proc.stdout))
         stderr_task = asyncio.create_task(consume(proc.stderr))
@@ -1034,7 +1064,8 @@ class PortalIvaFlow:
             result_dir, result_file = self._new_batch_result_target()
             proc = await asyncio.create_subprocess_exec(*self._batch_command(
                 state, history_run.run_id if history_run else None, result_file), stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                start_new_session=True, limit=_PIPE_STREAM_LIMIT)
             self.processes[key] = proc
             ticker = asyncio.create_task(self._ticker(state, time.monotonic()))
             await asyncio.wait_for(self._communicate_with_progress(
@@ -1192,6 +1223,7 @@ class PortalIvaFlow:
             proc = await asyncio.create_subprocess_exec(
                 *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, start_new_session=True,
+                limit=_PIPE_STREAM_LIMIT,
             )
             self.processes[key] = proc
             if state.cancelled:
