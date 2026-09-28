@@ -697,7 +697,7 @@ class PortalIvaFlow:
         detail = f" ({'; '.join(notes)})" if notes else ""
         display_name = " ".join(str(client.get("nombre") or client["slug"]).split())
         state.progress_label = (
-            f"▎ Se descargaron {downloaded}/{total} archivos de {display_name}{detail}"
+            f"Se descargaron {downloaded}/{total} archivos de {display_name}{detail}"
         )
         await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
 
