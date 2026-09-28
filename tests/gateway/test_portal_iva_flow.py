@@ -498,7 +498,8 @@ def test_batch_events_update_case_counts_without_leaking_event_json():
         proc = SimpleNamespace(stdout=stdout, stderr=stderr, wait=AsyncMock(return_value=0))
         state = FlowState(user_id="7", nonce="a" * 10, stage="running",
                           operation="descargar-lote", progress_message=FakeMessage(),
-                          selected_clients=[_scope_item(), _scope_item(id=2, slug="dos")],
+                          selected_clients=[_scope_item(nombre="Empresa Uno SA"),
+                                            _scope_item(id=2, slug="dos", nombre="Empresa Dos SRL")],
                           period_from="2026-01", period_to="2026-02", batch_months=2)
         flow = PortalIvaFlow()
         events = []
@@ -511,13 +512,13 @@ def test_batch_events_update_case_counts_without_leaking_event_json():
         assert raw == b'{"ok":true}\n'
         assert captured == b""
         assert [edit[0] for edit in state.progress_message.edits] == [
-            "▎ Se descargaron 0/4 archivos de uno",
-            "▎ Se descargaron 1/4 archivos de uno",
-            "▎ Se descargaron 2/4 archivos de uno",
-            "▎ Se descargaron 2/3 archivos de uno (02/2026 sin libro presentado)",
-            "▎ Se descargaron 2/2 archivos de uno (02/2026 sin libro presentado)",
-            "▎ Se descargaron 0/4 archivos de dos (Ventas 01/2026: error)",
-            "▎ Se descargaron 1/4 archivos de dos (Ventas 01/2026: error)",
+            "▎ Se descargaron 0/4 archivos de Empresa Uno SA",
+            "▎ Se descargaron 1/4 archivos de Empresa Uno SA",
+            "▎ Se descargaron 2/4 archivos de Empresa Uno SA",
+            "▎ Se descargaron 2/3 archivos de Empresa Uno SA (02/2026 sin libro presentado)",
+            "▎ Se descargaron 2/2 archivos de Empresa Uno SA (02/2026 sin libro presentado)",
+            "▎ Se descargaron 0/4 archivos de Empresa Dos SRL (Ventas 01/2026: error)",
+            "▎ Se descargaron 1/4 archivos de Empresa Dos SRL (Ventas 01/2026: error)",
         ]
         assert len(events) == 7
         assert all(edit[1] is not None for edit in state.progress_message.edits)
@@ -531,7 +532,7 @@ def test_batch_file_progress_only_edits_existing_message():
         adapter = FakeAdapter()
         state = FlowState(user_id="7", nonce="a" * 10, stage="running",
                           operation="descargar-lote", progress_message=FakeMessage(),
-                          selected_clients=[_scope_item()], period_from="2026-01",
+                          selected_clients=[_scope_item(nombre="Empresa Uno SA")], period_from="2026-01",
                           period_to="2026-01", batch_months=1)
         for book in ("ventas", "compras"):
             await flow._batch_progress_event(state, "file", {
@@ -539,10 +540,39 @@ def test_batch_file_progress_only_edits_existing_message():
                 "estado": "descargado",
             })
         assert [edit[0] for edit in state.progress_message.edits] == [
-            "▎ Se descargaron 1/2 archivos de uno",
-            "▎ Se descargaron 2/2 archivos de uno",
+            "▎ Se descargaron 1/2 archivos de Empresa Uno SA",
+            "▎ Se descargaron 2/2 archivos de Empresa Uno SA",
         ]
         adapter._bot.send_message.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+def test_batch_progress_groups_months_without_book_and_keeps_error_visible():
+    async def scenario():
+        flow = PortalIvaFlow()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running",
+                          operation="descargar-lote", progress_message=FakeMessage(),
+                          selected_clients=[_scope_item(nombre="Empresa Uno SA")],
+                          period_from="2026-01", period_to="2026-05", batch_months=5)
+        for month in ("01", "02", "03"):
+            for book in ("ventas", "compras"):
+                await flow._batch_progress_event(state, "file", {
+                    "id_contribuyente": 1, "periodo": f"2026-{month}",
+                    "tipo": book, "estado": "sin_libro",
+                })
+        await flow._batch_progress_event(state, "file", {
+            "id_contribuyente": 1, "periodo": "2026-04",
+            "tipo": "ventas", "estado": "error",
+        })
+        await flow._batch_progress_event(state, "file", {
+            "id_contribuyente": 1, "periodo": "2026-04",
+            "tipo": "compras", "estado": "descargado",
+        })
+        assert state.progress_message.edits[-1][0] == (
+            "▎ Se descargaron 1/4 archivos de Empresa Uno SA "
+            "(sin libro presentado: 01, 02 y 03/2026; Ventas 04/2026: error)"
+        )
 
     asyncio.run(scenario())
 

@@ -670,11 +670,34 @@ class PortalIvaFlow:
         total = state.batch_months * 2 - sum(value == "sin_libro" for value in files.values())
         no_books = sorted({period for (period, _), status in files.items() if status == "sin_libro"})
         errors = sorted((period, book) for (period, book), status in files.items() if status == "error")
-        notes = [f"{item[5:]}/{item[:4]} sin libro presentado" for item in no_books]
-        notes.extend(f"{book.capitalize()} {item[5:]}/{item[:4]}: error" for item, book in errors)
+
+        def compact_periods(periods: list[str]) -> str:
+            by_year: dict[str, list[str]] = {}
+            for item in periods:
+                by_year.setdefault(item[:4], []).append(item[5:])
+            groups = []
+            for year, months in by_year.items():
+                if len(months) == 1:
+                    groups.append(f"{months[0]}/{year}")
+                else:
+                    groups.append(f"{', '.join(months[:-1])} y {months[-1]}/{year}")
+            return "; ".join(groups)
+
+        notes = []
+        if len(no_books) == 1:
+            notes.append(f"{compact_periods(no_books)} sin libro presentado")
+        elif no_books:
+            notes.append(f"sin libro presentado: {compact_periods(no_books)}")
+        for book in ("ventas", "compras"):
+            periods = [item for item, item_book in errors if item_book == book]
+            if len(periods) == 1:
+                notes.append(f"{book.capitalize()} {compact_periods(periods)}: error")
+            elif periods:
+                notes.append(f"error en {book.capitalize()}: {compact_periods(periods)}")
         detail = f" ({'; '.join(notes)})" if notes else ""
+        display_name = " ".join(str(client.get("nombre") or client["slug"]).split())
         state.progress_label = (
-            f"▎ Se descargaron {downloaded}/{total} archivos de {client['slug']}{detail}"
+            f"▎ Se descargaron {downloaded}/{total} archivos de {display_name}{detail}"
         )
         await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
 
