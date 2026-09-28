@@ -482,8 +482,14 @@ def test_batch_events_update_case_counts_without_leaking_event_json():
         stdout = asyncio.StreamReader()
         stdout.feed_data(
             b'PORTAL_IVA_CASE_START:{"id_contribuyente":1,"periodo":"2026-01"}\n'
-            b'PORTAL_IVA_CASE:{"id_contribuyente":1,"periodo":"2026-01","ok":true}\n'
-            b'PORTAL_IVA_CASE:{"id_contribuyente":1,"periodo":"2026-01","ok":true}\n'
+            b'PORTAL_IVA_FILE:{"id_contribuyente":1,"periodo":"2026-01","tipo":"ventas","estado":"descargado"}\n'
+            b'PORTAL_IVA_PROGRESS:descargar_compras\n'
+            b'PORTAL_IVA_FILE:{"id_contribuyente":1,"periodo":"2026-01","tipo":"compras","estado":"descargado"}\n'
+            b'PORTAL_IVA_FILE:{"id_contribuyente":1,"periodo":"2026-02","tipo":"ventas","estado":"sin_libro"}\n'
+            b'PORTAL_IVA_FILE:{"id_contribuyente":1,"periodo":"2026-02","tipo":"compras","estado":"sin_libro"}\n'
+            b'PORTAL_IVA_FILE:{"id_contribuyente":2,"periodo":"2026-01","tipo":"ventas","estado":"error"}\n'
+            b'PORTAL_IVA_FILE:{"id_contribuyente":2,"periodo":"2026-01","tipo":"compras","estado":"descargado"}\n'
+            b'PORTAL_IVA_CASE:{"id_contribuyente":2,"periodo":"2026-01","ok":true}\n'
             b'{"ok":true}\n'
         )
         stdout.feed_eof()
@@ -492,9 +498,9 @@ def test_batch_events_update_case_counts_without_leaking_event_json():
         proc = SimpleNamespace(stdout=stdout, stderr=stderr, wait=AsyncMock(return_value=0))
         state = FlowState(user_id="7", nonce="a" * 10, stage="running",
                           operation="descargar-lote", progress_message=FakeMessage(),
-                          selected_clients=[_scope_item()], period_from="2026-01", period_to="2026-02")
+                          selected_clients=[_scope_item(), _scope_item(id=2, slug="dos")],
+                          period_from="2026-01", period_to="2026-02", batch_months=2)
         flow = PortalIvaFlow()
-        state.batch_total = 2
         events = []
 
         async def on_event(kind, payload):
@@ -504,34 +510,39 @@ def test_batch_events_update_case_counts_without_leaking_event_json():
         raw, captured = await flow._communicate_with_progress(proc, state, batch_event=on_event)
         assert raw == b'{"ok":true}\n'
         assert captured == b""
-        assert state.batch_done == 1
-        assert state.batch_success == 1
-        assert "1/2" in state.progress_label
-        assert len(events) == 3
+        assert [edit[0] for edit in state.progress_message.edits] == [
+            "▎ Se descargaron 0/4 archivos de uno",
+            "▎ Se descargaron 1/4 archivos de uno",
+            "▎ Se descargaron 2/4 archivos de uno",
+            "▎ Se descargaron 2/3 archivos de uno (02/2026 sin libro presentado)",
+            "▎ Se descargaron 2/2 archivos de uno (02/2026 sin libro presentado)",
+            "▎ Se descargaron 0/4 archivos de dos (Ventas 01/2026: error)",
+            "▎ Se descargaron 1/4 archivos de dos (Ventas 01/2026: error)",
+        ]
+        assert len(events) == 7
+        assert all(edit[1] is not None for edit in state.progress_message.edits)
 
     asyncio.run(scenario())
 
 
-def test_batch_ticker_sends_periodic_notice_not_only_silent_edits(monkeypatch):
+def test_batch_file_progress_only_edits_existing_message():
     async def scenario():
         flow = PortalIvaFlow()
         adapter = FakeAdapter()
         state = FlowState(user_id="7", nonce="a" * 10, stage="running",
                           operation="descargar-lote", progress_message=FakeMessage(),
-                          progress_label="Lote: 2/16 períodos revisados.")
-        ticks = 0
-
-        async def one_tick(_seconds):
-            nonlocal ticks
-            ticks += 1
-            if ticks == 2:
-                state.cancelled = True
-
-        monkeypatch.setattr(asyncio, "sleep", one_tick)
-        monkeypatch.setattr("plugins.platforms.telegram.portal_iva_flow.time.monotonic", lambda: 121)
-        await flow._ticker(state, 0, adapter=adapter, chat_id="10", thread_id=None)
-        adapter._bot.send_message.assert_awaited_once()
-        assert "2/16" in adapter._bot.send_message.await_args.kwargs["text"]
+                          selected_clients=[_scope_item()], period_from="2026-01",
+                          period_to="2026-01", batch_months=1)
+        for book in ("ventas", "compras"):
+            await flow._batch_progress_event(state, "file", {
+                "id_contribuyente": 1, "periodo": "2026-01", "tipo": book,
+                "estado": "descargado",
+            })
+        assert [edit[0] for edit in state.progress_message.edits] == [
+            "▎ Se descargaron 1/2 archivos de uno",
+            "▎ Se descargaron 2/2 archivos de uno",
+        ]
+        adapter._bot.send_message.assert_not_awaited()
 
     asyncio.run(scenario())
 
@@ -1194,6 +1205,76 @@ def test_batch_archive_contains_files_once_without_cuit_in_names(tmp_path):
         assert capture.exists()
     finally:
         shutil.rmtree(staging)
+
+
+def test_batch_120_mb_is_split_into_three_valid_zips(tmp_path):
+    root = tmp_path / "clientes"
+    files = []
+    for slug in ("uno", "dos", "tres"):
+        directory = root / slug / VALID_CUIT / "arca" / "2026" / "01" / "consultas"
+        directory.mkdir(parents=True)
+        path = directory / f"{slug}.csv"
+        with path.open("wb") as handle:
+            handle.truncate(40_000_000)
+        files.append((path, 1, slug))
+    flow = PortalIvaFlow(clients_root=root)
+    archives, skipped = flow._stage_batch_archives(files, "libros-iva-202601-a-202601.zip", [])
+    try:
+        assert skipped == []
+        assert len(archives) == 3
+        for index, (_, archive) in enumerate(archives, 1):
+            assert archive.name == f"libros-iva-202601-a-202601-parte-{index}-de-3.zip"
+            assert archive.stat().st_size <= 45_000_000
+            with zipfile.ZipFile(archive) as package:
+                assert package.testzip() is None
+                assert len(package.namelist()) == 1
+    finally:
+        for staging, _ in archives:
+            shutil.rmtree(staging)
+
+
+def test_batch_60_mb_file_is_omitted_with_notice_not_error(monkeypatch, tmp_path):
+    async def scenario():
+        root = tmp_path / "clientes"
+        directory = root / "uno" / VALID_CUIT / "arca" / "2026" / "01" / "consultas"
+        directory.mkdir(parents=True)
+        huge = directory / "ventas.csv"
+        with huge.open("wb") as handle:
+            handle.truncate(60_000_000)
+        flow = PortalIvaFlow(clients_root=root, batch_result_root=tmp_path / "results")
+        flow._query = _scope_query
+        flow._by_id = lambda _item_id, _user_id: [_scope_item()]
+        flow._batch_command = lambda *_args: ["fake"]
+        flow._batch_deliverables = lambda _result: [(huge, 1, "uno · 2026-01 · ventas")]
+        flow._batch_evidence = lambda _result: []
+        flow._read_batch_result = lambda _path: {
+            "ok": True, "casos": [], "xlsx": [],
+            "resumen": {"completados": 1, "total": 1},
+        }
+
+        class Proc:
+            returncode = 0
+            pid = 4321
+
+        async def subprocess_exec(*_args, **_kwargs):
+            return Proc()
+
+        async def communicate(*_args, **_kwargs):
+            return b"", b""
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
+        flow._communicate_with_progress = communicate
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running",
+                          operation="descargar-lote", selected_clients=[_scope_item()],
+                          period_from="2026-01", period_to="2026-01",
+                          progress_message=FakeMessage())
+        adapter = FakeAdapter()
+        await flow._run_batch(adapter, "10", None, "key", state)
+        adapter.send_document.assert_not_awaited()
+        assert "quedaron en Documentos y en el panel" in state.progress_message.edits[-1][0]
+        assert huge.exists()
+
+    asyncio.run(scenario())
 
 
 def test_batch_delivery_sends_one_zip_instead_of_individual_files(monkeypatch, tmp_path):

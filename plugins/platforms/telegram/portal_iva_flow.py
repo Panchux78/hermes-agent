@@ -67,6 +67,9 @@ _BATCH_RESULT_ROOT = _STATE_ROOT / "portal-iva/telegram-results"
 _RUN_TIMEOUT_SECONDS = 1800
 _PIPE_STREAM_LIMIT = 256 * 1024
 _PIPE_CAPTURE_LIMIT = 4 * 1024 * 1024
+_TELEGRAM_ZIP_LIMIT = 45_000_000
+_TELEGRAM_FILE_LIMIT = 50_000_000
+_ZIP_PACK_BUDGET = 44_000_000
 _CAPTCHA_TIMEOUT_SECONDS = 300
 _CAPTCHA_SOLUTION = re.compile(r"[A-Za-z0-9]{4,20}")
 _UNVERIFIED_KEY_HELP = (
@@ -97,13 +100,8 @@ class FlowState:
     selected_clients: list[dict[str, Any]] = field(default_factory=list)
     period_from: str | None = None
     period_to: str | None = None
-    batch_total: int = 0
-    batch_done: int = 0
-    batch_success: int = 0
-    batch_unavailable: int = 0
-    batch_failed: int = 0
-    batch_active: str = ""
-    batch_seen: set[tuple[int, str]] = field(default_factory=set)
+    batch_months: int = 0
+    batch_files: dict[int, dict[tuple[str, str], str]] = field(default_factory=dict)
 
 
 class PortalIvaFlow:
@@ -637,24 +635,13 @@ class PortalIvaFlow:
         except Exception:
             logger.warning("[PORTAL-IVA] progress edit failed")
 
-    async def _ticker(self, state: FlowState, started: float, adapter=None,
-                      chat_id: Any = None, thread_id: Any = None) -> None:
-        next_batch_notice = 120
+    async def _ticker(self, state: FlowState, started: float) -> None:
         while not state.cancelled:
             await asyncio.sleep(10)
             if state.cancelled:
                 return
             elapsed = int(time.monotonic() - started)
             await self._edit_progress(state, f"{state.progress_label} {elapsed} s", keyboard=self._cancel_keyboard(state.nonce))
-            if state.operation == "descargar-lote" and adapter is not None and elapsed >= next_batch_notice:
-                next_batch_notice = elapsed + 120
-                try:
-                    await self._send(adapter, chat_id,
-                                     f"El lote sigue en curso ({elapsed // 60} min). {state.progress_label}",
-                                     thread_id, self._cancel_keyboard(state.nonce))
-                except Exception:
-                    logger.warning("[PORTAL-IVA] batch notice failed")
-
     async def _batch_progress_event(self, state: FlowState, kind: str, payload: dict[str, Any]) -> None:
         try:
             contributor_id = int(payload["id_contribuyente"])
@@ -668,24 +655,26 @@ class PortalIvaFlow:
             return
         if state.period_to and period > state.period_to:
             return
-        key = (contributor_id, period)
-        if kind == "case_start":
-            state.batch_active = f"{client['slug']} · {period[5:]}/{period[:4]}"
-        elif kind == "case" and key not in state.batch_seen:
-            state.batch_seen.add(key)
-            state.batch_done += 1
-            if payload.get("ok") is True:
-                state.batch_success += 1
-            elif payload.get("estado") in {"no_disponible", "no_presentado"}:
-                state.batch_unavailable += 1
-            else:
-                state.batch_failed += 1
-        else:
+        files = state.batch_files.setdefault(contributor_id, {})
+        if kind == "file":
+            book, status = payload.get("tipo"), payload.get("estado")
+            if book not in {"ventas", "compras"} or status not in {"descargado", "sin_libro", "error"}:
+                return
+            key = (period, book)
+            if key in files:
+                return
+            files[key] = status
+        elif kind != "case_start":
             return
+        downloaded = sum(value == "descargado" for value in files.values())
+        total = state.batch_months * 2 - sum(value == "sin_libro" for value in files.values())
+        no_books = sorted({period for (period, _), status in files.items() if status == "sin_libro"})
+        errors = sorted((period, book) for (period, book), status in files.items() if status == "error")
+        notes = [f"{item[5:]}/{item[:4]} sin libro presentado" for item in no_books]
+        notes.extend(f"{book.capitalize()} {item[5:]}/{item[:4]}: error" for item, book in errors)
+        detail = f" ({'; '.join(notes)})" if notes else ""
         state.progress_label = (
-            f"Lote: {state.batch_done}/{state.batch_total} períodos revisados "
-            f"({state.batch_success} con libros, {state.batch_unavailable} sin libro, "
-            f"{state.batch_failed} con error). Ahora: {state.batch_active}."
+            f"▎ Se descargaron {downloaded}/{total} archivos de {client['slug']}{detail}"
         )
         await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
 
@@ -809,13 +798,13 @@ class PortalIvaFlow:
                 if line.startswith(marker):
                     stage = line[len(marker):].decode("ascii", errors="ignore").strip()
                     text = self._progress_text(stage)
-                    if text:
+                    if text and not (batch_event is not None and any(state.batch_files.values())):
                         state.progress_label = text
                         await self._edit_progress(state, text, keyboard=self._cancel_keyboard(state.nonce))
                     return
                 if batch_event is not None:
                     for prefix, kind in ((b"PORTAL_IVA_CASE_START:", "case_start"),
-                                         (b"PORTAL_IVA_CASE:", "case")):
+                                         (b"PORTAL_IVA_FILE:", "file")):
                         if line.startswith(prefix):
                             if len(line) <= 65536:
                                 try:
@@ -825,7 +814,7 @@ class PortalIvaFlow:
                                 if isinstance(payload, dict):
                                     await batch_event(kind, payload)
                             return
-                    if line.startswith(b"PORTAL_IVA_GROUP:"):
+                    if line.startswith((b"PORTAL_IVA_GROUP:", b"PORTAL_IVA_CASE:")):
                         return
                 if len(captured) + len(line) <= _PIPE_CAPTURE_LIMIT:
                     captured.extend(line)
@@ -1108,6 +1097,86 @@ class PortalIvaFlow:
             shutil.rmtree(staging, ignore_errors=True)
             raise
 
+    def _stage_batch_archives(self, deliverables: list[tuple[Path, int, str]],
+                              name: str, evidence: list[tuple[Path, str]]) -> tuple[list[tuple[Path, Path]], list[str]]:
+        """Pack by client, then period; never hand Telegram a ZIP over 45 MB."""
+        if Path(name).name != name or not name.endswith(".zip"):
+            raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+        groups: dict[tuple[str, str], list[tuple[str, Any]]] = {}
+        skipped: list[str] = []
+        for record in deliverables:
+            source = record[0]
+            relative = source.relative_to(self.clients_root)
+            if len(relative.parts) < 5:
+                raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+            client = relative.parts[0]
+            period = "/".join(relative.parts[3:5])
+            if source.stat().st_size > _TELEGRAM_FILE_LIMIT:
+                skipped.append(f"{client}: {source.name}")
+                continue
+            groups.setdefault((client, period), []).append(("file", record))
+        for record in evidence:
+            source, evidence_name = record
+            match = re.fullmatch(r"captura-arca-([a-z0-9-]+)-(\d{4})-(\d{2})\.png", evidence_name)
+            if not match:
+                raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+            if source.stat().st_size > _TELEGRAM_FILE_LIMIT:
+                skipped.append(f"{match.group(1)}: {evidence_name}")
+                continue
+            groups.setdefault((match.group(1), f"{match.group(2)}/{match.group(3)}"), []).append(("evidence", record))
+
+        batches: list[list[tuple[str, Any]]] = []
+        current: list[tuple[str, Any]] = []
+        current_size = 0
+        current_client = None
+        for (client, _period), records in sorted(groups.items()):
+            group_size = sum(item[0].stat().st_size for _, item in records)
+            if current and (client != current_client or current_size + group_size > _ZIP_PACK_BUDGET):
+                batches.append(current)
+                current, current_size = [], 0
+            for record in records:
+                size = record[1][0].stat().st_size
+                if current and current_size + size > _ZIP_PACK_BUDGET:
+                    batches.append(current)
+                    current, current_size = [], 0
+                current.append(record)
+                current_size += size
+                current_client = client
+        if current:
+            batches.append(current)
+
+        archives: list[tuple[Path, Path]] = []
+        def stage(records: list[tuple[str, Any]]) -> None:
+            files = [item for kind, item in records if kind == "file"]
+            captures = [item for kind, item in records if kind == "evidence"]
+            staging, archive = self._stage_batch_archive(files, name, captures)
+            if archive.stat().st_size <= _TELEGRAM_ZIP_LIMIT:
+                archives.append((staging, archive))
+                return
+            shutil.rmtree(staging)
+            if len(records) == 1:
+                skipped.append(f"{records[0][1][0].name}")
+                return
+            midpoint = len(records) // 2
+            stage(records[:midpoint])
+            stage(records[midpoint:])
+        try:
+            for batch in batches:
+                stage(batch)
+            if len(archives) > 1:
+                count = len(archives)
+                renamed = []
+                for number, (staging, archive) in enumerate(archives, 1):
+                    target = staging / f"{name[:-4]}-parte-{number}-de-{count}.zip"
+                    archive.rename(target)
+                    renamed.append((staging, target))
+                archives = renamed
+            return archives, skipped
+        except Exception:
+            for staging, _ in archives:
+                shutil.rmtree(staging, ignore_errors=True)
+            raise
+
     def _batch_evidence(self, result: dict[str, Any]) -> list[tuple[Path, str]]:
         root = self.captcha_root.resolve(strict=True)
         output: list[tuple[Path, str]] = []
@@ -1127,7 +1196,9 @@ class PortalIvaFlow:
         return output
 
     async def _run_batch(self, adapter, chat_id: Any, thread_id: Any, key: str, state: FlowState) -> None:
-        proc = None; ticker = None; staging = None; history_run = None; result_dir = None
+        proc = None; staging = None; history_run = None; result_dir = None
+        archive_staging: list[Path] = []
+        skipped_delivery: list[str] = []
         result: dict[str, Any] | None = None
         database_authoritative = False
         history_items: dict[tuple[int, str], int] = {}
@@ -1168,8 +1239,8 @@ class PortalIvaFlow:
             # no la selección conservada desde mensajes anteriores.
             state.selected_clients = verified_clients
             periods = self._period_range(state.period_from, state.period_to)
-            state.batch_total = len(verified_clients) * len(periods)
-            state.progress_label = f"Lote: 0/{state.batch_total} períodos revisados. Conectando con ARCA…"
+            state.batch_months = len(periods)
+            state.progress_label = "Conectando con ARCA para consultar los Libros IVA…"
             await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
             if self.history is not None:
                 history_run = await self.history.start(
@@ -1189,7 +1260,6 @@ class PortalIvaFlow:
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True, limit=_PIPE_STREAM_LIMIT)
             self.processes[key] = proc
-            ticker = asyncio.create_task(self._ticker(state, time.monotonic(), adapter, chat_id, thread_id))
             async def on_batch_event(kind, payload):
                 await self._batch_progress_event(state, kind, payload)
             await asyncio.wait_for(self._communicate_with_progress(
@@ -1207,19 +1277,31 @@ class PortalIvaFlow:
                 state.stage = "delivering"
                 if len(source) + len(evidence) > 2:
                     archive_name = f"libros-iva-{state.period_from.replace('-', '')}-a-{state.period_to.replace('-', '')}.zip"
-                    staging, archive = self._stage_batch_archive(source, archive_name, evidence)
-                    await self._edit_progress(state, f"Lote completado. Enviando un ZIP con {len(source) + len(evidence)} archivos…")
-                    delivery = await adapter.send_document(
-                        chat_id=str(chat_id), file_path=str(archive), file_name=archive.name,
-                        caption=(f"{len(source) + len(evidence)} archivos en un ZIP "
-                                 f"({len(source)} resultados, {len(evidence)} capturas). "
-                                 "Los resultados también quedaron sueltos en Documentos."),
-                        metadata={"thread_id": thread_id} if thread_id is not None else None)
-                    if not delivery.success:
-                        raise RuntimeError("PORTAL_IVA_DELIVERY_FAILED")
+                    archives, skipped_delivery = self._stage_batch_archives(source, archive_name, evidence)
+                    archive_staging.extend(folder for folder, _ in archives)
+                    await self._edit_progress(state, f"Lote completado. Enviando {len(archives)} ZIP(s)…")
+                    for part_number, (_, archive) in enumerate(archives, 1):
+                        caption = (f"{len(source) + len(evidence) - len(skipped_delivery)} archivos del lote en un ZIP. "
+                                   if len(archives) == 1 else
+                                   f"Resultados del lote, parte {part_number} de {len(archives)}. ")
+                        delivery = await adapter.send_document(
+                            chat_id=str(chat_id), file_path=str(archive), file_name=archive.name,
+                            caption=caption + "Los archivos también quedaron sueltos en Documentos.",
+                            metadata={"thread_id": thread_id} if thread_id is not None else None)
+                        if not delivery.success:
+                            raise RuntimeError("PORTAL_IVA_DELIVERY_FAILED")
                 else:
                     if source:
-                        staging, deliverables = self._stage_delivery_files(source)
+                        sendable = []
+                        for record in source:
+                            if record[0].stat().st_size > _TELEGRAM_FILE_LIMIT:
+                                skipped_delivery.append(f"{record[2]}: {record[0].name}")
+                            else:
+                                sendable.append(record)
+                        if sendable:
+                            staging, deliverables = self._stage_delivery_files(sendable)
+                        else:
+                            deliverables = []
                         await self._edit_progress(state, "Lote completado. Entregando resultados…")
                         for path, rows, label in deliverables:
                             delivery = await adapter.send_document(chat_id=str(chat_id), file_path=str(path), file_name=path.name,
@@ -1228,6 +1310,9 @@ class PortalIvaFlow:
                             if not delivery.success:
                                 raise RuntimeError("PORTAL_IVA_DELIVERY_FAILED")
                     for path, name in evidence:
+                        if path.stat().st_size > _TELEGRAM_FILE_LIMIT:
+                            skipped_delivery.append(name)
+                            continue
                         delivery = await adapter.send_document(
                             chat_id=str(chat_id), file_path=str(path), file_name=name,
                             caption="ARCA respondió algo que no esperábamos. Captura para revisión.",
@@ -1255,7 +1340,24 @@ class PortalIvaFlow:
                 for case in pending[:8]
             )
             suffix = f"\n{detail}" if detail else ""
-            await self._edit_progress(state, f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos. Resultados enviados.{suffix}")
+            delivered = sum(value == "descargado" for files in state.batch_files.values() for value in files.values())
+            expected = (len(verified_clients) * len(periods) * 2
+                        - sum(value == "sin_libro" for files in state.batch_files.values()
+                              for value in files.values()))
+            errors = sum(value == "error" for files in state.batch_files.values()
+                         for value in files.values())
+            omitted = (f"\nNo se enviaron {len(skipped_delivery)} archivo(s) que exceden el límite de Telegram; "
+                       "quedaron en Documentos y en el panel." if skipped_delivery else "")
+            if not source and not evidence:
+                delivery_text = "Sin archivos para enviar."
+            elif len(skipped_delivery) == len(source) + len(evidence):
+                delivery_text = "Sin archivos enviados por Telegram."
+            else:
+                delivery_text = "Resultados enviados."
+            await self._edit_progress(state,
+                f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos; "
+                f"{delivered}/{expected} libros descargados, {errors} con error. "
+                f"{delivery_text}{omitted}{suffix}")
         except asyncio.CancelledError:
             if proc and proc.returncode is None: await self._terminate_process(proc)
             if not database_authoritative and history_run is not None and verified_clients and periods:
@@ -1287,8 +1389,9 @@ class PortalIvaFlow:
                     logger.exception("[PORTAL-IVA] lote fallido no pudo cerrar historial")
             await self._edit_progress(state, "No pude completar el lote. El avance y la evidencia quedaron preservados.")
         finally:
-            if ticker: ticker.cancel()
             if staging: shutil.rmtree(staging, ignore_errors=True)
+            for folder in archive_staging:
+                shutil.rmtree(folder, ignore_errors=True)
             if result_dir: shutil.rmtree(result_dir, ignore_errors=True)
             self.processes.pop(key, None)
 
