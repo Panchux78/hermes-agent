@@ -61,6 +61,10 @@ _CAPTCHA_ROOT = _STATE_ROOT / "portal-iva/runs"
 _RUN_TIMEOUT_SECONDS = 1800
 _CAPTCHA_TIMEOUT_SECONDS = 300
 _CAPTCHA_SOLUTION = re.compile(r"[A-Za-z0-9]{4,20}")
+_UNVERIFIED_KEY_HELP = (
+    "Si un cliente no aparece en la lista, su clave de ARCA no está cargada "
+    "o todavía no fue verificada."
+)
 
 
 @dataclass
@@ -238,8 +242,11 @@ class PortalIvaFlow:
             created_at=time.monotonic(),
         )
         await query.answer("Portal IVA")
+        prompt = CONTRIBUTOR_PROMPT
+        if operation == "descargar-lote":
+            prompt += "\n\n" + _UNVERIFIED_KEY_HELP
         await self._send(
-            adapter, chat_id, CONTRIBUTOR_PROMPT, thread_id,
+            adapter, chat_id, prompt, thread_id,
             self._cancel_keyboard(self.states[key].nonce),
         )
 
@@ -294,6 +301,8 @@ class PortalIvaFlow:
                 await self._reject(user_id=user_id, operation=state.operation, key_material=f"stale:{state.nonce}:{selected_id}", code="contribuyente_no_disponible", text="El contribuyente elegido ya no estaba autorizado.")
                 return True
             found = await asyncio.to_thread(self._by_id, selected_id, state.user_id)
+            if state.operation == "descargar-lote":
+                found = [item for item in found if item.get("access_id")]
         except Exception:
             await query.answer("No pude validar la opción en la base. Probá nuevamente.")
             await self._reject(user_id=user_id, operation=state.operation, key_material=f"database:{state.nonce}:{select.group(2)}", code="base_no_disponible", text="La base canónica no permitió validar el contribuyente antes de ejecutar.")
@@ -392,6 +401,8 @@ class PortalIvaFlow:
             return True
         try:
             candidates = await asyncio.to_thread(self._search, message.text or "", state.user_id)
+            if state.operation == "descargar-lote":
+                candidates = [item for item in candidates if item.get("access_id")]
         except InvalidCuit:
             await self._send(adapter, chat_id, "El CUIT ingresado no es válido.", thread_id)
             return True
@@ -401,7 +412,10 @@ class PortalIvaFlow:
         offer = ContributorOffer.from_rows(candidates)
         state.candidates = offer.candidates
         if offer.status == "empty":
-            await self._send(adapter, chat_id, "No hay un contribuyente ARCA activo con acceso y representación válidos que coincida. Probá con nombre, CUIT o slug.", thread_id)
+            empty_text = "No hay un contribuyente ARCA activo con acceso y representación válidos que coincida. Probá con nombre, CUIT o slug."
+            if state.operation == "descargar-lote":
+                empty_text += "\n\n" + _UNVERIFIED_KEY_HELP
+            await self._send(adapter, chat_id, empty_text, thread_id)
             if len(re.sub(r"\D", "", message.text or "")) == 11:
                 await self._reject(user_id=user_id, operation=state.operation, key_material=f"unauthorized:{state.nonce}", code="contribuyente_no_autorizado", text="El CUIT solicitado no tenía acceso y representación ARCA autorizados.")
             return True

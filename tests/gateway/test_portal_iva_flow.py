@@ -61,6 +61,18 @@ def test_actor_without_execute_permission_is_rejected_before_state_creation():
     asyncio.run(scenario())
 
 
+def test_batch_start_explains_why_a_client_may_be_missing():
+    async def scenario():
+        flow = PortalIvaFlow()
+        flow._query = _scope_query
+        adapter = FakeAdapter()
+        await flow.start(adapter, _query("pi:lote"), "10", None, "7", "descargar-lote")
+        message = adapter._bot.send_message.await_args.kwargs["text"]
+        assert "Si un cliente no aparece en la lista, su clave de ARCA no está cargada o todavía no fue verificada." in message
+
+    asyncio.run(scenario())
+
+
 class FakeMessage:
     def __init__(self):
         self.edits = []
@@ -796,6 +808,23 @@ def test_batch_selects_multiple_contributors_then_asks_for_month_range(monkeypat
         assert await flow.text(adapter, _message("06/2026"))
         assert state.stage == "running"
         assert state.period_from == "2026-05" and state.period_to == "2026-06"
+
+    asyncio.run(scenario())
+
+
+def test_batch_search_hides_candidates_without_verified_access():
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="client", operation="descargar-lote")
+        flow.states[flow._key("10", None, "7")] = state
+        flow._search = lambda _term, _user: [
+            _scope_item(id=1, access_id=10),
+            _scope_item(id=2, nombre="Sin verificar", slug="sin-verificar", access_id=None),
+        ]
+        assert await flow.text(adapter, _message("cliente"))
+        assert set(state.candidates) == {1}
+        assert state.selected_clients[0]["id"] == 1
 
     asyncio.run(scenario())
 
