@@ -51,6 +51,8 @@ def test_book_contains_same_normalized_condition_not_pdf():
          "estado": "verificado", "consultado_en": None},
         {"nombre": "Otro", "slug": "otro", "condicion": None, "periodo_estado": None,
          "estado": "error", "consultado_en": None},
+        {"nombre": "Pendiente", "slug": "pendiente", "condicion": None, "periodo_estado": None,
+         "estado": "pendiente", "consultado_en": None},
     ])
     try:
         assert Path(path).stat().st_mode & 0o077 == 0
@@ -58,5 +60,7 @@ def test_book_contains_same_normalized_condition_not_pdf():
         assert sheet["C2"].value == "Responsable inscripto"
         assert sheet["D2"].value == "05/2026"
         assert sheet["C3"].value == "No se pudo verificar"
+        assert sheet["C4"].value == "Todavía no se consultó"
+        assert sheet["E4"].value == "Sin consultar"
     finally:
         path.unlink(missing_ok=True)

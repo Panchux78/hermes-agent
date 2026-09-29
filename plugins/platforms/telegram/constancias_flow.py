@@ -165,8 +165,11 @@ class ConstanciasFlow:
         for row in rows:
             period = row.get("periodo_estado")
             since = f"{period[4:]}/{period[:4]}" if period and len(period) == 6 else None
-            sheet.append([row["nombre"], row["slug"], labels.get(row.get("condicion"), "No se pudo verificar"),
-                          since, row["estado"], row.get("consultado_en")])
+            state = row["estado"]
+            situation = ("Todavía no se consultó" if state == "pendiente" else
+                         labels.get(row.get("condicion"), "No se pudo verificar"))
+            sheet.append([row["nombre"], row["slug"], situation,
+                          since, "Sin consultar" if state == "pendiente" else state, row.get("consultado_en")])
         handle = tempfile.NamedTemporaryFile(prefix="constancias-", suffix=".xlsx", delete=False)
         try:
             path = Path(handle.name)
