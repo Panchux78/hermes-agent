@@ -27,6 +27,7 @@ MENU_ALIGNMENT_PADDING = {
     ("arca_consultar", "Vencimientos"): (12, 0),
     ("arca_consultar", "CSV de períodos presentados"): (1, 0),
     ("arca_consultar", "Lote de Libros IVA"): (7, 3),
+    ("arca_consultar", "Constancias"): (13, 0),
     ("arca_consultar", "CCMA Obligaciones y pagos"): (1, 3),
     ("arca_consultar", "SCT Estado de cumplimiento"): (1, 2),
     ("vencimientos_formato", "Excel"): (14, 0),

@@ -452,6 +452,7 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow
         from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
         from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
+        from plugins.platforms.telegram.constancias_flow import ConstanciasFlow
         from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
         from plugins.platforms.telegram.fiscal_credentials import lookup_connection, verification_connection
         from plugins.platforms.telegram.contabot_deployment import deployment_paths
@@ -493,6 +494,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._vencimientos_flow = VencimientosFlow(
             runtime_python=runtime_python
         )
+        self._constancias_flow = ConstanciasFlow()
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection, runtime_python=runtime_python,
             **({"executor": portal_executor} if portal_executor is not None else {}),
@@ -995,6 +997,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 ],
                 [InlineKeyboardButton(aligned_menu_label(page, "📚", "Lote de Libros IVA"), callback_data="pi:lote")],
+                [InlineKeyboardButton(aligned_menu_label(page, "🪪", "Constancias"), callback_data="ci:start")],
                 [InlineKeyboardButton(aligned_menu_label(page, "📊", "CCMA Obligaciones y pagos"), callback_data="fq:ccma")],
                 [InlineKeyboardButton(aligned_menu_label(page, "📋", "SCT Estado de cumplimiento"), callback_data="fq:sct")],
             ]
@@ -4843,6 +4846,17 @@ class TelegramAdapter(BasePlatformAdapter):
             ):
                 return
 
+        if data.startswith("ci:"):
+            if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para consultar constancias."):
+                return
+            if str(cb["chat_type"]).lower() != "private":
+                await query.answer(text="Estas consultas se realizan por privado.")
+                return
+            if await self._constancias_flow.callback(
+                self, query, data, cb["chat_id"], cb["thread_id"], str(query.from_user.id)
+            ):
+                return
+
         # --- Protección y desbloqueo determinista de PDFs ---
         if data.startswith("ps:"):
             caller_id = str(getattr(query.from_user, "id", ""))
@@ -6475,6 +6489,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if await self._portal_iva_flow.text(self, msg):
             return
         if await self._vencimientos_flow.text(self, msg):
+            return
+        if await self._constancias_flow.text(self, msg):
             return
         fiscal_flow = getattr(self, "_fiscal_query_flow", None)
         if fiscal_flow is not None and await fiscal_flow.text(self, msg):
