@@ -11,6 +11,29 @@ from plugins.platforms.telegram.contributor_selector import ContributorOffer
 from plugins.platforms.telegram import contributor_selector
 
 
+def test_portfolio_button_is_only_rendered_with_authorized_study():
+    with patch("plugins.platforms.telegram.constancias_flow.InlineKeyboardMarkup", lambda rows: rows), \
+         patch("plugins.platforms.telegram.constancias_flow.InlineKeyboardButton",
+               lambda text, callback_data: SimpleNamespace(callback_data=callback_data)):
+        hidden = ConstanciasFlow._choice_keyboard("nonce", False)
+        shown = ConstanciasFlow._choice_keyboard("nonce", True)
+    assert not any(button.callback_data.startswith("ci:portfolio") for row in hidden for button in row)
+    assert any(button.callback_data.startswith("ci:portfolio") for row in shown for button in row)
+
+
+def test_new_start_does_not_replace_an_unanswered_pdf_offer():
+    async def run():
+        flow = ConstanciasFlow()
+        key = flow._key(55, None, "12345")
+        state = State("nonce", "12345", 0.0, stage="pdf_offer", job_id=44)
+        flow.states[key] = state
+        query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
+        assert await flow.callback(None, query, "ci:start", 55, None, "12345")
+        assert flow.states[key] is state
+        query.edit_message_text.assert_not_awaited()
+    asyncio.run(run())
+
+
 def test_search_keeps_study_binding_and_standard_chooser():
     rows = [
         {"id": 1, "nombre": "Ejemplo A", "slug": "ejemplo-a", "cuit": "20123456789", "study_id": 7},

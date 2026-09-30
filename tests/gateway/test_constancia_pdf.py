@@ -121,3 +121,22 @@ def test_cancel_from_captcha_photo_does_not_try_to_edit_photo_as_text():
         query.edit_message_text.assert_not_awaited()
         await asyncio.gather(state.task, return_exceptions=True)
     asyncio.run(run())
+
+
+def test_pdf_failure_falls_back_to_new_message_if_progress_cannot_be_edited():
+    async def run():
+        flow = ConstanciasFlow()
+        progress = SimpleNamespace(edit_text=AsyncMock(side_effect=RuntimeError("edit failed")))
+        bot = SimpleNamespace(send_photo=AsyncMock(), send_message=AsyncMock())
+        adapter = SimpleNamespace(_bot=bot)
+        state = State("nonce", "12345", 0.0, stage="pdf_running", contributor_id=9,
+                      job_id=44, cuit="20123456789", progress_message=progress)
+        key = flow._key(55, None, 12345)
+        flow.states[key] = state
+        with patch.object(ConstanciaPdfSession, "start", side_effect=RuntimeError("browser failed")), \
+             patch.object(ConstanciaPdfSession, "close"):
+            await flow._pdf(adapter, state, key, 55, None)
+        bot.send_message.assert_awaited_once()
+        assert "No pude obtener" in bot.send_message.call_args.kwargs["text"]
+        assert key not in flow.states
+    asyncio.run(run())
