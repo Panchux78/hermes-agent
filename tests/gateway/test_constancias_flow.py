@@ -70,7 +70,7 @@ def test_book_contains_same_normalized_condition_not_pdf():
         assert sheet["C3"].value == "No se pudo verificar"
         assert sheet["C4"].value == "Todavía no se consultó"
         assert sheet["E4"].value == "Sin consultar"
-        assert sheet["C5"].value == "Revisar: ARCA informó más de una condición activa"
+        assert sheet["C5"].value == "Revisar: ARCA no permite determinar una condición IVA única"
     finally:
         path.unlink(missing_ok=True)
 

@@ -156,7 +156,7 @@ class ConstanciasFlow:
         if single:
             return "Constancia consultada. El resultado se muestra abajo."
         return (f"Constancias consultadas: {done}/{total}.\n"
-                f"Responsable inscripto: {status['ri']} · Monotributo: {status['monotributo']} · "
+                f"Responsable inscripto: {status['ri']} · Responsable Monotributo: {status['monotributo']} · "
                 f"Revisar: {status['revisar']} · Sin verificar: {status['sin_verificar']}.")
 
     @staticmethod
@@ -165,13 +165,13 @@ class ConstanciasFlow:
         sheet = workbook.active
         sheet.title = "Constancias"
         sheet.append(["Contribuyente", "Alias", "Según ARCA", "ARCA lo informa desde", "Estado", "Consultado el"])
-        labels = {"ri": "Responsable inscripto", "monotributo": "Monotributo",
+        labels = {"ri": "Responsable inscripto", "monotributo": "Responsable Monotributo",
                   "ri_monotributo": "Responsable inscripto y monotributo"}
         for row in rows:
             period = row.get("periodo_estado")
             since = f"{period[4:]}/{period[:4]}" if period and len(period) == 6 else None
             state = row["estado"]
-            situation = ("Revisar: ARCA informó más de una condición activa" if state == "revisar" else
+            situation = ("Revisar: ARCA no permite determinar una condición IVA única" if state == "revisar" else
                          "Todavía no se consultó" if state == "pendiente" else
                          labels.get(row.get("condicion"), "No se pudo verificar"))
             sheet.append([row["nombre"], row["slug"], situation,
@@ -218,9 +218,9 @@ class ConstanciasFlow:
                 if state.contributor_id is not None:
                     row = rows[0] if len(rows) == 1 else None
                     if row:
-                        condition = ("Revisar: ARCA informó más de una condición activa"
+                        condition = ("Revisar: ARCA no permite determinar una condición IVA única"
                                      if row["estado"] == "revisar" else
-                                     {"ri": "Responsable inscripto", "monotributo": "Monotributo"}
+                                     {"ri": "Responsable inscripto", "monotributo": "Responsable Monotributo"}
                                      .get(row["condicion"], "No se pudo verificar"))
                         period = row.get("periodo_estado")
                         since = f" · ARCA lo informa desde {period[4:]}/{period[:4]}" if period and len(period) == 6 else ""
