@@ -73,9 +73,18 @@ _ZIP_PACK_BUDGET = 44_000_000
 _CAPTCHA_TIMEOUT_SECONDS = 300
 _CAPTCHA_SOLUTION = re.compile(r"[A-Za-z0-9]{4,20}")
 _UNVERIFIED_KEY_HELP = (
-    "Si un cliente no aparece en la lista, su clave de ARCA no está cargada "
-    "o todavía no fue verificada."
+    "Sólo podés elegir responsables inscriptos con condición vigente consultada "
+    "en ARCA y clave verificada."
 )
+_IVA_INELIGIBLE = {
+    "monotributo": "ARCA lo registra como responsable monotributista. No se puede iniciar Libro IVA para este contribuyente.",
+    "revisar": "La condición frente al IVA quedó para revisar. Actualizala y confirmala antes de pedir los Libros IVA.",
+    "sin_verificar": "ARCA no pudo verificar la condición frente al IVA. Consultala nuevamente antes de pedir los Libros IVA.",
+    "sin_consultar": "Todavía no se consultó la condición frente al IVA en ARCA. Hacé esa consulta primero.",
+    "consulta_vencida": "La consulta de la condición IVA tiene más de 30 días. Actualizala en ARCA antes de pedir los Libros IVA.",
+    "clave_sin_verificar": "La clave ARCA no está verificada o la representación no es única. Revisá ese acceso antes de pedir los Libros IVA.",
+    "no_autorizado": "No se puede consultar ese contribuyente con tu acceso actual.",
+}
 
 
 @dataclass
@@ -218,6 +227,24 @@ class PortalIvaFlow:
 
     def _by_id(self, item_id: int, telegram_id: Any) -> list[dict[str, Any]]:
         return self._scope().by_id(telegram_id, item_id)
+
+    def _iva_reason(self, item_id: int, telegram_id: Any) -> str:
+        actor = FiscalScope._telegram_id(telegram_id)
+        rows = self._query(
+            "SELECT json_build_object('reason',console.fn_portal_iva_lote_motivo_telegram("
+            f"{actor},{int(item_id)}))::text;"
+        )
+        if len(rows) != 1 or not isinstance(rows[0], dict):
+            raise RuntimeError("PORTAL_IVA_IVA_STATUS_UNAVAILABLE")
+        reason = rows[0].get("reason")
+        return reason if reason in _IVA_INELIGIBLE or reason == "habilitado" else "no_autorizado"
+
+    async def _ineligible_text(self, item_id: int, telegram_id: Any) -> str:
+        try:
+            reason = await asyncio.to_thread(self._iva_reason, item_id, telegram_id)
+        except Exception:
+            return "No pude verificar la condición IVA en la base. No inicié la consulta."
+        return _IVA_INELIGIBLE.get(reason, "El contribuyente no está habilitado para Libros IVA.")
 
     def _register_terminal_batch(self, run_id: int, clients: list[dict[str, Any]],
                                  periods: list[str], state: str, reason: str) -> None:
@@ -373,15 +400,16 @@ class PortalIvaFlow:
                 await self._reject(user_id=user_id, operation=state.operation, key_material=f"stale:{state.nonce}:{selected_id}", code="contribuyente_no_disponible", text="El contribuyente elegido ya no estaba autorizado.")
                 return True
             found = await asyncio.to_thread(self._by_id, selected_id, state.user_id)
-            if state.operation == "descargar-lote":
-                found = [item for item in found if item.get("access_id")]
+            found = [item for item in found if item.get("access_id")]
         except Exception:
             await query.answer("No pude validar la opción en la base. Probá nuevamente.")
             await self._reject(user_id=user_id, operation=state.operation, key_material=f"database:{state.nonce}:{select.group(2)}", code="base_no_disponible", text="La base canónica no permitió validar el contribuyente antes de ejecutar.")
             return True
         if not found:
-            await query.answer("La opción ya no está disponible.")
-            await self._reject(user_id=user_id, operation=state.operation, key_material=f"revalidate:{state.nonce}:{selected_id}", code="contribuyente_no_autorizado", text="El contribuyente elegido ya no tenía acceso o representación válidos.")
+            reason = await self._ineligible_text(selected_id, state.user_id)
+            await query.answer("No se puede iniciar la consulta.")
+            await self._send(adapter, chat_id, reason, thread_id)
+            await self._reject(user_id=user_id, operation=state.operation, key_material=f"revalidate:{state.nonce}:{selected_id}", code="contribuyente_no_autorizado", text=reason)
             return True
         await query.answer("Contribuyente seleccionado")
         await self._select(adapter, chat_id, thread_id, state, found[0])
@@ -435,6 +463,18 @@ class PortalIvaFlow:
                 state.stage = "batch_from"
                 await self._send(adapter, chat_id, "El rango no es válido. Ingresá nuevamente el primer período como MM/AAAA.", thread_id)
                 return True
+            for client in state.selected_clients:
+                try:
+                    checked = await asyncio.to_thread(self._by_id, int(client["id"]), state.user_id)
+                except Exception:
+                    self.states.pop(key, None)
+                    await self._send(adapter, chat_id, "No inicié el lote: no pude verificar la condición IVA en la base. Probá más tarde.", thread_id)
+                    return True
+                if len(checked) != 1 or not checked[0].get("access_id"):
+                    reason = await self._ineligible_text(int(client["id"]), state.user_id)
+                    self.states.pop(key, None)
+                    await self._send(adapter, chat_id, f"No inicié el lote: {reason}", thread_id)
+                    return True
             state.stage = "running"
             state.progress_label = "Preparando lote de Libros IVA…"
             state.progress_message = await self._send(adapter, chat_id, state.progress_label, thread_id, self._cancel_keyboard(state.nonce))
@@ -450,6 +490,17 @@ class PortalIvaFlow:
             period = f"{visible_period[3:]}-{visible_period[:2]}"
             if key in self.tasks:
                 await self._send(adapter, chat_id, "Ya hay una descarga Portal IVA en curso.", thread_id)
+                return True
+            try:
+                checked = await asyncio.to_thread(self._by_id, int(state.contributor_id), state.user_id)
+            except Exception:
+                self.states.pop(key, None)
+                await self._send(adapter, chat_id, "No inicié la consulta: no pude verificar la condición IVA en la base. Probá más tarde.", thread_id)
+                return True
+            if len(checked) != 1 or not checked[0].get("access_id"):
+                reason = await self._ineligible_text(int(state.contributor_id), state.user_id)
+                self.states.pop(key, None)
+                await self._send(adapter, chat_id, f"No inicié la consulta: {reason}", thread_id)
                 return True
             state.period = period
             state.stage = "running"
@@ -472,9 +523,8 @@ class PortalIvaFlow:
             await self._send(adapter, chat_id, "Ingresá el primer período como MM/AAAA.", thread_id)
             return True
         try:
-            candidates = await asyncio.to_thread(self._search, message.text or "", state.user_id)
-            if state.operation == "descargar-lote":
-                candidates = [item for item in candidates if item.get("access_id")]
+            raw_candidates = await asyncio.to_thread(self._search, message.text or "", state.user_id)
+            candidates = [item for item in raw_candidates if item.get("access_id")]
         except InvalidCuit:
             await self._send(adapter, chat_id, "El CUIT ingresado no es válido.", thread_id)
             return True
@@ -484,9 +534,12 @@ class PortalIvaFlow:
         offer = ContributorOffer.from_rows(candidates)
         state.candidates = offer.candidates
         if offer.status == "empty":
-            empty_text = "No hay un contribuyente ARCA activo con acceso y representación válidos que coincida. Probá con nombre, CUIT o slug."
-            if state.operation == "descargar-lote":
-                empty_text += "\n\n" + _UNVERIFIED_KEY_HELP
+            empty_text = (
+                await self._ineligible_text(int(raw_candidates[0]["id"]), state.user_id)
+                if len(raw_candidates) == 1 else
+                "No hay un responsable inscripto habilitado que coincida. Probá con nombre, CUIT o slug. "
+                + _UNVERIFIED_KEY_HELP
+            )
             await self._send(adapter, chat_id, empty_text, thread_id)
             if len(re.sub(r"\D", "", message.text or "")) == 11:
                 await self._reject(user_id=user_id, operation=state.operation, key_material=f"unauthorized:{state.nonce}", code="contribuyente_no_autorizado", text="El CUIT solicitado no tenía acceso y representación ARCA autorizados.")
@@ -1253,7 +1306,8 @@ class PortalIvaFlow:
                 raise RuntimeError("PORTAL_IVA_STATE_INVALID")
             for selected in state.selected_clients:
                 rows = await asyncio.to_thread(self._by_id, int(selected["id"]), state.user_id)
-                if len(rows) != 1 or rows[0].get("relation_revision") != selected.get("relation_revision"):
+                if (len(rows) != 1 or not rows[0].get("access_id")
+                        or rows[0].get("relation_revision") != selected.get("relation_revision")):
                     raise RuntimeError("PORTAL_IVA_SELECTION_STALE")
                 verified_clients.append(rows[0])
             if len({int(client["study_id"]) for client in verified_clients}) != 1:
@@ -1470,7 +1524,8 @@ class PortalIvaFlow:
             verified = await asyncio.to_thread(self._by_id, state.contributor_id, state.user_id)
             if state.cancelled:
                 return
-            if (len(verified) != 1 or verified[0].get("slug") != slug
+            if (len(verified) != 1 or not verified[0].get("access_id")
+                    or verified[0].get("slug") != slug
                     or verified[0].get("cuit") != cuit
                     or state.scope_item is None
                     or verified[0].get("relation_id") != state.scope_item.get("relation_id")

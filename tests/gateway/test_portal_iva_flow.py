@@ -100,7 +100,33 @@ def test_batch_start_explains_why_a_client_may_be_missing():
         adapter = FakeAdapter()
         await flow.start(adapter, _query("pi:lote"), "10", None, "7", "descargar-lote")
         message = adapter._bot.send_message.await_args.kwargs["text"]
-        assert "Si un cliente no aparece en la lista, su clave de ARCA no está cargada o todavía no fue verificada." in message
+        assert "Sólo podés elegir responsables inscriptos" in message
+
+    asyncio.run(scenario())
+
+
+def test_telegram_offers_only_inscripto_and_explains_excluded_conditions():
+    async def scenario():
+        for operation in ("descargar-lote", "descargar-presentados"):
+            for reason, fragment in (("monotributo", "monotributista"),
+                                     ("sin_consultar", "no se consultó")):
+                flow = PortalIvaFlow()
+                adapter = FakeAdapter()
+                state = FlowState(user_id="7", nonce="a" * 10, stage="client", operation=operation)
+                key = flow._key("10", None, "7")
+                flow.states[key] = state
+                flow._search = lambda _term, _actor: [_scope_item(access_id=None)]
+                flow._iva_reason = lambda _item, _actor: reason
+                assert await flow.text(adapter, _message("Uno")) is True
+                assert fragment in adapter._bot.send_message.await_args.kwargs["text"]
+                assert not flow.tasks and state.stage == "client"
+            flow = PortalIvaFlow()
+            adapter = FakeAdapter()
+            state = FlowState(user_id="7", nonce="a" * 10, stage="client", operation=operation)
+            flow.states[flow._key("10", None, "7")] = state
+            flow._search = lambda _term, _actor: [_scope_item()]
+            assert await flow.text(adapter, _message("Uno")) is True
+            assert state.stage == ("batch_clients" if operation == "descargar-lote" else "period")
 
     asyncio.run(scenario())
 
@@ -245,7 +271,8 @@ def test_period_accepts_only_month_year_and_stores_executor_period(monkeypatch):
     async def scenario():
         flow = PortalIvaFlow()
         adapter = FakeAdapter()
-        state = FlowState(user_id="7", nonce="a" * 10, stage="period", slug="cliente", cuit=VALID_CUIT)
+        state = FlowState(user_id="7", nonce="a" * 10, stage="period", contributor_id=1, slug="cliente", cuit=VALID_CUIT)
+        flow._by_id = lambda _ident, _uid: [_scope_item()]
         key = flow._key("10", None, "7")
         flow.states[key] = state
 
@@ -963,6 +990,7 @@ def test_batch_selects_multiple_contributors_then_asks_for_month_range(monkeypat
         flow = PortalIvaFlow()
         adapter = FakeAdapter()
         state = FlowState(user_id="7", nonce="a" * 10, stage="client", operation="descargar-lote")
+        flow._by_id = lambda ident, _uid: [_scope_item(id=ident)]
         key = flow._key("10", None, "7")
         flow.states[key] = state
         await flow._select(adapter, "10", None, state, _scope_item())
