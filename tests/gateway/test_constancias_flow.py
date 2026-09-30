@@ -1,10 +1,12 @@
 """Contrato Telegram de #132, sin Telegram ni ARCA real."""
+import asyncio
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from openpyxl import load_workbook
 
-from plugins.platforms.telegram.constancias_flow import ConstanciasFlow
+from plugins.platforms.telegram.constancias_flow import ConstanciasFlow, State
 from plugins.platforms.telegram.contributor_selector import ContributorOffer
 from plugins.platforms.telegram import contributor_selector
 
@@ -29,7 +31,10 @@ def test_search_keeps_study_binding_and_standard_chooser():
 def test_db_commands_bind_actor_study_and_job():
     with patch.object(ConstanciasFlow, "_query", return_value=[{"id_lote": 44}]) as query:
         assert ConstanciasFlow._begin(12345, 7, 9) == 44
-    assert "fn_constancia_telegram_iniciar(12345,7,9)" in query.call_args.args[0]
+    assert "fn_constancia_telegram_iniciar_confirmado(12345,7,9,NULL)" in query.call_args.args[0]
+    with patch.object(ConstanciasFlow, "_query", return_value=[{"id_lote": 45}]) as query:
+        assert ConstanciasFlow._begin(12345, 7, None, "10") == 45
+    assert "fn_constancia_telegram_iniciar_confirmado(12345,7,NULL," in query.call_args.args[0]
     with patch.object(ConstanciasFlow, "_query", return_value=[{"estado": "terminada"}]) as query:
         assert ConstanciasFlow._status(12345, 44)["estado"] == "terminada"
     assert "fn_constancia_telegram_estado(12345,44)" in query.call_args.args[0]
@@ -39,9 +44,10 @@ def test_progress_and_terminal_summary_are_factual():
     status = {"estado": "consultando", "respondidos": 3, "solicitados": 12}
     assert "3/12" in ConstanciasFlow._summary(status, False)
     status.update(estado="terminada", responded=12, respondidos=12,
-                  ri=5, monotributo=4, mixto=1, sin_verificar=2)
+                  ri=5, monotributo=4, revisar=1, sin_verificar=2)
     summary = ConstanciasFlow._summary(status, False)
     assert "Responsable inscripto: 5" in summary
+    assert "Revisar: 1" in summary
     assert "Sin verificar: 2" in summary
 
 
@@ -53,6 +59,8 @@ def test_book_contains_same_normalized_condition_not_pdf():
          "estado": "error", "consultado_en": None},
         {"nombre": "Pendiente", "slug": "pendiente", "condicion": None, "periodo_estado": None,
          "estado": "pendiente", "consultado_en": None},
+        {"nombre": "Doble", "slug": "doble", "condicion": None, "periodo_estado": None,
+         "estado": "revisar", "consultado_en": None},
     ])
     try:
         assert Path(path).stat().st_mode & 0o077 == 0
@@ -62,5 +70,24 @@ def test_book_contains_same_normalized_condition_not_pdf():
         assert sheet["C3"].value == "No se pudo verificar"
         assert sheet["C4"].value == "Todavía no se consultó"
         assert sheet["E4"].value == "Sin consultar"
+        assert sheet["C5"].value == "Revisar: ARCA informó más de una condición activa"
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_portfolio_never_starts_without_exact_typed_count():
+    flow = ConstanciasFlow()
+    state = State("nonce", "12345", 0.0, stage="confirm", study_id=7, expected_count=12)
+    flow.states[flow._key(55, None, 12345)] = state
+    message = SimpleNamespace(chat_id=55, message_thread_id=None,
+                              from_user=SimpleNamespace(id=12345),
+                              text="11", reply_text=AsyncMock())
+    async def run():
+        with patch.object(flow, "_start", new_callable=AsyncMock) as start:
+            assert await flow.text(None, message)
+            start.assert_not_awaited()
+            message.text = "12"
+            assert await flow.text(None, message)
+            start.assert_awaited_once()
+    asyncio.run(run())
+    assert state.confirmation == "12"

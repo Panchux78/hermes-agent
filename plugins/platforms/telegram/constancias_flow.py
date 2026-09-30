@@ -28,6 +28,9 @@ class State:
     study_id: int | None = None
     contributor_id: int | None = None
     candidates: dict | None = None
+    studies: dict | None = None
+    expected_count: int | None = None
+    confirmation: str | None = None
     job_id: int | None = None
     progress_message: object | None = None
     task: asyncio.Task | None = None
@@ -83,11 +86,13 @@ class ConstanciasFlow:
         )
 
     @classmethod
-    def _begin(cls, telegram_id: int, study_id: int, contributor_id: int | None) -> int:
+    def _begin(cls, telegram_id: int, study_id: int, contributor_id: int | None,
+               confirmation: str | None = None) -> int:
         subject = str(contributor_id) if contributor_id else "NULL"
+        confirmed = cls._literal(confirmation) if confirmation is not None else "NULL"
         row = cls._one(
-            "SELECT json_build_object('id_lote',console.fn_constancia_telegram_iniciar("
-            f"{telegram_id},{study_id},{subject}))::text;"
+            "SELECT json_build_object('id_lote',console.fn_constancia_telegram_iniciar_confirmado("
+            f"{telegram_id},{study_id},{subject},{confirmed}))::text;"
         )
         return cls._number(row["id_lote"])
 
@@ -147,12 +152,12 @@ class ConstanciasFlow:
         if state == "cancelada":
             return f"Consulta cancelada. {done}/{total} contribuyentes quedaron consultados."
         if state == "sin_respuesta":
-            return f"ARCA no respondió o la consulta quedó interrumpida. {done}/{total} consultados; los datos anteriores se conservan."
+            return f"La consulta no se completó. {done}/{total} consultados; sólo los resultados únicos ya verificados actualizaron la condición."
         if single:
             return "Constancia consultada. El resultado se muestra abajo."
         return (f"Constancias consultadas: {done}/{total}.\n"
                 f"Responsable inscripto: {status['ri']} · Monotributo: {status['monotributo']} · "
-                f"Ambos: {status['mixto']} · Sin verificar: {status['sin_verificar']}.")
+                f"Revisar: {status['revisar']} · Sin verificar: {status['sin_verificar']}.")
 
     @staticmethod
     def _book(rows: list[dict]) -> Path:
@@ -166,7 +171,8 @@ class ConstanciasFlow:
             period = row.get("periodo_estado")
             since = f"{period[4:]}/{period[:4]}" if period and len(period) == 6 else None
             state = row["estado"]
-            situation = ("Todavía no se consultó" if state == "pendiente" else
+            situation = ("Revisar: ARCA informó más de una condición activa" if state == "revisar" else
+                         "Todavía no se consultó" if state == "pendiente" else
                          labels.get(row.get("condicion"), "No se pudo verificar"))
             sheet.append([row["nombre"], row["slug"], situation,
                           since, "Sin consultar" if state == "pendiente" else state, row.get("consultado_en")])
@@ -212,11 +218,13 @@ class ConstanciasFlow:
                 if state.contributor_id is not None:
                     row = rows[0] if len(rows) == 1 else None
                     if row:
-                        condition = {"ri": "Responsable inscripto", "monotributo": "Monotributo",
-                                     "ri_monotributo": "Responsable inscripto y monotributo"}.get(row["condicion"], "No se pudo verificar")
+                        condition = ("Revisar: ARCA informó más de una condición activa"
+                                     if row["estado"] == "revisar" else
+                                     {"ri": "Responsable inscripto", "monotributo": "Monotributo"}
+                                     .get(row["condicion"], "No se pudo verificar"))
                         period = row.get("periodo_estado")
                         since = f" · ARCA lo informa desde {period[4:]}/{period[:4]}" if period and len(period) == 6 else ""
-                        await state.progress_message.edit_text(f"{row['nombre']}: {condition}{since}.\nNo se obtuvo PDF oficial; este resultado son datos del padrón ARCA.")
+                        await state.progress_message.edit_text(f"{row['nombre']}: {condition}{since}.\nLa condición se actualiza sólo si ARCA informa un resultado único.")
                 else:
                     output = await asyncio.to_thread(self._book, rows)
                     try:
@@ -235,7 +243,8 @@ class ConstanciasFlow:
 
     async def _start(self, adapter, state: State, key: str, target, chat_id, thread_id) -> None:
         try:
-            job = await asyncio.to_thread(self._begin, int(state.user_id), state.study_id, state.contributor_id)
+            job = await asyncio.to_thread(self._begin, int(state.user_id), state.study_id,
+                                          state.contributor_id, state.confirmation)
         except Exception:
             await target.edit_text("No pude iniciar la consulta de constancias. Revisá que no haya otra consulta en curso.")
             self.states.pop(key, None)
@@ -294,10 +303,15 @@ class ConstanciasFlow:
                 return True
             if len(studies) == 1:
                 state.study_id = self._number(studies[0]["id"])
+                state.expected_count = self._number(studies[0]["cantidad"])
+                state.stage = "confirm"
                 await query.answer()
-                await self._start(adapter, state, key, query.message, chat_id, thread_id)
+                await query.edit_message_text(
+                    f"Actualizar toda la cartera desde ARCA. Escribí {state.expected_count} para confirmar.",
+                    reply_markup=self._cancel_keyboard(state.nonce))
                 return True
             state.stage = "study"
+            state.studies = {self._number(item["id"]): item for item in studies}
             await query.answer()
             await query.edit_message_text("Elegí el estudio:", reply_markup=InlineKeyboardMarkup([
                 *[[InlineKeyboardButton(str(item["nombre"])[:55], callback_data=f"ci:study:{state.nonce}:{item['id']}")]
@@ -306,9 +320,17 @@ class ConstanciasFlow:
             ]))
             return True
         if parts[1] == "study" and state.stage == "study" and len(parts) == 4:
-            state.study_id = self._number(parts[3])
+            selected = (state.studies or {}).get(self._number(parts[3]))
+            if not selected:
+                await query.answer("Ese estudio ya no está disponible.")
+                return True
+            state.study_id = self._number(selected["id"])
+            state.expected_count = self._number(selected["cantidad"])
+            state.stage = "confirm"
             await query.answer()
-            await self._start(adapter, state, key, query.message, chat_id, thread_id)
+            await query.edit_message_text(
+                f"Actualizar toda la cartera desde ARCA. Escribí {state.expected_count} para confirmar.",
+                reply_markup=self._cancel_keyboard(state.nonce))
             return True
         if parts[1] == "select" and state.stage == "search" and len(parts) == 4:
             candidate = (state.candidates or {}).get(self._number(parts[3]))
@@ -327,8 +349,19 @@ class ConstanciasFlow:
         user = getattr(message, "from_user", None)
         key = self._key(message.chat_id, getattr(message, "message_thread_id", None), getattr(user, "id", ""))
         state = self.states.get(key)
-        if not state or state.stage != "search":
+        if not state or state.stage not in {"search", "confirm"}:
             return False
+        if state.stage == "confirm":
+            if (message.text or "").strip() != str(state.expected_count):
+                await message.reply_text(
+                    f"La cantidad no coincide. Escribí {state.expected_count} para confirmar.",
+                    reply_markup=self._cancel_keyboard(state.nonce))
+                return True
+            state.confirmation = str(state.expected_count)
+            progress = await message.reply_text("Iniciando actualización de la cartera…")
+            await self._start(adapter, state, key, progress, message.chat_id,
+                              getattr(message, "message_thread_id", None))
+            return True
         try:
             rows = await asyncio.to_thread(self._search, int(state.user_id), message.text or "")
             offer = ContributorOffer.from_rows(rows)
