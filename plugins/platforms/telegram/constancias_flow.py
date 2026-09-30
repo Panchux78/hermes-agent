@@ -4,11 +4,16 @@ from __future__ import annotations
 import asyncio
 import base64
 from dataclasses import dataclass
+import hashlib
+from io import BytesIO
+import json
 from pathlib import Path
 import re
 import tempfile
 import time
 import uuid
+from urllib.request import ProxyHandler, Request, build_opener
+from urllib.parse import urlparse
 
 from openpyxl import Workbook
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,6 +22,7 @@ from plugins.platforms.telegram.contributor_selector import ContributorOffer, CO
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.fiscal_scope import validate_search_term
 from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
+from plugins.platforms.telegram.constancia_pdf import ConstanciaPdfSession
 
 
 @dataclass
@@ -34,12 +40,21 @@ class State:
     job_id: int | None = None
     progress_message: object | None = None
     task: asyncio.Task | None = None
+    cuit: str | None = None
+    slug: str | None = None
+    captcha_response: asyncio.Future | None = None
 
 
 class ConstanciasFlow:
     TTL = 600
 
-    def __init__(self) -> None:
+    def __init__(self, console_api_url: str = "http://127.0.0.1:8000") -> None:
+        parsed = urlparse(console_api_url)
+        if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}
+                or parsed.port is None or parsed.path not in {"", "/"}
+                or parsed.query or parsed.fragment or parsed.username or parsed.password):
+            raise ValueError("constancias_console_api_url_debe_ser_loopback")
+        self.console_api_url = console_api_url.rstrip("/")
         self.states: dict[str, State] = {}
 
     @staticmethod
@@ -126,6 +141,31 @@ class ConstanciasFlow:
                 return rows
         raise RuntimeError("constancia_resultado_excesivo")
 
+    @classmethod
+    def _pdf_ticket(cls, telegram_id: int, job_id: int, contributor_id: int) -> str:
+        row = cls._one(
+            "SELECT json_build_object('ticket',console.fn_constancia_telegram_pdf_ticket("
+            f"{telegram_id},{job_id},{contributor_id}))::text;"
+        )
+        return str(uuid.UUID(row["ticket"]))
+
+    def _archive_pdf(self, ticket: str, data: bytes) -> dict:
+        request = Request(
+            self.console_api_url + "/api/internal/constancias/pdf",
+            data=data,
+            headers={"X-Constancia-Ticket": ticket, "Content-Type": "application/pdf"},
+            method="POST",
+        )
+        with build_opener(ProxyHandler({})).open(request, timeout=30) as response:
+            if response.status != 201:
+                raise RuntimeError("constancia_archivo_no_guardado")
+            result = json.loads(response.read(4096))
+        if (not isinstance(result, dict)
+                or not re.fullmatch(r"constancia-inscripcion-[a-z0-9-]+\.pdf", result.get("nombre", ""))
+                or result.get("sha256") != hashlib.sha256(data).hexdigest()):
+            raise RuntimeError("constancia_archivo_respuesta_invalida")
+        return result
+
     @staticmethod
     def _cancel_keyboard(nonce: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("✕", "Cancelar"), callback_data=f"ci:cancel:{nonce}")]])
@@ -137,6 +177,82 @@ class ConstanciasFlow:
             [InlineKeyboardButton(menu_label("👥", "Toda la cartera"), callback_data=f"ci:portfolio:{nonce}")],
             [InlineKeyboardButton(menu_label("‹", "ARCA"), callback_data="om:arca_consultar")],
         ])
+
+    @staticmethod
+    def _pdf_keyboard(nonce: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("Sí, descargar PDF", callback_data=f"ci:pdf_yes:{nonce}")],
+            [InlineKeyboardButton("No, terminar", callback_data=f"ci:pdf_no:{nonce}")],
+        ])
+
+    @staticmethod
+    async def _browser_call(function, *args):
+        # Cancelar la task no cancela un to_thread en ejecución. Esperarlo evita
+        # cerrar Firefox antes de que termine de abrirse o imprimir el PDF.
+        pending = asyncio.create_task(asyncio.to_thread(function, *args))
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            await asyncio.shield(pending)
+            raise
+
+    async def _pdf(self, adapter, state: State, key: str, chat_id, thread_id) -> None:
+        session = ConstanciaPdfSession()
+        output = None
+        archived = None
+        try:
+            image = await self._browser_call(session.start)
+            state.captcha_response = asyncio.get_running_loop().create_future()
+            state.stage = "captcha"
+            photo = {"chat_id": chat_id, "photo": BytesIO(image),
+                     "caption": "ARCA pide un CAPTCHA para la constancia PDF. Respondé con los 6 caracteres de esta imagen.",
+                     "reply_markup": self._cancel_keyboard(state.nonce)}
+            if thread_id is not None:
+                photo["message_thread_id"] = thread_id
+            await adapter._bot.send_photo(**photo)
+            await state.progress_message.edit_text("Esperando el CAPTCHA de la constancia PDF…",
+                                                   reply_markup=self._cancel_keyboard(state.nonce))
+            solution = await asyncio.wait_for(state.captcha_response, timeout=120)
+            state.stage = "pdf_running"
+            await state.progress_message.edit_text("Generando la constancia PDF…",
+                                                   reply_markup=self._cancel_keyboard(state.nonce))
+            document = await self._browser_call(session.submit, state.cuit, solution)
+            state.stage = "archiving"
+            await state.progress_message.edit_text("Guardando la constancia en Documentos…")
+            ticket = await asyncio.to_thread(self._pdf_ticket, int(state.user_id), state.job_id,
+                                             state.contributor_id)
+            archived = await asyncio.to_thread(self._archive_pdf, ticket, document)
+            handle = tempfile.NamedTemporaryFile(prefix="constancia-", suffix=".pdf", delete=False)
+            output = Path(handle.name)
+            try:
+                handle.write(document)
+            finally:
+                handle.close()
+            output.chmod(0o600)
+            metadata = {"thread_id": thread_id} if thread_id is not None else None
+            sent = await adapter.send_document(chat_id=str(chat_id), file_path=str(output),
+                                               file_name=archived["nombre"], metadata=metadata,
+                                               caption="Constancia de inscripción ARCA.")
+            if not getattr(sent, "success", False):
+                await state.progress_message.edit_text("La constancia quedó en Documentos, pero Telegram no confirmó la entrega del PDF.")
+            else:
+                await state.progress_message.edit_text("Constancia PDF enviada y guardada en Documentos. La consulta IVA ya estaba terminada.")
+        except asyncio.CancelledError:
+            await state.progress_message.edit_text(
+                "Solicitud de PDF cancelada. La consulta IVA se conserva."
+                if archived is None else "La constancia quedó en Documentos; se canceló la entrega por Telegram.")
+        except Exception:
+            await state.progress_message.edit_text(
+                "No pude obtener o guardar la constancia PDF. La consulta IVA se conserva; probá nuevamente más tarde."
+                if archived is None else "La constancia quedó en Documentos, pero Telegram no confirmó su entrega.")
+        finally:
+            state.captcha_response = None
+            if output is not None:
+                output.unlink(missing_ok=True)
+            try:
+                await asyncio.to_thread(session.close)
+            finally:
+                self.states.pop(key, None)
 
     @staticmethod
     def _candidate_keyboard(rows: list[dict], nonce: str) -> InlineKeyboardMarkup:
@@ -224,7 +340,11 @@ class ConstanciasFlow:
                                      .get(row["condicion"], "No se pudo verificar"))
                         period = row.get("periodo_estado")
                         since = f" · ARCA lo informa desde {period[4:]}/{period[:4]}" if period and len(period) == 6 else ""
-                        await state.progress_message.edit_text(f"{row['nombre']}: {condition}{since}.\nLa condición se actualiza sólo si ARCA informa un resultado único.")
+                        await state.progress_message.edit_text(
+                            f"{row['nombre']}: {condition}{since}.\nLa condición se actualiza sólo si ARCA informa un resultado único.\n¿Querés descargar la constancia oficial en PDF?",
+                            reply_markup=self._pdf_keyboard(state.nonce))
+                        state.stage = "pdf_offer"
+                        state.created_at = time.monotonic()
                 else:
                     output = await asyncio.to_thread(self._book, rows)
                     try:
@@ -239,7 +359,8 @@ class ConstanciasFlow:
             except Exception:
                 await state.progress_message.edit_text(
                     f"La consulta #{state.job_id} terminó, pero no pude mostrar o entregar el resultado. Revisalo en el panel.")
-        self.states.pop(key, None)
+        if state.stage != "pdf_offer":
+            self.states.pop(key, None)
 
     async def _start(self, adapter, state: State, key: str, target, chat_id, thread_id) -> None:
         try:
@@ -263,20 +384,32 @@ class ConstanciasFlow:
         parts = data.split(":")
         state = self.states.get(key)
         if data == "ci:start":
-            if state and state.stage == "running":
-                await query.answer("Ya hay una consulta en curso.")
+            if state and state.stage in {"running", "pdf_running", "captcha", "archiving"}:
+                await query.answer("Ya hay una solicitud en curso.")
                 return True
             state = State(uuid.uuid4().hex[:10], user_id, time.monotonic())
             self.states[key] = state
             await query.answer()
             await query.edit_message_text("Constancias · ¿qué querés consultar?", reply_markup=self._choice_keyboard(state.nonce))
             return True
-        if not state or len(parts) < 3 or parts[2] != state.nonce or (state.stage != "running" and time.monotonic() - state.created_at > self.TTL):
+        if not state or len(parts) < 3 or parts[2] != state.nonce or (state.stage not in {"running", "pdf_running", "captcha", "archiving"} and time.monotonic() - state.created_at > self.TTL):
             await query.answer("Esta consulta venció. Iniciá una nueva.")
             return True
         if parts[1] == "cancel":
-            await query.answer()
-            if state.job_id:
+            if state.stage == "archiving":
+                await query.answer("La constancia se está guardando; esperá el resultado.")
+            elif state.stage in {"captcha", "pdf_running"}:
+                await query.answer()
+                if state.task:
+                    state.task.cancel()
+                # El botón puede estar en la foto del CAPTCHA: no se puede
+                # editar esa foto como texto. _pdf actualiza el mensaje estable.
+            elif state.stage == "pdf_offer":
+                await query.answer()
+                self.states.pop(key, None)
+                await query.edit_message_text("Consulta IVA terminada. No se solicitó PDF.")
+            elif state.job_id:
+                await query.answer()
                 try:
                     await asyncio.to_thread(self._cancel_job, int(user_id), state.job_id)
                 except Exception:
@@ -284,8 +417,26 @@ class ConstanciasFlow:
                     return True
                 await query.edit_message_text("Cancelación solicitada. La consulta se detendrá después de la respuesta en curso.")
             else:
+                await query.answer()
                 self.states.pop(key, None)
                 await query.edit_message_text("Consulta cancelada.")
+            return True
+        if parts[1] == "pdf_no" and state.stage == "pdf_offer":
+            await query.answer()
+            self.states.pop(key, None)
+            await query.edit_message_text("Consulta IVA terminada. No se solicitó PDF.")
+            return True
+        if parts[1] == "pdf_yes" and state.stage == "pdf_offer":
+            await query.answer()
+            if not state.cuit or not state.contributor_id or not state.job_id:
+                await query.edit_message_text("No puedo iniciar el PDF sin identidad verificada. La consulta IVA se conserva.")
+                self.states.pop(key, None)
+                return True
+            state.stage = "pdf_running"
+            await query.edit_message_text("Preparando el CAPTCHA de la constancia PDF…",
+                                          reply_markup=self._cancel_keyboard(state.nonce))
+            state.progress_message = query.message
+            state.task = asyncio.create_task(self._pdf(adapter, state, key, chat_id, thread_id))
             return True
         if parts[1] == "single" and state.stage == "choice":
             state.stage = "search"
@@ -339,6 +490,8 @@ class ConstanciasFlow:
                 return True
             state.study_id = self._number(candidate["study_id"])
             state.contributor_id = self._number(candidate["id"])
+            state.cuit = str(candidate["cuit"])
+            state.slug = str(candidate["slug"])
             await query.answer()
             await self._start(adapter, state, key, query.message, chat_id, thread_id)
             return True
@@ -349,8 +502,15 @@ class ConstanciasFlow:
         user = getattr(message, "from_user", None)
         key = self._key(message.chat_id, getattr(message, "message_thread_id", None), getattr(user, "id", ""))
         state = self.states.get(key)
-        if not state or state.stage not in {"search", "confirm"}:
+        if not state or state.stage not in {"search", "confirm", "captcha"}:
             return False
+        if state.stage == "captcha":
+            answer = (message.text or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9]{6}", answer):
+                await message.reply_text("El CAPTCHA tiene 6 letras o números. Respondé sólo con esos caracteres.")
+            elif state.captcha_response and not state.captcha_response.done():
+                state.captcha_response.set_result(answer)
+            return True
         if state.stage == "confirm":
             if (message.text or "").strip() != str(state.expected_count):
                 await message.reply_text(
@@ -375,6 +535,8 @@ class ConstanciasFlow:
             candidate = offer.single
             state.study_id = self._number(candidate["study_id"])
             state.contributor_id = self._number(candidate["id"])
+            state.cuit = str(candidate["cuit"])
+            state.slug = str(candidate["slug"])
             progress = await message.reply_text("Iniciando consulta…")
             await self._start(adapter, state, key, progress, message.chat_id, getattr(message, "message_thread_id", None))
             return True

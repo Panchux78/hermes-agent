@@ -494,7 +494,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._vencimientos_flow = VencimientosFlow(
             runtime_python=runtime_python
         )
-        self._constancias_flow = ConstanciasFlow()
+        self._constancias_flow = ConstanciasFlow(extra.get("constancias_console_api_url", "http://127.0.0.1:8000"))
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection, runtime_python=runtime_python,
             **({"executor": portal_executor} if portal_executor is not None else {}),
