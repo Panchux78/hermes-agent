@@ -50,6 +50,8 @@ def sct_failure_message(status: str, reference: str) -> str:
         'login_transition_timeout': 'ARCA no terminó de confirmar el ingreso',
         'service_open_timeout': 'el Sistema de Cuentas Tributarias no terminó de abrir',
         'sct_service_not_found': 'no se encontró el acceso al Sistema de Cuentas Tributarias',
+        'sct_parameters_load_timeout': 'ARCA no terminó de cargar el formulario de Estado de cumplimiento para consultar el período',
+        'parameters_screen_not_verified': 'ARCA mostró un formulario de Estado de cumplimiento ambiguo y no se pudo confirmar dónde consultar el período',
     }.get(status, 'se produjo un error técnico durante la consulta')
     return (f'No se pudo consultar el estado de cumplimiento: {reason}. '
             f'No se generó ni se envió un Excel. Referencia: {reference}. '
