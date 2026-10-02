@@ -36,6 +36,26 @@ _SCT_RESULT_PATTERN = re.compile(r"^result=([a-z0-9_]+)$", re.MULTILINE)
 _WORKFLOW_MENU_TIMEOUT_SECONDS = 600
 
 
+def sct_failure_message(status: str, reference: str) -> str:
+    reason = {
+        'sct_subject_mismatch': 'el CUIT de la cuenta abierta en ARCA no coincide con el contribuyente solicitado',
+        'sct_subject_identity_missing': 'ARCA no mostró un CUIT verificable en Información del usuario',
+        'sct_subject_identity_ambiguous': 'ARCA mostró más de una identidad y no se pudo confirmar el contribuyente',
+        'sct_subject_selection_changed': 'ARCA cambió el selector de contribuyente durante la verificación',
+        'sct_subject_selection_timeout': 'ARCA no confirmó la selección del contribuyente',
+        'subject_selector_not_found': 'ARCA mostró un selector de contribuyente que no se pudo identificar de forma única',
+        'subject_selector_does_not_contain_target': 'el contribuyente solicitado no figura entre los representados de ese acceso',
+        'subject_selector_missing_after_selection': 'ARCA cambió el selector antes de confirmar el contribuyente',
+        'login_credentials_rejected': 'ARCA rechazó el usuario o la clave del acceso guardado',
+        'login_transition_timeout': 'ARCA no terminó de confirmar el ingreso',
+        'service_open_timeout': 'el Sistema de Cuentas Tributarias no terminó de abrir',
+        'sct_service_not_found': 'no se encontró el acceso al Sistema de Cuentas Tributarias',
+    }.get(status, 'se produjo un error técnico durante la consulta')
+    return (f'No se pudo consultar el estado de cumplimiento: {reason}. '
+            f'No se generó ni se envió un Excel. Referencia: {reference}. '
+            'El diagnóstico quedó guardado para revisión.')
+
+
 @dataclasses.dataclass
 class _WorkflowMenuState:
     """Ephemeral data for one fiscal workflow selection in one private chat."""
@@ -530,7 +550,7 @@ class FiscalQueryFlow:
                 await self.send(chat_id, f"El runner SCT terminó sin un estado verificable (salida {process.returncode}). No se entregó ningún resultado. Referencia: {captcha_dir.name}.")
                 return
             if status != "sct_exported":
-                await self.send(chat_id, f"La consulta SCT terminó sin exportación: `{status}`. Referencia: {captcha_dir.name}. Revisá la evidencia privada.")
+                await self.send(chat_id, sct_failure_message(status, captcha_dir.name))
                 return
 
             if process.returncode != 0:

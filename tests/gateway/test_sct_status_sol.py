@@ -8,7 +8,7 @@ import pytest
 from plugins.platforms.telegram import fiscal_query_flow as module
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('status', ['login_credentials_rejected', 'runner_error', None, 'sct_exported'])
+@pytest.mark.parametrize('status', ['login_credentials_rejected', 'runner_error', 'sct_subject_mismatch', 'sct_subject_identity_missing', 'subject_selector_does_not_contain_target', None, 'sct_exported'])
 async def test_nonzero_child_reports_status_without_delivering(tmp_path, monkeypatch, status):
     scripts=tmp_path/'profile/skills/productivity/sct-estado-cumplimiento/scripts'
     scripts.mkdir(parents=True)
@@ -26,6 +26,14 @@ async def test_nonzero_child_reports_status_without_delivering(tmp_path, monkeyp
     text=' '.join(call.args[1] for call in flow.send.await_args_list)
     if status is None: assert 'sin un estado verificable' in text
     elif status=='sct_exported': assert 'informó exportación, pero terminó con error' in text
-    else: assert status in text and 'sin un estado verificable' not in text
+    else:
+        expected = {
+            'login_credentials_rejected': 'ARCA rechazó el usuario o la clave',
+            'runner_error': 'error técnico durante la consulta',
+            'sct_subject_mismatch': 'no coincide con el contribuyente solicitado',
+            'sct_subject_identity_missing': 'CUIT verificable en Información del usuario',
+            'subject_selector_does_not_contain_target': 'no figura entre los representados',
+        }[status]
+        assert expected in text and status not in text
     assert 'Referencia:' in text and 'private-synthetic' not in text
     flow.send_document.assert_not_awaited()
