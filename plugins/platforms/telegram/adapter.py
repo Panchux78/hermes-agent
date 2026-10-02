@@ -453,6 +453,7 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
         from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
         from plugins.platforms.telegram.constancias_flow import ConstanciasFlow
+        from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
         from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
         from plugins.platforms.telegram.fiscal_credentials import lookup_connection, verification_connection
         from plugins.platforms.telegram.contabot_deployment import deployment_paths
@@ -495,6 +496,7 @@ class TelegramAdapter(BasePlatformAdapter):
             runtime_python=runtime_python
         )
         self._constancias_flow = ConstanciasFlow(extra.get("constancias_console_api_url", "http://127.0.0.1:8000"))
+        self._cruce_iva_flow = CruceIvaFlow()
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection, runtime_python=runtime_python,
             **({"executor": portal_executor} if portal_executor is not None else {}),
@@ -934,7 +936,7 @@ class TelegramAdapter(BasePlatformAdapter):
             ),
             "bancos": (
                 "Bancos\n\n"
-                "Convertí resúmenes bancarios compatibles a Excel. "
+                "Convertí resúmenes bancarios compatibles a Excel y cruzalos con los Libros IVA. "
                 "No convierte PDFs generales."
             ),
             "herramientas": (
@@ -948,6 +950,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "• Consulta y prepara información de Portal IVA en ARCA.\n"
                 "• Convierte resúmenes bancarios compatibles a Excel.\n"
                 "• Procesa lotes de resúmenes bancarios.\n"
+                "• Cruza los Excel bancarios con los Libros IVA.\n"
                 "• Protege y desbloquea archivos PDF.\n\n"
                 "Las presentaciones fiscales todavía no están habilitadas."
             ),
@@ -1036,6 +1039,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         callback_data="bx:start",
                     )
                 ],
+                [InlineKeyboardButton(aligned_menu_label(page, "🔀", "Cruce con Libros IVA"), callback_data="cx:start")],
             ]
 
         elif page == "herramientas":
@@ -4857,6 +4861,25 @@ class TelegramAdapter(BasePlatformAdapter):
             ):
                 return
 
+        # --- Cruce de planillas bancarias con Libros IVA (Ágora #122) ---
+        if data.startswith("cx:"):
+            if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para cruzar con Libros IVA."):
+                return
+            if str(cb["chat_type"]).lower() != "private":
+                await query.answer(text="El cruce con Libros IVA se hace por privado.")
+                return
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if data == "cx:start":
+                # Elegir el cruce descarta pedidos de PDF o lote que quedaron sin completar.
+                for other in ("_pdf_xlsx_flow", "_batch_pdf_xlsx_flow"):
+                    flow = getattr(self, other, None)
+                    if flow is not None:
+                        flow.cancel_pending(cb["chat_id"], cb["thread_id"], caller_id)
+            if await self._cruce_iva_flow.callback(
+                self, query, data, cb["chat_id"], cb["thread_id"], caller_id
+            ):
+                return
+
         # --- Protección y desbloqueo determinista de PDFs ---
         if data.startswith("ps:"):
             caller_id = str(getattr(query.from_user, "id", ""))
@@ -4892,6 +4915,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 single_flow = getattr(self, "_pdf_xlsx_flow", None)
                 if single_flow is not None:
                     single_flow.cancel_pending(cb["chat_id"], cb["thread_id"], caller_id)
+                cruce_flow = getattr(self, "_cruce_iva_flow", None)
+                if cruce_flow is not None:
+                    cruce_flow.cancel_pending(cb["chat_id"], cb["thread_id"], caller_id)
             if await self._batch_pdf_xlsx_flow.callback(
                 self, query, data, cb["chat_id"], cb["thread_id"], caller_id
             ):
@@ -4916,6 +4942,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 batch_flow = getattr(self, "_batch_pdf_xlsx_flow", None)
                 if batch_flow is not None:
                     batch_flow.cancel_pending(cb["chat_id"], cb["thread_id"], caller_id)
+                cruce_flow = getattr(self, "_cruce_iva_flow", None)
+                if cruce_flow is not None:
+                    cruce_flow.cancel_pending(cb["chat_id"], cb["thread_id"], caller_id)
             if await self._pdf_xlsx_flow.callback(
                 self, query, data, cb["chat_id"], cb["thread_id"], caller_id
             ):
@@ -6492,6 +6521,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if await self._constancias_flow.text(self, msg):
             return
+        cruce_flow = getattr(self, "_cruce_iva_flow", None)
+        if cruce_flow is not None and await cruce_flow.text(self, msg):
+            return
         fiscal_flow = getattr(self, "_fiscal_query_flow", None)
         if fiscal_flow is not None and await fiscal_flow.text(self, msg):
             return
@@ -6798,6 +6830,10 @@ class TelegramAdapter(BasePlatformAdapter):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
             return
         if msg.document and await self._pdf_security_flow.document(self, msg):
+            return
+
+        cruce_flow = getattr(self, "_cruce_iva_flow", None)
+        if msg.document and cruce_flow is not None and await cruce_flow.document(self, msg):
             return
 
         if msg.document and await self._batch_pdf_xlsx_flow.document(self, msg):

@@ -33,6 +33,10 @@ MENU_ALIGNMENT_PADDING = {
     ("vencimientos_formato", "Excel"): (14, 0),
     ("vencimientos_formato", "ICS para Google Calendar"): (0, 0),
     ("bancos", "Resumen bancario → Excel"): (7, 2),
+    # Ágora #122: estimado sin captura, interpolando contra «Resumen bancario →
+    # Excel» (7, 2) y «Lote de Libros IVA» (7, 3) de arca_consultar. Requiere
+    # verificación con captura real del cliente antes de darlo por alineado.
+    ("bancos", "Cruce con Libros IVA"): (11, 2),
     ("herramientas", "Proteger PDF"): (3, 0),
     ("ayuda", "Hacer una consulta"): (0, 1),
     ("administracion", "Actualizar bancos BCRA"): (4, 0),

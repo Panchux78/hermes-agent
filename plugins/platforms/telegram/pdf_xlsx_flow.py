@@ -105,10 +105,12 @@ class PdfXlsxFlow:
         return f"{chat_id}:{thread_id or ''}:{user_id}"
 
     @staticmethod
-    async def _send(adapter, chat_id, text: str, thread_id=None) -> None:
+    async def _send(adapter, chat_id, text: str, thread_id=None, reply_markup=None) -> None:
         kwargs = {"chat_id": chat_id, "text": text}
         if thread_id is not None:
             kwargs["message_thread_id"] = thread_id
+        if reply_markup is not None:
+            kwargs["reply_markup"] = reply_markup
         await adapter._bot.send_message(**kwargs)
 
     def cancel_pending(self, chat_id, thread_id, user_id) -> bool:
@@ -294,8 +296,30 @@ class PdfXlsxFlow:
                 logger.exception("[PDF-XLSX] stage=history_finish status=ERROR")
             await self._send(adapter, chat_id, "Ocurrió un error técnico al convertir o entregar el Excel.", thread_id)
             return True
-        await self._send(adapter, chat_id, "Excel enviado.", thread_id)
+        await self._send(adapter, chat_id, "Excel enviado.", thread_id,
+                         self._cruce_offer(adapter, chat_id, thread_id, user_id, result))
         return True
+
+    @staticmethod
+    def _cruce_offer(adapter, chat_id, thread_id, user_id, result: dict[str, Any] | None):
+        """Botón «Cruzar con Libros IVA» para la planilla entregada (Ágora #122).
+
+        El router informa el contribuyente que resolvió y la salida relativa a
+        ~/clientes/, la misma ruta que registra en router_pdf.tbl_archivos_generados.
+        Sin esos datos (p. ej. conversión sin router) no se ofrece nada.
+        """
+        cruce = getattr(adapter, "_cruce_iva_flow", None)
+        if cruce is None or not isinstance(result, dict):
+            return None
+        try:
+            return cruce.register_offer(
+                user_id=user_id, chat_id=chat_id, thread_id=thread_id,
+                contributor_id=result.get("id_contribuyente"),
+                ruta_relativa=result.get("output_relative_to_clientes"),
+            )
+        except Exception as exc:
+            logger.warning("[PDF-XLSX] stage=cruce_offer status=SKIPPED error=%s", type(exc).__name__)
+            return None
 
     async def _history_start(self, message, document) -> dict[str, int]:
         if self.history is None:

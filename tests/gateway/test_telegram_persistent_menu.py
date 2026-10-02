@@ -166,7 +166,7 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
         query.edit_message_caption.assert_awaited_once_with(
             caption=(
                 "Bancos\n\n"
-                "Convertí resúmenes bancarios compatibles a Excel. "
+                "Convertí resúmenes bancarios compatibles a Excel y cruzalos con los Libros IVA. "
                 "No convierte PDFs generales."
             ),
             reply_markup=[
@@ -175,6 +175,12 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
                     {
                         "text": "📦  Lote de resúmenes bancarios → Excel",
                         "callback_data": "bx:start",
+                    }
+                ],
+                [
+                    {
+                        "text": "🔀  Cruce con Libros IVA" + "\u200a" * 2 + "\u2800" * 11,
+                        "callback_data": "cx:start",
                     }
                 ],
                 [
