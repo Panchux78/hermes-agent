@@ -48,13 +48,32 @@ def pending_request(requests: dict, key: str, *, flow: str):
 class ConversionFailure(RuntimeError):
     """Falla saneada del subprocess de conversión."""
 
-    def __init__(self, status: str, reason: str, run_id: str, cuota: str | None = None) -> None:
+    def __init__(self, status: str, reason: str, run_id: str, cuota: str | None = None,
+                 original_not_saved: bool = False) -> None:
         super().__init__(f"{status}: {reason}")
         self.status = status
         self.reason = reason
         self.run_id = run_id
         # Mensaje de ContaBot cuando el estudio no tiene espacio (Ágora #115).
         self.cuota = cuota or mensaje_si_cuota(status) or mensaje_si_cuota(reason)
+        # El original sin contribuyente no pudo quedar en Documentos: se avisa.
+        self.original_not_saved = original_not_saved
+
+
+ORIGINAL_NOT_SAVED_TEXT = (
+    "El PDF original no se pudo guardar en Documentos porque no se identificó "
+    "el estudio de quien lo envió; quedó sólo en la recepción para revisión."
+)
+
+
+def original_not_saved(result: Any) -> bool:
+    """True si el router informa que un original no quedó guardado (Ágora #115)."""
+    if not isinstance(result, dict):
+        return False
+    for value in (result.get("original"), result.get("archive")):
+        if isinstance(value, dict) and value.get("saved") is False:
+            return True
+    return False
 
 
 class PdfXlsxFlow:
@@ -207,7 +226,8 @@ class PdfXlsxFlow:
         result: dict[str, Any] | None = None
         try:
             with tempfile.TemporaryDirectory(prefix="contabot-pdf-xlsx-") as work:
-                output, result = await self._convert(document, Path(work), report_progress)
+                output, result = await self._convert(document, Path(work), report_progress,
+                                                     telegram_user_id=user_id)
                 if history is not None:
                     await self._history_attach(history, output, result)
                 delivery_name = self._delivery_filename(output)
@@ -395,6 +415,8 @@ class PdfXlsxFlow:
         document,
         workdir: Path,
         progress: Callable[[str, int, int], Awaitable[None]] | None = None,
+        *,
+        telegram_user_id: str | None = None,
     ) -> tuple[Path, dict[str, Any]]:
         run_id = uuid.uuid4().hex
         source_dir = self.input_cache_dir / run_id
@@ -408,7 +430,8 @@ class PdfXlsxFlow:
         await telegram_file.download_to_drive(custom_path=source)
         source.chmod(0o600)
         if self.router_project_dir is not None and self.router_project_dir.is_dir():
-            return await self._convert_with_router(source, workdir, run_id, progress)
+            return await self._convert_with_router(source, workdir, run_id, progress,
+                                                   telegram_user_id=telegram_user_id)
         proc = await asyncio.create_subprocess_exec(
             str(self._converter_python()), "-m", "conversion_documentos.convertir_documento",
             "--input", str(source), "--output", str(output),
@@ -439,7 +462,7 @@ class PdfXlsxFlow:
             raise ConversionFailure(status, reason, run_id, mensaje_si_cuota(result))
         return output, result
 
-    def _router_command(self, source: Path) -> list[str]:
+    def _router_command(self, source: Path, telegram_user_id: str | None = None) -> list[str]:
         hermes_home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes")))
         uv = hermes_home / "bin" / "uv"
         if not uv.is_file():
@@ -448,6 +471,8 @@ class PdfXlsxFlow:
             str(uv), "run", "--with", "pdfplumber", "--with", "openpyxl", "python3",
             "skills/accounting/pdf-contable-router/scripts/router.py", "ingest",
             "--input", str(source),
+            # Estudio y usuario del solicitante para el catálogo de documentos (Ágora #115).
+            *(["--telegram-user-id", str(telegram_user_id)] if telegram_user_id else []),
         ]
 
     def _cleanup_preserved_staging(self, source: Path) -> None:
@@ -471,11 +496,13 @@ class PdfXlsxFlow:
         workdir: Path,
         run_id: str,
         progress: Callable[[str, int, int], Awaitable[None]] | None,
+        *,
+        telegram_user_id: str | None = None,
     ) -> tuple[Path, dict[str, Any]]:
         if progress is not None:
             await progress("interpreting", 1, 1)
         proc = await asyncio.create_subprocess_exec(
-            *self._router_command(source),
+            *self._router_command(source, telegram_user_id),
             cwd=str(self.router_project_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -496,7 +523,8 @@ class PdfXlsxFlow:
                 "[PDF-XLSX] run_id=%s stage=router status=%s reason=%s stderr_present=%s",
                 run_id, status, reason, bool(stderr.strip()),
             )
-            raise ConversionFailure(status, reason, run_id, mensaje_si_cuota(result))
+            raise ConversionFailure(status, reason, run_id, mensaje_si_cuota(result),
+                                    original_not_saved(result))
         if progress is not None:
             await progress("validating", 1, 1)
         if result.get("reception_preserved") is True:
@@ -577,6 +605,13 @@ class PdfXlsxFlow:
     def _failure_message(error: ConversionFailure) -> str:
         if getattr(error, "cuota", None):
             return error.cuota
+        text = PdfXlsxFlow._business_failure_message(error)
+        if getattr(error, "original_not_saved", False):
+            text += " " + ORIGINAL_NOT_SAVED_TEXT
+        return text
+
+    @staticmethod
+    def _business_failure_message(error: ConversionFailure) -> str:
         business_messages = {
             "ROUTER_UNIDENTIFIED": "El documento no corresponde todavía a un emisor reconocido.",
             "ROUTER_IDENTIFIED_NO_ROUTE": "El formato de este documento todavía no está soportado.",

@@ -14,7 +14,7 @@ import pytest
 from plugins.platforms.telegram.agip_ddjj_flow import (
     AgipDdjjFlow,
     FlowState,
-    is_valid_delivery_path,
+    delivery_path,
     normalize_period,
     visible_cuit,
 )
@@ -153,27 +153,33 @@ def test_unlinked_actor_and_forged_current_selection_are_rejected(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_delivery_accepts_the_v5_consultation_path_and_versions():
-    assert is_valid_delivery_path(
-        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/07/consultas/"
-        "vgs-st-srl-ddjj-iibb-agip-2026-07.xlsx"
-    )
-    assert is_valid_delivery_path(
-        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/anual/consultas/"
-        "vgs-st-srl-ddjj-iibb-agip-2026-v02.xlsx"
-    )
-    assert not is_valid_delivery_path(
-        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/07/consultas/"
-        "otro-cliente-ddjj-iibb-agip-2026-07.xlsx"
-    )
-    assert not is_valid_delivery_path(
-        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/07/consultas/"
-        "30712345678-ddjj-iibb-agip-2026-07.xlsx"
-    )
-    assert not is_valid_delivery_path(
-        "/home/pancho/clientes/vgs-st-srl/30712345678/agip/2026/2026-07/ddjj-vep/"
-        "2026-08-14__ddjj-iibb-periodo-2026-07.xlsx"
-    )
+def test_delivery_accepts_only_saved_documents_inside_estudios(tmp_path):
+    """Ágora #115: el XLSX lo guarda documentos_cliente; ya no hay carpeta consultas."""
+    ruta = "estudios/1/30712345678/2026/07/agip/vgs-st-srl-ddjj-iibb-agip-2026-07.xlsx"
+    saved = tmp_path / ruta
+    saved.parent.mkdir(parents=True)
+    saved.write_bytes(b"xlsx")
+    assert delivery_path({"xlsx": str(saved), "xlsx_ruta_clientes": ruta}, tmp_path) == saved
+    # Ruta relativa que no coincide con el absoluto, ruta vieja, enlace y fuera de estudios/.
+    assert delivery_path({"xlsx": str(saved), "xlsx_ruta_clientes": ruta.replace("07/agip", "08/agip")}, tmp_path) is None
+    old = tmp_path / "vgs-st-srl/30712345678/agip/2026/07/consultas/vgs-st-srl-ddjj-iibb-agip-2026-07.xlsx"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"xlsx")
+    assert delivery_path({"xlsx": str(old)}, tmp_path) is None
+    link = saved.with_name("enlace.xlsx")
+    link.symlink_to(saved)
+    assert delivery_path({"xlsx": str(link), "xlsx_ruta_clientes": ruta.replace(saved.name, "enlace.xlsx")}, tmp_path) is None
+    assert delivery_path({"xlsx": str(saved), "xlsx_ruta_clientes": ruta, "xlsx_sha256": "0" * 64}, tmp_path) is None
+
+
+def test_quota_and_document_failure_are_explained():
+    assert AgipDdjjFlow._worker_error_message({
+        "ok": False, "error_code": "cuota_insuficiente", "stage": "check_quota",
+        "error": "El estudio no tiene espacio suficiente. Liberá archivos desde Documentos o pedí ampliar la cuota.",
+        "mensaje": "El estudio no tiene espacio suficiente. Liberá archivos desde Documentos o pedí ampliar la cuota.",
+    }) == "El estudio no tiene espacio suficiente. Liberá archivos desde Documentos o pedí ampliar la cuota."
+    assert "no se pudo guardar el resultado en Documentos" in AgipDdjjFlow._worker_error_message(
+        {"ok": False, "error_code": "AGIP_DOCUMENTO_NO_GUARDADO", "codigo": "base_no_disponible"})
 
 
 def test_expired_state_is_rejected_before_starting_worker():
@@ -265,7 +271,9 @@ def test_success_uses_verification_profile_before_delivery(
         adapter = FakeAdapter()
         key = flow._key("10", None, "7")
         item = _scope_item()
-        output = tmp_path / "resultado.xlsx"
+        ruta = "estudios/1/20123456786/2026/08/agip/cliente-ddjj-iibb-agip-2026-08.xlsx"
+        output = tmp_path / ruta
+        output.parent.mkdir(parents=True)
         output.write_bytes(b"xlsx")
         state = FlowState(
             user_id="7", nonce="a" * 10, stage="running",
@@ -275,6 +283,8 @@ def test_success_uses_verification_profile_before_delivery(
         payload = {
             "ok": True,
             "xlsx": str(output),
+            "xlsx_ruta_clientes": ruta,
+            "xlsx_id_archivo": 4,
             "representado_verificado": VALID_CUIT,
             "message": "Consulta completada.",
         }
@@ -288,10 +298,6 @@ def test_success_uses_verification_profile_before_delivery(
         monkeypatch.setattr(flow, "_acquire_execution_lock", lambda _key: None)
         monkeypatch.setattr(flow, "_release_execution_lock", lambda _key: None)
         monkeypatch.setattr(flow, "_by_id", lambda _ident, _uid: [item])
-        monkeypatch.setattr(
-            "plugins.platforms.telegram.agip_ddjj_flow.is_valid_delivery_path",
-            lambda path: path == str(output),
-        )
 
         await flow._run_query(adapter, "10", None, key, state, "2026-08")
 
@@ -299,6 +305,7 @@ def test_success_uses_verification_profile_before_delivery(
             "7", item, "AGIP - Clave Ciudad", VALID_CUIT,
         )
         adapter.send_document.assert_awaited_once()
+        assert adapter.send_document.await_args.kwargs["file_path"] == str(output)
 
     asyncio.run(scenario())
 

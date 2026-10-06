@@ -26,7 +26,7 @@ from hermes_constants import get_hermes_home
 
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
-from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, mensaje_si_cuota
+from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, archivo_guardado, mensaje_si_cuota
 from plugins.platforms.telegram.contributor_selector import (
     CONTRIBUTOR_PROMPT,
     MULTIPLE_CONTRIBUTORS_TEXT,
@@ -938,25 +938,23 @@ class PortalIvaFlow:
             await asyncio.gather(stdout_task, stderr_task, wait_task, return_exceptions=True)
             raise
 
+    def _saved(self, path: Any, ruta: Any, sha256: Any = None) -> Path:
+        """Archivo guardado por ContaBot en Documentos (Ágora #115), verificado."""
+        try:
+            return archivo_guardado(path, self.clients_root, ruta, sha256)
+        except ValueError as exc:
+            code = "PORTAL_IVA_DELIVERY_HASH_INVALID" if str(exc) == "documento_hash_invalido" \
+                else "PORTAL_IVA_DELIVERY_PATH_INVALID"
+            raise RuntimeError(code) from exc
+
     def _deliverables(self, slug: str, cuit: str, period: str, result: dict[str, Any]) -> list[tuple[Path, int, str]]:
+        """CSV entregables de Ventas y Compras, tal como los guardó portal_iva.py.
+
+        La ruta la decide el módulo de documentos: se usan ``entregable_path`` y
+        ``entregable_ruta_clientes``; nunca se reconstruye la carpeta.
+        """
         if not slug or not cuit or not period:
             raise RuntimeError("PORTAL_IVA_STATE_INVALID")
-        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) or not re.fullmatch(r"\d{11}", cuit):
-            raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-        year, month = period.split("-")
-        root = self.clients_root / slug / cuit / "arca" / year / month / "consultas"
-        try:
-            clients_root_real = self.clients_root.resolve(strict=True)
-            cursor = self.clients_root
-            for part in (slug, cuit, "arca", year, month, "consultas"):
-                cursor = cursor / part
-                if cursor.is_symlink():
-                    raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-            root_real = root.resolve(strict=True)
-            if not root_real.is_relative_to(clients_root_real):
-                raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-        except OSError as exc:
-            raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID") from exc
         files = result.get("archivos")
         if not isinstance(files, list):
             raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
@@ -968,17 +966,38 @@ class PortalIvaFlow:
             name = str(item.get("entregable_name", ""))
             if not name or Path(name).name != name or Path(name).suffix.lower() != ".csv":
                 raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-            path = root / name
-            try:
-                resolved = path.resolve(strict=True)
-            except OSError as exc:
-                raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID") from exc
-            if path.is_symlink() or not path.is_file() or resolved.parent != root_real:
+            path = self._saved(item.get("entregable_path"), item.get("entregable_ruta_clientes"),
+                               item.get("entregable_sha256"))
+            if path.name != name:
                 raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
             output.append((path, int(item.get("filas", 0) or 0), str(item["libro"])))
         if {label for _, _, label in output} != expected or len(output) != 2:
             raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
         return sorted(output, key=lambda item: {"ventas": 0, "compras": 1}[item[2]])
+
+    def _f2083_deliverable(self, record: Any) -> tuple[Path, int, str] | None:
+        """F.2083 guardado (registro con estado, ruta, ruta_clientes, sha256), si existe."""
+        if not isinstance(record, dict) or record.get("estado") != "disponible":
+            return None
+        path = self._saved(record.get("ruta"), record.get("ruta_clientes"), record.get("sha256"))
+        if path.suffix.lower() != ".pdf":
+            raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+        return path, 0, "F.2083"
+
+    def _saved_before_failure(self, result: dict[str, Any] | None) -> list[str]:
+        """Nombres de lo que quedó guardado en Documentos antes de un fallo."""
+        names: list[str] = []
+        for item in (result or {}).get("archivos_guardados") or []:
+            if not isinstance(item, dict):
+                continue
+            for prefix in ("entregable", "zip"):
+                try:
+                    path = archivo_guardado(item.get(f"{prefix}_path"), self.clients_root,
+                                            item.get(f"{prefix}_ruta_clientes"))
+                except ValueError:
+                    continue
+                names.append(path.name)
+        return names
 
     @staticmethod
     def _stage_delivery_files(deliverables: list[tuple[Path, int, str]]) -> tuple[Path, list[tuple[Path, int, str]]]:
@@ -1024,7 +1043,9 @@ class PortalIvaFlow:
         lines = ["Portal IVA completado."]
         for _, rows, label in deliverables:
             title = label.title()
-            if rows == 0:
+            if label == "F.2083":
+                lines.append("F.2083: archivo enviado.")
+            elif rows == 0:
                 lines.append(f"{title}: sin comprobantes para el período.")
             elif rows == 1:
                 lines.append(f"{title}: 1 comprobante; archivo enviado.")
@@ -1094,37 +1115,53 @@ class PortalIvaFlow:
         return result
 
     def _batch_deliverables(self, result: dict[str, Any]) -> list[tuple[Path, int, str]]:
-        root = self.clients_root.resolve(strict=True)
+        """Todo lo que el lote guardó en Documentos, también de casos fallidos (Ágora #115)."""
         output: list[tuple[Path, int, str]] = []
         for case in result.get("casos", []):
-            if not isinstance(case, dict) or not case.get("ok"):
+            if not isinstance(case, dict):
                 continue
-            for record in case.get("archivos", []):
-                path = Path(str(record.get("entregable_path", "")))
-                resolved = path.resolve(strict=True)
-                if path.is_symlink() or not path.is_file() or not resolved.is_relative_to(root):
-                    raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-                if hashlib.sha256(path.read_bytes()).hexdigest() != record.get("entregable_sha256"):
-                    raise RuntimeError("PORTAL_IVA_DELIVERY_HASH_INVALID")
-                output.append((path, int(record.get("filas", 0)), f"{case['cliente']} · {case['periodo']} · {record['libro']}"))
-            f2083 = case.get("f2083")
-            if isinstance(f2083, dict) and f2083.get("estado") == "disponible":
-                path = Path(str(f2083.get("ruta", "")))
-                resolved = path.resolve(strict=True)
-                if path.is_symlink() or not path.is_file() or not resolved.is_relative_to(root) or path.suffix.lower() != ".pdf":
-                    raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-                if hashlib.sha256(path.read_bytes()).hexdigest() != f2083.get("sha256"):
-                    raise RuntimeError("PORTAL_IVA_DELIVERY_HASH_INVALID")
-                output.append((path, 0, f"{case['cliente']} · {case['periodo']} · F.2083"))
+            # Un caso fallido conserva en ``archivos``/``f2083`` lo que ya quedó guardado.
+            for record in case.get("archivos") or []:
+                if not isinstance(record, dict):
+                    continue
+                path = self._saved(record.get("entregable_path"), record.get("entregable_ruta_clientes"),
+                                   record.get("entregable_sha256"))
+                output.append((path, int(record.get("filas", 0) or 0),
+                               f"{case['cliente']} · {case['periodo']} · {record['libro']}"))
+            f2083 = self._f2083_deliverable(case.get("f2083"))
+            if f2083 is not None:
+                output.append((f2083[0], 0, f"{case['cliente']} · {case['periodo']} · F.2083"))
         for workbook in result.get("xlsx", []):
-            path = Path(str(workbook.get("ruta", "")))
-            resolved = path.resolve(strict=True)
-            if path.is_symlink() or not path.is_file() or not resolved.is_relative_to(root) or path.suffix.lower() != ".xlsx":
+            path = self._saved(workbook.get("ruta"), workbook.get("ruta_clientes"), workbook.get("sha256"))
+            if path.suffix.lower() != ".xlsx":
                 raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-            if hashlib.sha256(path.read_bytes()).hexdigest() != workbook.get("sha256"):
-                raise RuntimeError("PORTAL_IVA_DELIVERY_HASH_INVALID")
             output.append((path, 0, f"{workbook['cliente']} · consolidado"))
         return output
+
+    @staticmethod
+    def _batch_xlsx_errors(result: dict[str, Any]) -> list[str]:
+        """Consolidados que no se pudieron guardar: se informan, nunca se descartan."""
+        lines = []
+        for error in result.get("xlsx_errores") or []:
+            if not isinstance(error, dict):
+                continue
+            text = mensaje_si_cuota(error) or str(error.get("motivo_texto") or "no se pudo guardar")
+            action = f" {error['accion_sugerida']}" if error.get("accion_sugerida") else ""
+            lines.append(f"• {error.get('cliente', 'contribuyente')} · consolidado: {text}{action}")
+        return lines
+
+    def _archive_member(self, source: Path, label: str) -> tuple[str, str, str]:
+        """(cliente, AAAA/MM, nombre dentro del ZIP) de un documento guardado.
+
+        Estructura nueva: estudios/<e>/<cuit>/<AAAA>/<MM|anual>/<sección>/<archivo>;
+        el cliente sale del rótulo («<slug> · …»), validado como slug.
+        """
+        relative = source.relative_to(self.clients_root)
+        client = label.split(" · ", 1)[0]
+        if (len(relative.parts) < 7 or relative.parts[0] != "estudios"
+                or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", client)):
+            raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
+        return client, "/".join(relative.parts[3:5]), "/".join((client, *relative.parts[3:]))
 
     def _stage_batch_archive(self, deliverables: list[tuple[Path, int, str]],
                              name: str = "libros-iva-lote.zip",
@@ -1132,7 +1169,6 @@ class PortalIvaFlow:
         """Send one ZIP while leaving each validated original in Documentos."""
         if Path(name).name != name or not name.endswith(".zip"):
             raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-        root = self.clients_root.resolve(strict=True)
         staging = Path(tempfile.mkdtemp(prefix="portal-iva-telegram-"))
         archive = staging / name
         seen: set[str] = set()
@@ -1152,19 +1188,10 @@ class PortalIvaFlow:
                         with package.open(archive_name, "w") as member:
                             shutil.copyfileobj(original, member)
 
-                for source, _, _ in deliverables:
-                    relative = source.relative_to(self.clients_root)
-                    if len(relative.parts) < 3 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", relative.parts[0]) \
-                            or not re.fullmatch(r"\d{11}", relative.parts[1]):
-                        raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-                    cursor = self.clients_root
-                    for part in relative.parts:
-                        cursor = cursor / part
-                        if cursor.is_symlink():
-                            raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-                    if not source.resolve(strict=True).is_relative_to(root):
-                        raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-                    archive_name = "/".join((relative.parts[0], *relative.parts[2:]))
+                for source, _, label in deliverables:
+                    # Se revalida al empaquetar: dentro de estudios/, regular y sin enlaces.
+                    source = self._saved(None, source.relative_to(self.clients_root).as_posix())
+                    _, _, archive_name = self._archive_member(source, label)
                     add_file(source, archive_name)
                 evidence_root = self.captcha_root.resolve(strict=True) if evidence else None
                 for source, evidence_name in evidence or []:
@@ -1187,11 +1214,7 @@ class PortalIvaFlow:
         skipped: list[str] = []
         for record in deliverables:
             source = record[0]
-            relative = source.relative_to(self.clients_root)
-            if len(relative.parts) < 5:
-                raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
-            client = relative.parts[0]
-            period = "/".join(relative.parts[3:5])
+            client, period, _ = self._archive_member(source, record[2])
             if source.stat().st_size > _TELEGRAM_FILE_LIMIT:
                 skipped.append(f"{client}: {source.name}")
                 continue
@@ -1421,6 +1444,9 @@ class PortalIvaFlow:
                 + (f" {case.get('accion_sugerida')}" if case.get("accion_sugerida") else "")
                 for case in pending[:8]
             )
+            xlsx_errors = self._batch_xlsx_errors(result)
+            if xlsx_errors:
+                detail = "\n".join(filter(None, (detail, *xlsx_errors)))
             suffix = f"\n{detail}" if detail else ""
             delivered = sum(value == "descargado" for files in state.batch_files.values() for value in files.values())
             expected = (len(verified_clients) * len(periods) * 2
@@ -1575,6 +1601,11 @@ class PortalIvaFlow:
                 failure_message = self._error_message(
                     result, f"{state.operation} no se completó.", state.operation,
                 )
+                saved_names = self._saved_before_failure(result)
+                if saved_names:
+                    # Lo ya guardado no se pierde ni se calla (Ágora #115).
+                    failure_message += ("\nQuedaron guardados en Documentos: "
+                                        + ", ".join(saved_names) + ".")
                 await self._edit_progress(state, failure_message)
                 # A terminal outcome must create a fresh, visible notification.
                 # Editing an older progress message alone is easy to miss in Telegram.
@@ -1594,7 +1625,8 @@ class PortalIvaFlow:
             state.progress_label = "Validando archivos…"
             await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
             source_deliverables = self._deliverables(slug, cuit, period, result)
-            deliverables = source_deliverables
+            f2083 = self._f2083_deliverable(result.get("f2083"))
+            deliverables = source_deliverables + ([f2083] if f2083 else [])
             if state.cancelled:
                 return
             staging, deliverables = self._stage_delivery_files(deliverables)
@@ -1605,7 +1637,7 @@ class PortalIvaFlow:
             for path, rows, label in deliverables:
                 delivery = await adapter.send_document(
                     chat_id=str(chat_id), file_path=str(path), file_name=path.name,
-                    caption=f"Portal IVA {label.title()}: {rows} fila(s).",
+                    caption=("Portal IVA F.2083." if label == "F.2083" else f"Portal IVA {label.title()}: {rows} fila(s)."),
                     metadata={"thread_id": thread_id} if thread_id is not None else None,
                 )
                 if not delivery.success:

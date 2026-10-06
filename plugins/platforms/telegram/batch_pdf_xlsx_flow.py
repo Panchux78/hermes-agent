@@ -20,7 +20,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
-from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, mensaje_si_cuota
+from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, archivo_guardado, mensaje_si_cuota
 
 from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow, pending_request
 
@@ -285,12 +285,19 @@ class BatchPdfXlsxFlow:
                 if result.get("status") != "COMPLETED":
                     logger.error("[BATCH-XLSX] router blocked: %s", result.get("reason", "unknown"))
                     cuota = mensaje_si_cuota(result)
+                    # Lo que ya quedó guardado se entrega aunque el lote falle (Ágora #115).
+                    sent, unsent = await self._deliver_saved(adapter, chat_id, thread_id, result.get("saved"))
                     await self._history_finish_open_items(
                         history_run, history_items, state="fallido",
                         reason_code=CODIGO_CUOTA if cuota else self._history_reason_code(result.get("reason")),
                         reason_text=cuota or "El lote no pudo completar la conversión; el original y el avance se conservaron.",
                     )
-                    await query.edit_message_text(cuota or "No pude completar el lote. El archivo original y el avance ya realizado quedaron conservados para revisión.", reply_markup=self._confirmation_keyboard(batch_id))
+                    text = cuota or "No pude completar el lote. El archivo original y el avance ya realizado quedaron conservados para revisión."
+                    if sent:
+                        text += f"\nSe entregaron {sent} archivo(s) que ya habían quedado guardados en Documentos."
+                    if unsent:
+                        text += f"\n{unsent} archivo(s) guardados no se pudieron enviar; quedaron para revisión."
+                    await query.edit_message_text(text, reply_markup=self._confirmation_keyboard(batch_id))
                     return True
             outputs = result.get("outputs") if isinstance(result.get("outputs"), list) else []
             await query.edit_message_text(f"Lote procesado. Entregando {len(outputs)} archivo(s)…")
@@ -344,6 +351,39 @@ class BatchPdfXlsxFlow:
             await query.edit_message_text("Lote cancelado. El archivo original quedó conservado." if result.get("status") == "CANCELLED" else "No pude cancelar el lote en su estado actual.")
             return True
         return False
+
+    async def _deliver_saved(self, adapter, chat_id: Any, thread_id: Any, saved: Any) -> tuple[int, int]:
+        """Envía lo que batch-process informó en ``saved`` antes de fallar.
+
+        Sólo archivos verificados dentro de <raíz>/estudios/; el resto se cuenta
+        para avisarlo, nunca se descarta en silencio.
+        """
+        sent = unsent = 0
+        for item in saved if isinstance(saved, list) else []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                path = archivo_guardado(item.get("path"), self.clients_root, item.get("ruta"))
+            except ValueError:
+                unsent += 1
+                continue
+            delivery = await adapter.send_document(
+                chat_id=str(chat_id), file_path=str(path), file_name=PdfXlsxFlow._delivery_filename(path),
+                caption="Guardado en Documentos antes de que el lote se detuviera.",
+                metadata={"thread_id": thread_id} if thread_id is not None else None)
+            if getattr(delivery, "success", False):
+                sent += 1
+            else:
+                unsent += 1
+        return sent, unsent
+
+    @staticmethod
+    def _archive_not_saved_line(result: dict[str, Any]) -> str | None:
+        archive = result.get("archive")
+        if isinstance(archive, dict) and archive.get("saved") is False:
+            return ("El archivo recibido no se pudo guardar en Documentos porque no se identificó "
+                    "el estudio de quien lo envió; quedó sólo en la recepción del lote.")
+        return None
 
     async def _status(self, key: str, batch_id: str, user_id: str, chat_id: str) -> dict[str, Any]:
         return await self._run(key, self._command("batch-status", "--batch-id", batch_id, "--batch-root", str(self.batch_root), "--telegram-user-id", user_id, "--telegram-chat-id", chat_id))
@@ -597,6 +637,9 @@ class BatchPdfXlsxFlow:
             if not problems:
                 lines.append(f"- {result.get('reason', 'No pude identificar todos los documentos.')}")
             lines.append("El archivo original quedó conservado.")
+            archive_line = self._archive_not_saved_line(result)
+            if archive_line:
+                lines.append(archive_line)
             if history_run is not None:
                 await self._history_finish_open_items(
                     history_run, history_items, state="rechazado",
@@ -631,6 +674,9 @@ class BatchPdfXlsxFlow:
             repeated = group.get("repeated_periods") or []
             if repeated:
                 lines.append(f"Advertencia: hay más de un PDF para {', '.join(str(value) for value in repeated)}")
+        archive_line = self._archive_not_saved_line(result)
+        if archive_line:
+            lines.append(archive_line)
         batch_id = str(result["batch_id"])
         keyboard = self._confirmation_keyboard(batch_id)
         await progress_message.edit_text("\n".join(lines), reply_markup=keyboard)

@@ -287,3 +287,146 @@ def test_agip_y_portal_iva_traducen_cuota():
     assert AgipDdjjFlow._worker_error_message({"ok": False, "error_code": "cuota_insuficiente"}, True) == MENSAJE
     assert PortalIvaFlow._error_message({"ok": False, "motivo": "cuota_insuficiente"}, "x", "generar") == MENSAJE
     assert PortalIvaFlow._error_message({"ok": False, "motivo": "OTRO"}, "x", "generar") != MENSAJE
+
+
+# ------------------------------------- Ágora #115: contratos finales de router y AGIP
+
+def _router_failure(monkeypatch, tmp_path, payload):
+    from plugins.platforms.telegram.pdf_xlsx_flow import ConversionFailure, PdfXlsxFlow
+
+    async def scenario():
+        flow = PdfXlsxFlow(project_dir=tmp_path)
+        source = tmp_path / "documento.pdf"
+        source.write_bytes(b"%PDF")
+        seen = {}
+
+        def command(src, telegram_user_id=None):
+            seen["telegram_user_id"] = telegram_user_id
+            return ["router"]
+
+        monkeypatch.setattr(flow, "_router_command", command)
+        process = NS(returncode=1, communicate=AsyncMock(return_value=(json.dumps(payload).encode(), b"")),
+                     kill=lambda: None, wait=AsyncMock())
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+        with pytest.raises(ConversionFailure) as error:
+            await flow._convert_with_router(source, tmp_path, "run", None, telegram_user_id="10")
+        return PdfXlsxFlow._failure_message(error.value), seen, error.value
+
+    return asyncio.run(scenario())
+
+
+def test_router_quota_block_shows_contabot_message(monkeypatch, tmp_path):
+    text, seen, error = _router_failure(monkeypatch, tmp_path, {
+        "status": "BLOCKED", "reason": "cuota_insuficiente", "codigo": "cuota_insuficiente",
+        "mensaje": MENSAJE, "reception_preserved": True})
+    assert text == MENSAJE and error.cuota == MENSAJE
+    assert seen["telegram_user_id"] == "10"
+
+
+def test_router_unattributed_original_not_saved_is_told(monkeypatch, tmp_path):
+    from plugins.platforms.telegram.pdf_xlsx_flow import ORIGINAL_NOT_SAVED_TEXT
+    text, _, _ = _router_failure(monkeypatch, tmp_path, {
+        "status": "BLOCKED", "reason": "CONTRIBUTOR_NOT_RESOLVED", "reception_preserved": True,
+        "original": {"saved": False, "reason": "estudio_del_solicitante_desconocido"}})
+    assert ORIGINAL_NOT_SAVED_TEXT in text
+    text, _, _ = _router_failure(monkeypatch, tmp_path, {
+        "status": "BLOCKED", "reason": "CONTRIBUTOR_NOT_RESOLVED", "reception_preserved": True,
+        "original": {"saved": True, "id_archivo": 3, "ruta": "estudios/1/estudio/2026/10/bancos/x.pdf"}})
+    assert ORIGINAL_NOT_SAVED_TEXT not in text
+
+
+def test_batch_process_failure_delivers_saved_and_shows_message(tmp_path):
+    from plugins.platforms.telegram.batch_pdf_xlsx_flow import BatchPdfXlsxFlow
+
+    async def scenario():
+        flow = BatchPdfXlsxFlow(project_dir=tmp_path)
+        flow.clients_root = tmp_path / "clientes"
+        ruta = "estudios/1/20123456786/2026/05/bancos/empresa-banco-ars-2026-05.xlsx"
+        saved = flow.clients_root / ruta
+        saved.parent.mkdir(parents=True)
+        saved.write_bytes(b"xlsx")
+        adapter = NS(send_document=AsyncMock(return_value=NS(success=True)))
+        query = NS(answer=AsyncMock(), edit_message_text=AsyncMock())
+        flow._status = AsyncMock(return_value={"digest": "a" * 64})
+        flow._command = lambda *args: list(args)
+        flow._run = AsyncMock(return_value={
+            "status": "FAILED", "reason": "cuota_insuficiente", "codigo": "cuota_insuficiente",
+            "mensaje": MENSAJE,
+            "saved": [{"member_name": "a.pdf", "path": str(tmp_path / "estado/a.xlsx")},
+                      {"path": str(saved), "ruta": ruta}]})
+        assert await flow.callback(adapter, query, "bx:p:lote-1", 20, None, "10")
+        adapter.send_document.assert_awaited_once()
+        assert adapter.send_document.await_args.kwargs["file_path"] == str(saved)
+        text = query.edit_message_text.await_args.args[0]
+        assert text.startswith(MENSAJE)
+        assert "Se entregaron 1 archivo(s)" in text
+        assert "1 archivo(s) guardados no se pudieron enviar" in text
+
+    asyncio.run(scenario())
+
+
+def test_batch_inspect_reports_archive_not_saved(monkeypatch, tmp_path):
+    import plugins.platforms.telegram.batch_pdf_xlsx_flow as module
+
+    async def scenario():
+        monkeypatch.setattr(module, "InlineKeyboardButton", lambda text, callback_data: {"text": text})
+        monkeypatch.setattr(module, "InlineKeyboardMarkup", lambda rows: rows)
+        flow = module.BatchPdfXlsxFlow(project_dir=tmp_path)
+        flow.input_cache = tmp_path / "cache"
+        flow.batch_root = tmp_path / "batches"
+        prompt = NS(edit_text=AsyncMock())
+        adapter = NS(_bot=NS(send_message=AsyncMock(side_effect=[None, prompt])))
+        telegram_file = NS(download_to_drive=AsyncMock(side_effect=lambda custom_path: Path(custom_path).write_bytes(b"ZIP")))
+        message = NS(chat_id=20, message_thread_id=None, from_user=NS(id=10),
+                     document=NS(file_name="lote.zip", file_size=100, get_file=AsyncMock(return_value=telegram_file)))
+        result = {"batch_id": "abc", "digest": "d" * 64, "groups": [], "pdf_count": 0, "problems": [],
+                  "status": "AWAITING_CONFIRMATION", "warnings": [],
+                  "archive": {"saved": False, "reason": "estudio_del_solicitante_desconocido"}}
+        monkeypatch.setattr(flow, "_run", AsyncMock(return_value=result))
+        monkeypatch.setattr(flow, "_command", lambda *args: list(args))
+        await flow.callback(adapter, NS(answer=AsyncMock()), "bx:start", 20, None, "10")
+        await flow.document(adapter, message)
+        assert "no se pudo guardar en Documentos" in prompt.edit_text.await_args.args[0]
+
+    asyncio.run(scenario())
+
+
+def test_agip_history_uses_documents_route(tmp_path):
+    from plugins.platforms.telegram.agip_ddjj_flow import AgipDdjjFlow, FlowState
+
+    async def scenario():
+        history = NS(start=AsyncMock(return_value=NS(run_id=1, item_id=2)), finish_single=AsyncMock())
+        flow = AgipDdjjFlow(clients_root=tmp_path, history=history)
+        ruta = "estudios/1/20123456786/2026/08/agip/cliente-ddjj-iibb-agip-2026-08.xlsx"
+        output = tmp_path / ruta
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"xlsx")
+        item = {"id": 2, "relation_id": 31, "relation_revision": 1, "cuit": "20123456786"}
+        payload = {"ok": True, "message": "Consulta completada.", "xlsx": str(output),
+                   "xlsx_ruta_clientes": ruta, "xlsx_id_archivo": 5,
+                   "xlsx_sha256": __import__("hashlib").sha256(b"xlsx").hexdigest(),
+                   "pdfs": [], "representado_verificado": "20123456786"}
+        process = NS(pid=1, returncode=0, communicate=AsyncMock(return_value=(json.dumps(payload).encode(), b"")),
+                     wait=AsyncMock(return_value=0))
+        import plugins.platforms.telegram.agip_ddjj_flow as module
+        original = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = AsyncMock(return_value=process)
+        old_verify = module.verify_representation
+        module.verify_representation = AsyncMock()
+        try:
+            flow._acquire_execution_lock = lambda _key: None
+            flow._release_execution_lock = lambda _key: None
+            flow._by_id = lambda _ident, _uid: [item]
+            state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1,
+                              represented_id=2, scope_item=item)
+            adapter = NS(send_document=AsyncMock(return_value=NS(success=True, message_id=9)),
+                         _bot=NS(send_message=AsyncMock()))
+            await flow._run_query(adapter, "10", None, "k", state, "2026-08")
+        finally:
+            asyncio.create_subprocess_exec = original
+            module.verify_representation = old_verify
+        kwargs = history.finish_single.await_args.kwargs
+        assert kwargs["state"] == "completado"
+        assert kwargs["output_relative"] == ruta
+
+    asyncio.run(scenario())

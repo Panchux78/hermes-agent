@@ -239,17 +239,28 @@ def _query(data, user_id="7", chat_id="10"):
     )
 
 
+def _saved_fields(root: Path, prefix: str, relative: str, content: bytes) -> dict:
+    """Campos de un documento guardado, como los emite portal_iva.py (Ágora #115)."""
+    import hashlib
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return {f"{prefix}_name": path.name, f"{prefix}_path": str(path),
+            f"{prefix}_ruta_clientes": relative, f"{prefix}_id_archivo": 1,
+            f"{prefix}_bytes": len(content), f"{prefix}_sha256": hashlib.sha256(content).hexdigest()}
+
+
 def _result(root: Path, state: FlowState, *, complete=True):
     year, month = state.period.split("-")
-    target = root / state.slug / state.cuit / "arca" / year / month / "consultas"
-    target.mkdir(parents=True, exist_ok=True)
+    folder = f"estudios/1/{state.cuit}/{year}/{month}/arca"
     files = []
     for label in ("ventas", "compras"):
-        official = f"arca-{label}.csv"
-        deliverable = f"cliente-portal-iva-{label}.csv"
-        (target / official).write_text("cabecera\n", encoding="utf-8")
-        (target / deliverable).write_text("cabecera\n", encoding="utf-8")
-        files.append({"libro": label, "csv_name": official, "entregable_name": deliverable, "filas": 0})
+        record = {"libro": label, "filas": 0, "conciliacion": "no_verificable"}
+        record.update(_saved_fields(root, "zip", f"{folder}/{state.slug}-portal-iva-{label}-{state.period}.zip", b"PK"))
+        record.update(_saved_fields(root, "csv", f"{folder}/{state.slug}-portal-iva-{label}-{state.period}.csv", b"cabecera\n"))
+        record.update({key.replace("csv_", "entregable_", 1): value
+                       for key, value in record.items() if key.startswith("csv_")})
+        files.append(record)
     return {
         "ok": True, "etapa": "completado" if complete else "resolver",
         "archivos": files, "advertencias": ["CSV_SIN_FILAS_ventas"],
@@ -400,7 +411,7 @@ def test_unlinked_actor_and_forged_current_selection_are_rejected():
     asyncio.run(scenario())
 
 
-def test_delivery_rejects_traversal_and_symlink(tmp_path):
+def test_delivery_rejects_traversal_symlink_and_paths_outside_estudios(tmp_path):
     flow = PortalIvaFlow(clients_root=tmp_path)
     state = FlowState(user_id="7", nonce="a" * 10, stage="running", slug="cliente", cuit="20123456789", period="2026-08")
     result = _result(tmp_path, state)
@@ -408,35 +419,45 @@ def test_delivery_rejects_traversal_and_symlink(tmp_path):
     with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
         flow._deliverables(state.slug, state.cuit, state.period, result)
     result = _result(tmp_path, state)
-    target = tmp_path / "cliente" / "20123456789" / "arca" / "2026" / "08" / "consultas"
-    (target / "cliente-portal-iva-ventas.csv").unlink()
-    (target / "cliente-portal-iva-ventas.csv").symlink_to(tmp_path / "elsewhere.csv")
+    result["archivos"][0]["entregable_ruta_clientes"] = "estudios/../../ventas.csv"
     with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
         flow._deliverables(state.slug, state.cuit, state.period, result)
-
-
-def test_delivery_uses_canonical_deliverable_instead_of_long_official_name(tmp_path):
-    flow = PortalIvaFlow(clients_root=tmp_path)
-    state = FlowState(
-        user_id="7",
-        nonce="a" * 10,
-        stage="running",
-        slug="cliente",
-        cuit="20123456789",
-        period="2026-08",
-    )
     result = _result(tmp_path, state)
-    target = tmp_path / "cliente" / "20123456789" / "arca" / "2026" / "08" / "consultas"
-    official = "comprobantes_periodo_202608_ventas_20260906_1145 (montos expresados en pesos).csv"
-    assert len(official) > 64
-    (target / official).write_text("cabecera\n", encoding="utf-8")
-    result["archivos"][0]["csv_name"] = official
+    ventas = Path(result["archivos"][0]["entregable_path"])
+    ventas.unlink()
+    ventas.symlink_to(tmp_path / "elsewhere.csv")
+    (tmp_path / "elsewhere.csv").write_text("x")
+    with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
+        flow._deliverables(state.slug, state.cuit, state.period, result)
+    # La estructura vieja <slug>/<cuit>/arca/AAAA/MM/consultas ya no se acepta.
+    result = _result(tmp_path, state)
+    old = tmp_path / "cliente/20123456789/arca/2026/08/consultas/cliente-portal-iva-ventas-2026-08.csv"
+    old.parent.mkdir(parents=True)
+    old.write_text("cabecera\n")
+    result["archivos"][0].update(entregable_path=str(old), entregable_ruta_clientes=None)
+    with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
+        flow._deliverables(state.slug, state.cuit, state.period, result)
+    fresh = tmp_path / "otra-raiz"
+    fresh.mkdir()
+    result = _result(fresh, state)
+    result["archivos"][1]["entregable_sha256"] = "0" * 64
+    with pytest.raises(RuntimeError, match="DELIVERY_HASH"):
+        PortalIvaFlow(clients_root=fresh)._deliverables(state.slug, state.cuit, state.period, result)
 
+
+def test_delivery_uses_saved_deliverable_and_relative_route(tmp_path):
+    flow = PortalIvaFlow(clients_root=tmp_path)
+    state = FlowState(user_id="7", nonce="a" * 10, stage="running", slug="cliente",
+                      cuit="20123456789", period="2026-08")
+    result = _result(tmp_path, state)
     deliverables = flow._deliverables(state.slug, state.cuit, state.period, result)
-
     assert [path.name for path, _, _ in deliverables] == [
-        "cliente-portal-iva-ventas.csv",
-        "cliente-portal-iva-compras.csv",
+        "cliente-portal-iva-ventas-2026-08.csv",
+        "cliente-portal-iva-compras-2026-08.csv",
+    ]
+    assert [str(path.relative_to(tmp_path)) for path, _, _ in deliverables] == [
+        "estudios/1/20123456789/2026/08/arca/cliente-portal-iva-ventas-2026-08.csv",
+        "estudios/1/20123456789/2026/08/arca/cliente-portal-iva-compras-2026-08.csv",
     ]
 
 
@@ -714,7 +735,7 @@ def test_success_delivers_both_csvs_and_updates_same_message(
         await flow._run(adapter, "10", None, "10::7", state)
         assert adapter.send_document.await_count == 2
         sent_names = [call.kwargs["file_name"] for call in adapter.send_document.await_args_list]
-        assert sent_names == ["cliente-portal-iva-ventas.csv", "cliente-portal-iva-compras.csv"]
+        assert sent_names == ["cliente-portal-iva-ventas-2026-08.csv", "cliente-portal-iva-compras-2026-08.csv"]
         verify_representation_mock.assert_awaited_once()
         assert state.progress_message.edits[-1][0] == (
             "Portal IVA completado.\n"
@@ -784,7 +805,7 @@ def test_remote_filename_mismatch_is_logged_without_aborting_delivery(monkeypatc
             "Compras: sin comprobantes para el período."
         )
         assert caplog.text.count("DELIVERY_FILENAME_MISMATCH") == 2
-        assert "expected='cliente-portal-iva-ventas.csv' delivered='otro.csv'" in caplog.text
+        assert "expected='cliente-portal-iva-ventas-2026-08.csv' delivered='otro.csv'" in caplog.text
 
     asyncio.run(scenario())
 
@@ -1210,40 +1231,83 @@ def test_terminal_batch_uses_verification_connection(monkeypatch):
 
 
 def test_batch_deliverables_rejects_hash_mismatch_and_accepts_csv_xlsx_and_f2083(tmp_path):
-    root = tmp_path / "clientes"
-    target = root / "uno" / "2026-05"
-    target.mkdir(parents=True)
-    csv_path = target / "ventas.csv"
-    csv_path.write_text("cabecera\n", encoding="utf-8")
-    xlsx_path = target / "lote.xlsx"
-    xlsx_path.write_bytes(b"PK synthetic")
-    f2083_path = target / "f2083.pdf"
-    f2083_path.write_bytes(b"%PDF-1.7\nsynthetic")
     import hashlib
+    root = tmp_path / "clientes"
+    folder = "estudios/1/20123456786/2026/05/arca"
+    paths = {}
+    for name, content in (("uno-portal-iva-ventas-2026-05.csv", b"cabecera\n"),
+                          ("uno-portal-iva-libros-2026-05-a-2026-05.xlsx", b"PK synthetic"),
+                          ("uno-portal-iva-f2083-2026-05.pdf", b"%PDF-1.7\nsynthetic"),
+                          ("uno-portal-iva-compras-2026-06.csv", b"cabecera\n")):
+        path = root / folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        paths[name] = (path, f"{folder}/{name}", hashlib.sha256(content).hexdigest())
+    csv_path, csv_ruta, csv_sha = paths["uno-portal-iva-ventas-2026-05.csv"]
+    xlsx_path, xlsx_ruta, xlsx_sha = paths["uno-portal-iva-libros-2026-05-a-2026-05.xlsx"]
+    pdf_path, pdf_ruta, pdf_sha = paths["uno-portal-iva-f2083-2026-05.pdf"]
+    kept_path, kept_ruta, kept_sha = paths["uno-portal-iva-compras-2026-06.csv"]
     flow = PortalIvaFlow(clients_root=root)
     result = {
-        "casos": [{"ok": True, "cliente": "uno", "periodo": "2026-05", "archivos": [{
-            "entregable_path": str(csv_path), "entregable_sha256": hashlib.sha256(csv_path.read_bytes()).hexdigest(),
-            "filas": 1, "libro": "ventas",
-        }], "f2083": {"estado": "disponible", "ruta": str(f2083_path), "sha256": hashlib.sha256(f2083_path.read_bytes()).hexdigest()}}],
-        "xlsx": [{"cliente": "uno", "ruta": str(xlsx_path), "sha256": hashlib.sha256(xlsx_path.read_bytes()).hexdigest()}],
+        "casos": [
+            {"ok": True, "cliente": "uno", "periodo": "2026-05", "archivos": [{
+                "entregable_path": str(csv_path), "entregable_ruta_clientes": csv_ruta,
+                "entregable_sha256": csv_sha, "filas": 1, "libro": "ventas",
+            }], "f2083": {"estado": "disponible", "nombre": pdf_path.name, "ruta": str(pdf_path),
+                          "ruta_clientes": pdf_ruta, "id_archivo": 3, "sha256": pdf_sha}},
+            # Caso fallido: lo ya guardado se entrega igual (Ágora #115).
+            {"ok": False, "cliente": "uno", "periodo": "2026-06", "motivo_codigo": "cuota_insuficiente",
+             "archivos": [{"entregable_path": str(kept_path), "entregable_ruta_clientes": kept_ruta,
+                           "entregable_sha256": kept_sha, "filas": 0, "libro": "compras"}],
+             "f2083": {"estado": "no_disponible"}},
+        ],
+        "xlsx": [{"cliente": "uno", "ruta": str(xlsx_path), "ruta_clientes": xlsx_ruta,
+                  "id_archivo": 4, "sha256": xlsx_sha}],
     }
-    assert len(flow._batch_deliverables(result)) == 3
+    delivered = flow._batch_deliverables(result)
+    assert [path for path, _, _ in delivered] == [csv_path, pdf_path, kept_path, xlsx_path]
     result["xlsx"][0]["sha256"] = "0" * 64
     with pytest.raises(RuntimeError, match="PORTAL_IVA_DELIVERY_HASH_INVALID"):
         flow._batch_deliverables(result)
+    result["xlsx"][0].update(sha256=xlsx_sha, ruta_clientes="estudios/1/20123456786/2026/05/arca/otro.xlsx")
+    with pytest.raises(RuntimeError, match="PORTAL_IVA_DELIVERY_PATH_INVALID"):
+        flow._batch_deliverables(result)
+
+
+def test_batch_reports_consolidated_workbook_errors():
+    lines = PortalIvaFlow._batch_xlsx_errors({"xlsx_errores": [
+        {"cliente": "uno", "id_contribuyente": 1, "motivo": "x", "estado": "error",
+         "motivo_codigo": "cuota_insuficiente",
+         "motivo_texto": "El estudio no tiene espacio suficiente. Liberá archivos desde Documentos o pedí ampliar la cuota.",
+         "accion_sugerida": None},
+        {"cliente": "dos", "id_contribuyente": 2, "motivo": "x", "estado": "error",
+         "motivo_codigo": "documentos_no_guardado", "motivo_texto": "No se pudo guardar el consolidado.",
+         "accion_sugerida": "Reintentá más tarde."},
+    ]})
+    assert lines == [
+        "• uno · consolidado: El estudio no tiene espacio suficiente. Liberá archivos desde Documentos o pedí ampliar la cuota.",
+        "• dos · consolidado: No se pudo guardar el consolidado. Reintentá más tarde.",
+    ]
+
+
+def _estudios_file(root: Path, cuit: str, name: str, content: bytes = b"", size: int | None = None) -> Path:
+    path = root / "estudios" / "1" / cuit / "2026" / "01" / "arca" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if size is None:
+        path.write_bytes(content)
+    else:
+        with path.open("wb") as handle:
+            handle.truncate(size)
+    return path
 
 
 def test_batch_archive_contains_files_once_without_cuit_in_names(tmp_path):
     root = tmp_path / "clientes"
     files = []
     for slug, cuit in (("uno", "20123456786"), ("dos", "20987654321")):
-        directory = root / slug / cuit / "arca" / "2026" / "01" / "consultas"
-        directory.mkdir(parents=True)
         for name in ("ventas.csv", "compras.csv"):
-            path = directory / name
-            path.write_text(slug + name, encoding="utf-8")
-            files.append((path, 1, name))
+            path = _estudios_file(root, cuit, f"{slug}-{name}", (slug + name).encode())
+            files.append((path, 1, f"{slug} · 2026-01 · {name}"))
     evidence_root = tmp_path / "runs"
     evidence_root.mkdir()
     capture = evidence_root / "capture.png"
@@ -1257,24 +1321,26 @@ def test_batch_archive_contains_files_once_without_cuit_in_names(tmp_path):
             names = package.namelist()
             assert len(names) == len(files) + 1 == len(set(names))
             assert all("20123456786" not in name and "20987654321" not in name for name in names)
-            assert package.read("uno/arca/2026/01/consultas/ventas.csv") == b"unoventas.csv"
+            assert package.read("uno/2026/01/arca/uno-ventas.csv") == b"unoventas.csv"
             assert package.read("evidencia/captura-arca-uno-2026-01.png") == b"\x89PNG\r\n\x1a\n"
         assert all(path.exists() for path, _, _ in files)
         assert capture.exists()
     finally:
         shutil.rmtree(staging)
+    # Fuera de estudios/ (estructura vieja) no se empaqueta.
+    old = root / "uno" / "20123456786" / "arca" / "2026" / "01" / "consultas" / "ventas.csv"
+    old.parent.mkdir(parents=True)
+    old.write_text("x")
+    with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
+        flow._stage_batch_archive([(old, 1, "uno · 2026-01 · ventas")])
 
 
 def test_batch_120_mb_is_split_into_three_valid_zips(tmp_path):
     root = tmp_path / "clientes"
     files = []
     for slug in ("uno", "dos", "tres"):
-        directory = root / slug / VALID_CUIT / "arca" / "2026" / "01" / "consultas"
-        directory.mkdir(parents=True)
-        path = directory / f"{slug}.csv"
-        with path.open("wb") as handle:
-            handle.truncate(40_000_000)
-        files.append((path, 1, slug))
+        path = _estudios_file(root, VALID_CUIT, f"{slug}.csv", size=40_000_000)
+        files.append((path, 1, f"{slug} · 2026-01 · ventas"))
     flow = PortalIvaFlow(clients_root=root)
     archives, skipped = flow._stage_batch_archives(files, "libros-iva-202601-a-202601.zip", [])
     try:
@@ -1294,11 +1360,7 @@ def test_batch_120_mb_is_split_into_three_valid_zips(tmp_path):
 def test_batch_60_mb_file_is_omitted_with_notice_not_error(monkeypatch, tmp_path):
     async def scenario():
         root = tmp_path / "clientes"
-        directory = root / "uno" / VALID_CUIT / "arca" / "2026" / "01" / "consultas"
-        directory.mkdir(parents=True)
-        huge = directory / "ventas.csv"
-        with huge.open("wb") as handle:
-            handle.truncate(60_000_000)
+        huge = _estudios_file(root, VALID_CUIT, "ventas.csv", size=60_000_000)
         flow = PortalIvaFlow(clients_root=root, batch_result_root=tmp_path / "results")
         flow._query = _scope_query
         flow._by_id = lambda _item_id, _user_id: [_scope_item()]
@@ -1338,13 +1400,10 @@ def test_batch_60_mb_file_is_omitted_with_notice_not_error(monkeypatch, tmp_path
 def test_batch_delivery_sends_one_zip_instead_of_individual_files(monkeypatch, tmp_path):
     async def scenario():
         root = tmp_path / "clientes"
-        directory = root / "uno" / VALID_CUIT / "arca" / "2026" / "01" / "consultas"
-        directory.mkdir(parents=True)
         files = []
         for name in ("ventas.csv", "compras.csv", "f2083.pdf"):
-            path = directory / name
-            path.write_bytes(name.encode())
-            files.append((path, 1, name))
+            path = _estudios_file(root, VALID_CUIT, name, name.encode())
+            files.append((path, 1, f"uno · 2026-01 · {name}"))
         flow = PortalIvaFlow(clients_root=root, batch_result_root=tmp_path / "results")
         flow._query = _scope_query
         flow._by_id = lambda _item_id, _user_id: [_scope_item()]
@@ -1407,3 +1466,149 @@ def test_batch_does_not_treat_explicitly_missing_f2083_as_a_file(tmp_path):
     result = {"casos": [{"ok": True, "cliente": "uno", "periodo": "2026-05",
                           "archivos": [], "f2083": {"estado": "no_disponible"}}], "xlsx": []}
     assert flow._batch_deliverables(result) == []
+
+
+# ------------------------------------------- Ágora #115: contrato final de portal_iva.py
+
+MENSAJE_CUOTA = "El estudio no tiene espacio suficiente. Liberá archivos desde Documentos o pedí ampliar la cuota."
+
+
+class FakeHistory:
+    def __init__(self):
+        self.finished = []
+
+    async def start(self, **_kwargs):
+        return SimpleNamespace(run_id=1, item_id=2)
+
+    async def prepare_items(self, _run, references):
+        return [{"id_item": index + 10, "referencia": ref} for index, ref in enumerate(references)]
+
+    async def finish_item(self, _run, item_id, **kwargs):
+        self.finished.append((item_id, kwargs))
+
+    async def close(self, _run):
+        return "completada"
+
+
+def _single_flow(tmp_path, history=None):
+    flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv",
+                         clients_root=tmp_path, history=history)
+    flow.executor.touch(); flow.uv.touch()
+    flow._by_id = lambda _ident, _uid: [_scope_item(slug="cliente")]
+    flow._query = _scope_query
+    flow._acquire_execution_lock = lambda _key: None
+    state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente",
+                      cuit=VALID_CUIT, period="2026-08", progress_message=FakeMessage(),
+                      scope_item=_scope_item(slug="cliente"))
+    return flow, state
+
+
+def test_single_history_registers_the_documents_route(monkeypatch, tmp_path, verify_representation_mock):
+    async def scenario():
+        history = FakeHistory()
+        flow, state = _single_flow(tmp_path, history)
+        result = _result(tmp_path, state)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec",
+                            AsyncMock(return_value=FakeProcess(json.dumps(result).encode())))
+        await flow._run(FakeAdapter(), "10", None, "10::7", state)
+        relatives = [kwargs["output_relative"] for _, kwargs in history.finished]
+        assert relatives == [record["entregable_ruta_clientes"] for record in result["archivos"]]
+        assert all(kwargs["state"] == "completado" for _, kwargs in history.finished)
+    asyncio.run(scenario())
+
+
+def test_single_quota_shows_contabot_message_and_closes_failed(monkeypatch, tmp_path):
+    async def scenario():
+        history = FakeHistory()
+        flow, state = _single_flow(tmp_path, history)
+        blocked = {"ok": False, "codigo": "cuota_insuficiente", "mensaje": MENSAJE_CUOTA,
+                   "motivo": "CUOTA_INSUFICIENTE", "etapa": "cuota", "archivos_guardados": []}
+        adapter = FakeAdapter()
+        monkeypatch.setattr(asyncio, "create_subprocess_exec",
+                            AsyncMock(return_value=FakeProcess(json.dumps(blocked).encode(), returncode=1)))
+        await flow._run(adapter, "10", None, "10::7", state)
+        adapter.send_document.assert_not_awaited()
+        assert adapter._bot.send_message.await_args.kwargs["text"] == MENSAJE_CUOTA
+        assert {kwargs["reason_code"] for _, kwargs in history.finished} == {"cuota_insuficiente"}
+        assert {kwargs["state"] for _, kwargs in history.finished} == {"fallido"}
+    asyncio.run(scenario())
+
+
+def test_single_failure_reports_what_was_already_saved(monkeypatch, tmp_path):
+    async def scenario():
+        flow, state = _single_flow(tmp_path)
+        saved = _result(tmp_path, state)["archivos"][:1]
+        blocked = {"ok": False, "motivo": "DOCUMENTOS_NO_GUARDADO_base_no_disponible",
+                   "etapa": "descargar_compras", "archivos_guardados": saved}
+        adapter = FakeAdapter()
+        monkeypatch.setattr(asyncio, "create_subprocess_exec",
+                            AsyncMock(return_value=FakeProcess(json.dumps(blocked).encode(), returncode=1)))
+        await flow._run(adapter, "10", None, "10::7", state)
+        text = adapter._bot.send_message.await_args.kwargs["text"]
+        assert "Quedaron guardados en Documentos: cliente-portal-iva-ventas-2026-08.csv, " \
+               "cliente-portal-iva-ventas-2026-08.zip." in text
+        adapter.send_document.assert_not_awaited()
+    asyncio.run(scenario())
+
+
+def test_single_delivers_f2083_when_reported(monkeypatch, tmp_path, verify_representation_mock):
+    async def scenario():
+        flow, state = _single_flow(tmp_path)
+        result = _result(tmp_path, state)
+        fields = _saved_fields(tmp_path, "x", f"estudios/1/{VALID_CUIT}/2026/08/arca/cliente-portal-iva-f2083-2026-08.pdf",
+                               b"%PDF-1.7")
+        result["f2083"] = {"estado": "disponible", "nombre": fields["x_name"], "ruta": fields["x_path"],
+                           "ruta_clientes": fields["x_ruta_clientes"], "id_archivo": 7,
+                           "bytes": fields["x_bytes"], "sha256": fields["x_sha256"]}
+        adapter = FakeAdapter()
+        monkeypatch.setattr(asyncio, "create_subprocess_exec",
+                            AsyncMock(return_value=FakeProcess(json.dumps(result).encode())))
+        await flow._run(adapter, "10", None, "10::7", state)
+        names = [call.kwargs["file_name"] for call in adapter.send_document.await_args_list]
+        assert names[-1] == "cliente-portal-iva-f2083-2026-08.pdf"
+        assert state.progress_message.edits[-1][0].endswith("F.2083: archivo enviado.")
+    asyncio.run(scenario())
+
+
+def test_batch_summary_shows_quota_cases_and_workbook_errors(monkeypatch, tmp_path):
+    async def scenario():
+        root = tmp_path / "clientes"
+        root.mkdir()
+        flow = PortalIvaFlow(clients_root=root, batch_result_root=tmp_path / "results")
+        flow._query = _scope_query
+        flow._by_id = lambda _item_id, _user_id: [_scope_item()]
+        flow._batch_command = lambda *_args: ["fake"]
+        flow._batch_evidence = lambda _result: []
+        flow._read_batch_result = lambda _path: {
+            "ok": True, "xlsx": [],
+            "casos": [{"ok": False, "cliente": "uno", "periodo": "2026-01", "id_contribuyente": 1,
+                       "estado": "error", "motivo_codigo": "cuota_insuficiente",
+                       "motivo_texto": MENSAJE_CUOTA, "archivos": [], "f2083": {"estado": "no_disponible"}}],
+            "xlsx_errores": [{"cliente": "uno", "id_contribuyente": 1, "motivo": "x", "estado": "error",
+                              "motivo_codigo": "cuota_insuficiente", "motivo_texto": MENSAJE_CUOTA,
+                              "accion_sugerida": None}],
+            "resumen": {"completados": 0, "total": 1},
+        }
+
+        class Proc:
+            returncode = 0
+            pid = 4321
+
+        async def subprocess_exec(*_args, **_kwargs):
+            return Proc()
+
+        async def communicate(*_args, **_kwargs):
+            return b"", b""
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
+        flow._communicate_with_progress = communicate
+        state = FlowState(user_id="7", nonce="a" * 10, stage="running",
+                          operation="descargar-lote", selected_clients=[_scope_item()],
+                          period_from="2026-01", period_to="2026-01",
+                          progress_message=FakeMessage())
+        await flow._run_batch(FakeAdapter(), "10", None, "key", state)
+        text = state.progress_message.edits[-1][0]
+        assert f"• uno · 2026-01: {MENSAJE_CUOTA}" in text
+        assert f"• uno · consolidado: {MENSAJE_CUOTA}" in text
+
+    asyncio.run(scenario())

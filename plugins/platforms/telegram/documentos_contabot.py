@@ -8,8 +8,10 @@ nunca se informa como guardado.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -107,6 +109,62 @@ async def espacio(id_contribuyente: int, bytes_previstos: int) -> None:
     """Chequeo previo de cuota; lanza CuotaInsuficiente sin iniciar efectos."""
     await _llamar("espacio", "--contribuyente", str(int(id_contribuyente)),
                   "--bytes", str(int(bytes_previstos)))
+
+
+def raiz_clientes() -> Path:
+    return Path(os.environ.get("CONTABOT_CLIENTES_ROOT", str(Path.home() / "clientes")))
+
+
+def archivo_guardado(path: Any, raiz: Path, ruta_clientes: Any = None,
+                     sha256: Any = None) -> Path:
+    """Archivo que un productor informó como guardado en Documentos, verificado.
+
+    Debe estar en ``<raíz>/estudios/``, ser regular, sin enlaces en ningún tramo
+    desde la raíz, y coincidir con ``ruta_clientes`` y ``sha256`` si se dan.
+    Devuelve ``<raíz>/<ruta>`` (con la raíz de Hermes), así ``relative_to(raíz)``
+    es la ruta relativa que va al historial. Lanza ``ValueError`` si no cumple.
+    """
+    raiz = Path(raiz)
+    try:
+        raiz_real = raiz.resolve(strict=True)
+        absoluto = Path(str(path)) if path not in (None, "") else None
+        if absoluto is not None and not absoluto.is_absolute():
+            raise ValueError("documento_ruta_invalida")
+        if isinstance(ruta_clientes, str) and ruta_clientes:
+            relativa = Path(ruta_clientes)
+        elif absoluto is not None:
+            try:
+                relativa = absoluto.relative_to(raiz)
+            except ValueError:
+                relativa = absoluto.relative_to(raiz_real)
+        else:
+            raise ValueError("documento_ruta_invalida")
+        if (relativa.is_absolute() or ".." in relativa.parts or len(relativa.parts) < 3
+                or relativa.parts[0] != "estudios"):
+            raise ValueError("documento_ruta_invalida")
+        cursor = raiz
+        for parte in relativa.parts:
+            cursor = cursor / parte
+            if cursor.is_symlink():
+                raise ValueError("documento_ruta_invalida")
+        candidato = raiz / relativa
+        if not stat.S_ISREG(candidato.lstat().st_mode):
+            raise ValueError("documento_ruta_invalida")
+        resuelto = candidato.resolve(strict=True)
+        if not resuelto.is_relative_to(raiz_real / "estudios"):
+            raise ValueError("documento_ruta_invalida")
+        if absoluto is not None and absoluto.resolve(strict=True) != resuelto:
+            raise ValueError("documento_ruta_invalida")
+    except OSError as exc:
+        raise ValueError("documento_ruta_invalida") from exc
+    if sha256 is not None:
+        digest = hashlib.sha256()
+        with open(candidato, "rb") as fuente:
+            for bloque in iter(lambda: fuente.read(1024 * 1024), b""):
+                digest.update(bloque)
+        if digest.hexdigest() != sha256:
+            raise ValueError("documento_hash_invalido")
+    return candidato
 
 
 def mensaje_si_cuota(texto_o_payload: Any) -> str | None:

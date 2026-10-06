@@ -22,7 +22,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
-from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, mensaje_si_cuota
+from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, archivo_guardado, mensaje_si_cuota
 from plugins.platforms.telegram.contributor_selector import (
     CONTRIBUTOR_PROMPT,
     MULTIPLE_CONTRIBUTORS_TEXT,
@@ -63,19 +63,18 @@ _STATE_TTL_SECONDS = 600
 _AGIP_CLAVE_CIUDAD_ENTITY = "AGIP - Clave Ciudad"
 _RUN_TIMEOUT_SECONDS = 1800
 _WORKER_DIAGNOSTIC_TAIL_BYTES = 8192
-_DELIVERY_XLSX = re.compile(
-    rf"^(?:{re.escape(_CLIENTS_ROOT)}/(?P<slug_annual>[a-z0-9]+(?:-[a-z0-9]+)*)/(?P<cuit_annual>\d{{11}})/agip/"
-    r"(?P<year_annual>\d{4})/anual/consultas/(?P=slug_annual)-ddjj-iibb-agip-"
-    r"(?P=year_annual)(?:-v\d{2})?\.xlsx|"
-    rf"{re.escape(_CLIENTS_ROOT)}/(?P<slug_monthly>[a-z0-9]+(?:-[a-z0-9]+)*)/(?P<cuit_monthly>\d{{11}})/agip/"
-    r"(?P<year_monthly>\d{4})/(?P<month>0[1-9]|1[0-2])/consultas/(?P=slug_monthly)-"
-    r"ddjj-iibb-agip-(?P=year_monthly)-(?P=month)(?:-v\d{2})?\.xlsx)$"
-)
+def delivery_path(result: dict[str, Any], clients_root: Path) -> Path | None:
+    """XLSX que el worker guardó en Documentos, verificado (Ágora #115).
 
-
-def is_valid_delivery_path(path: str) -> bool:
-    """Accept only an AGIP consultation XLSX named for its represented slug."""
-    return bool(_DELIVERY_XLSX.fullmatch(path or ""))
+    Usa ``xlsx`` (absoluto) y ``xlsx_ruta_clientes`` («estudios/…»): debe estar
+    dentro de <raíz>/estudios/, ser regular y sin enlaces. None si no cumple.
+    """
+    try:
+        path = archivo_guardado(result.get("xlsx"), clients_root, result.get("xlsx_ruta_clientes"),
+                                result.get("xlsx_sha256"))
+    except ValueError:
+        return None
+    return path if path.suffix.lower() == ".xlsx" else None
 
 
 def visible_cuit(cuit: str) -> str:
@@ -262,6 +261,8 @@ class AgipDdjjFlow:
                 "Consulta AGIP no completada: Clave Ciudad no muestra e-SICOL "
                 "habilitado para ese contribuyente. Revisá la delegación del servicio en AGIP."
             )
+        elif code == "AGIP_DOCUMENTO_NO_GUARDADO":
+            message = "Consulta AGIP no completada: no se pudo guardar el resultado en Documentos."
         elif code.startswith("AGIP_DDJJ_PDF_") and re.fullmatch(r"\d{4}-\d{2}", period):
             message = f"Consulta AGIP no completada: AGIP no entregó el PDF de {period[5:7]}/{period[:4]}."
         else:
@@ -274,6 +275,7 @@ class AgipDdjjFlow:
                 "open_esicol": "Consulta AGIP no completada: no se pudo abrir e-SICOL.",
                 "load_ddjj_list": "Consulta AGIP no completada: AGIP no terminó de cargar el listado de DDJJ.",
                 "build_xlsx": "Consulta AGIP no completada al obtener o procesar las DDJJ.",
+                "check_quota": "Consulta AGIP no completada: no se pudo verificar el espacio en Documentos.",
             }
             message = stage_messages.get(stage, "Consulta AGIP no completada por un error técnico.")
         if evidence_preserved:
@@ -337,9 +339,13 @@ class AgipDdjjFlow:
         if stage in {
             "validate_arguments", "load_access", "resolve_output", "start_browser",
             "load_login", "submit_login", "select_represented", "open_esicol",
-            "load_ddjj_list", "build_xlsx", "complete",
+            "load_ddjj_list", "build_xlsx", "complete", "check_quota",
         }:
             payload["stage"] = stage
+        codigo = str(result.get("codigo", ""))
+        if re.fullmatch(r"[a-z0-9_]{1,80}", codigo):
+            # Código saneado del módulo de documentos (Ágora #115).
+            payload["codigo"] = codigo
         error_type = str(result.get("error_type", ""))
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type):
             payload["error_type"] = error_type
@@ -637,9 +643,9 @@ class AgipDdjjFlow:
                 state.user_id, current[0], _AGIP_CLAVE_CIUDAD_ENTITY,
                 str(result.get("representado_verificado", "")),
             )
-            xlsx = result.get("xlsx")
-            path = os.path.realpath(str(xlsx or ""))
-            if not (is_valid_delivery_path(path) and os.path.isfile(path)):
+            saved = delivery_path(result, self.clients_root)
+            path = str(saved) if saved is not None else ""
+            if saved is None:
                 await finish_history(
                     "fallido", "archivo_invalido",
                     "El Excel no pasó la validación de entrega.",

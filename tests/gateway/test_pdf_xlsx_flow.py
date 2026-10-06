@@ -111,7 +111,7 @@ def test_router_success_removes_only_staging_after_reception_is_preserved(monkey
         source.write_bytes(b"%PDF")
         output = tmp_path / "resultado.xlsx"
         output.write_bytes(b"xlsx")
-        monkeypatch.setattr(flow, "_router_command", lambda _: ["router"])
+        monkeypatch.setattr(flow, "_router_command", lambda *_: ["router"])
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_router_process({"status": "CONVERTED", "output_path": str(output), "reception_preserved": True})))
 
         await flow._convert_with_router(source, tmp_path, "run-success", None)
@@ -130,7 +130,7 @@ def test_router_business_block_keeps_staging_for_recovery(monkeypatch, tmp_path,
         staging.mkdir(parents=True)
         source = staging / "documento.pdf"
         source.write_bytes(b"%PDF")
-        monkeypatch.setattr(flow, "_router_command", lambda _: ["router"])
+        monkeypatch.setattr(flow, "_router_command", lambda *_: ["router"])
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_router_process({"status": status, "reason": "blocked"}, returncode=1)))
 
         with pytest.raises(ConversionFailure):
@@ -149,7 +149,7 @@ def test_router_failure_before_reception_preserved_keeps_staging(monkeypatch, tm
         staging.mkdir(parents=True)
         source = staging / "documento.pdf"
         source.write_bytes(b"%PDF")
-        monkeypatch.setattr(flow, "_router_command", lambda _: ["router"])
+        monkeypatch.setattr(flow, "_router_command", lambda *_: ["router"])
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_router_process({"status": "TECHNICAL_ERROR", "reason": "reception_failed"}, returncode=1)))
 
         with pytest.raises(ConversionFailure):
@@ -170,7 +170,7 @@ def test_router_converted_without_reception_preserved_keeps_staging(monkeypatch,
         source.write_bytes(b"%PDF")
         output = tmp_path / "resultado.xlsx"
         output.write_bytes(b"xlsx")
-        monkeypatch.setattr(flow, "_router_command", lambda _: ["router"])
+        monkeypatch.setattr(flow, "_router_command", lambda *_: ["router"])
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_router_process({"status": "CONVERTED", "output_path": str(output)})))
 
         await flow._convert_with_router(source, tmp_path, "run-unpreserved", None)
@@ -191,7 +191,7 @@ def test_router_never_cleans_a_path_outside_its_staging_root(monkeypatch, tmp_pa
         source.write_bytes(b"%PDF")
         output = tmp_path / "resultado.xlsx"
         output.write_bytes(b"xlsx")
-        monkeypatch.setattr(flow, "_router_command", lambda _: ["router"])
+        monkeypatch.setattr(flow, "_router_command", lambda *_: ["router"])
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_router_process({"status": "CONVERTED", "output_path": str(output), "reception_preserved": True})))
 
         await flow._convert_with_router(source, tmp_path, "run", None)
@@ -353,6 +353,8 @@ def test_router_command_uses_the_contabot_router_project(monkeypatch, tmp_path):
         "skills/accounting/pdf-contable-router/scripts/router.py", "ingest",
         "--input", str(tmp_path / "documento.pdf"),
     ]
+    # Ágora #115: el router recibe al solicitante para el catálogo de documentos.
+    assert flow._router_command(tmp_path / "documento.pdf", "10")[-2:] == ["--telegram-user-id", "10"]
 
 
 def test_failed_conversion_preserves_received_pdf_for_retry(monkeypatch, tmp_path):
@@ -507,7 +509,7 @@ def test_real_pipeline_stages_are_reported_to_telegram(monkeypatch, tmp_path):
         delivered = tmp_path / "resultado.xlsx"
         delivered.write_bytes(b"xlsx")
 
-        async def fake_convert(document, workdir, progress):
+        async def fake_convert(document, workdir, progress, **kwargs):
             await progress("rendering", 1, 2)
             await progress("interpreting", 1, 4)
             await progress("validating", 1, 1)
