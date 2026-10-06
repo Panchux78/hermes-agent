@@ -165,6 +165,8 @@ def test_real_subprocess_timeout_reaps_parent_and_releases_slot(tmp_path):
         with pytest.raises(TimeoutError):
             await flow._run("key", [sys.executable, "-c", "import time; time.sleep(30)"])
         assert not flow.processes
+        # El segundo proceso prueba que el slot quedó libre, no velocidad de arranque.
+        flow.timeout_seconds = 5
         result = await flow._run("key", [sys.executable, "-c", 'print("{\\"status\\":\\"OK\\"}")'])
         assert result == {"status": "OK"}
     asyncio.run(scenario())

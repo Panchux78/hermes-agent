@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from plugins.platforms.telegram.bot_run_history import _DEFAULT_PROJECT
+from plugins.platforms.telegram.fiscal_execution import terminate_owned_group
 
 # Texto de ContaBot (documentos_cliente.MENSAJE_CUOTA); se usa si la salida no lo trae.
 MENSAJE_CUOTA = ("El estudio no tiene espacio suficiente. Liberá archivos desde Documentos "
@@ -54,17 +55,12 @@ def _script() -> Path:
 
 
 def _ultimo_json(raw: bytes) -> dict[str, Any] | None:
-    for linea in reversed(raw.decode("utf-8", errors="replace").splitlines()):
-        linea = linea.strip()
-        if not linea.startswith("{"):
-            continue
-        try:
-            datos = json.loads(linea)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(datos, dict):
-            return datos
-    return None
+    # El CLI tiene un único JSON final. No ocultar ruido ni elegir el último éxito.
+    try:
+        datos = json.loads(raw.decode("utf-8"))
+    except (UnicodeError,json.JSONDecodeError):
+        return None
+    return datos if isinstance(datos,dict) else None
 
 
 async def _llamar(*argumentos: str) -> dict[str, Any]:
@@ -73,13 +69,16 @@ async def _llamar(*argumentos: str) -> dict[str, Any]:
         sys.executable, str(script), *argumentos,
         cwd=str(_proyecto()), stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         raw, _ = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT_SEGUNDOS)
     except (TimeoutError, asyncio.TimeoutError):
-        proc.kill()
-        await proc.wait()
+        await terminate_owned_group(proc)
         raise DocumentoNoGuardado("documentos_tiempo_agotado") from None
+    except asyncio.CancelledError:
+        await terminate_owned_group(proc)
+        raise
     datos = _ultimo_json(raw)
     if datos is None:
         raise DocumentoNoGuardado("documentos_respuesta_invalida")

@@ -20,6 +20,42 @@ from tests.gateway.documentos_falsos import instalar as instalar_documentos
 MENSAJE = "El estudio no tiene espacio suficiente. Liberá archivos desde Documentos o pedí ampliar la cuota."
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelar",[False,True])
+async def test_timeout_y_cancelacion_terminan_padre_e_hijo(tmp_path,monkeypatch,cancelar):
+    proyecto = tmp_path / "release"
+    script = proyecto / "skills/accounting/pdf-contable-router/scripts/documentos_cliente.py"
+    script.parent.mkdir(parents=True)
+    marca = tmp_path / "pid.json"
+    script.write_text("import subprocess,sys,os,json,time\n"
+        "p=subprocess.Popen([sys.executable,'-c','import time,signal;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(30)'])\n"
+        f"open({str(marca)!r},'w').write(json.dumps([os.getpid(),p.pid]))\n"
+        "time.sleep(30)\n")
+    monkeypatch.setenv("CONTA_PDF_ROUTER_PROJECT_DIR",str(proyecto))
+    monkeypatch.setattr(documentos,"_TIMEOUT_SEGUNDOS",3)
+    task = asyncio.create_task(documentos.espacio(1,1))
+    for _ in range(200):
+        if marca.exists():
+            break
+        await asyncio.sleep(.01)
+    assert marca.exists(),"el padre no llegó a iniciar el hijo"
+    pids = json.loads(marca.read_text())
+    if cancelar:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(documentos.DocumentoNoGuardado,match="documentos_tiempo_agotado"):
+            await task
+    for pid in pids:
+        path = Path(f"/proc/{pid}/stat")
+        for _ in range(100):
+            if not path.exists() or path.read_text().split()[2] == 'Z':
+                break
+            await asyncio.sleep(.01)
+        assert not path.exists() or path.read_text().split()[2] == 'Z'
+
+
 # ------------------------------------------------------------------ puerta CLI
 
 @pytest.mark.asyncio
@@ -67,6 +103,8 @@ async def test_respuesta_invalida_o_ruta_fuera_de_estudios_falla(tmp_path, monke
     fuente.write_bytes(b"x")
     for salida, codigo in (
         ("print('Traceback')", "documentos_respuesta_invalida"),
+        ("print('ruido');print('{\"status\":\"OK\",\"id_archivo\":1,\"ruta\":\"estudios/1/x\"}')", "documentos_respuesta_invalida"),
+        ("print('{\"status\":\"ERROR\"}');print('{\"status\":\"OK\",\"id_archivo\":1,\"ruta\":\"estudios/1/x\"}')", "documentos_respuesta_invalida"),
         ("import json;print(json.dumps({'status':'OK','id_archivo':1,'ruta':'cliente/2026/x.xlsx'}))",
          "documentos_respuesta_invalida"),
         ("import json,sys;print(json.dumps({'status':'OK','id_archivo':1,'ruta':'estudios/1/x'}));sys.exit(1)",
