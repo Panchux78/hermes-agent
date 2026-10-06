@@ -9,11 +9,13 @@ from unittest.mock import AsyncMock
 import pytest
 from plugins.platforms.telegram.ccma_dispatch import run_ccma
 from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
+from tests.gateway.documentos_falsos import instalar as instalar_documentos
 
 @pytest.mark.asyncio
 async def test_repeated_scope_executes_twice_and_delivers_only_new_workbooks(tmp_path, monkeypatch):
     verify = AsyncMock()
     monkeypatch.setattr('plugins.platforms.telegram.ccma_dispatch.verify_representation', verify)
+    documentos = instalar_documentos(monkeypatch, tmp_path)
     monkeypatch.setenv('HOME',str(tmp_path))
     home=tmp_path/'.hermes';monkeypatch.setenv('HERMES_HOME',str(home))
     scripts=home/'skills/productivity/ccma-obligaciones-pagos/scripts';scripts.mkdir(parents=True)
@@ -30,14 +32,28 @@ async def test_repeated_scope_executes_twice_and_delivers_only_new_workbooks(tmp
             _sct_dispatch_processes={},_sct_runner_status=FiscalQueryFlow._sct_runner_status, handle_message=AsyncMock())
     kwargs=dict(chat_id='7',state_key=('7','7'),credential_line=2,
                 credential_sha256=hashlib.sha256(credentials.read_bytes()).hexdigest(),period_from='01/2025',period_to='12/2025',client_slug='cliente-prueba',client_cuit='20123456783')
-    kwargs.update(telegram_id=7, scope_item={'id_contribuyente': 1})
+    kwargs.update(telegram_id=7, scope_item={'id': 1})
     await run_ccma(flow,**kwargs);await run_ccma(flow,**kwargs)
     assert flow.send_document.await_count==2
     files=[Path(c.kwargs['file_path']) for c in flow.send_document.await_args_list]
+    names=[c.kwargs['file_name'] for c in flow.send_document.await_args_list]
     assert files[0] != files[1]
+    # Ágora #115: se guarda por el módulo de documentos, nunca en el árbol viejo.
+    assert not (tmp_path/'clientes').exists()
+    saved = documentos.guardados()
+    assert [p.relative_to(documentos.raiz).as_posix() for p in saved] == [
+        'estudios/1/1/2025/anual/arca/cliente-prueba-cuenta-corriente-arca-2025-v02.xlsx',
+        'estudios/1/1/2025/anual/arca/cliente-prueba-cuenta-corriente-arca-2025.xlsx',
+    ]
+    assert documentos.destinos()[0] == {
+        'seccion': 'arca', 'anio': 2025, 'mes': None, 'base': 'cliente-prueba-cuenta-corriente-arca-2025',
+        'ext': 'xlsx', 'etiqueta': 'Cuenta corriente · 2025', 'tipo': 'Cuenta corriente', 'origen': 'ARCA',
+        'productor': 'ccma', 'id_contribuyente': 1,
+        'periodo_desde': '2025-01-01', 'periodo_hasta': '2025-12-01',
+    }
+    assert [c['--contribuyente'] for c in documentos.llamadas('espacio')] == ['1', '1']
     for file in files:
-        # Owner-only write, with group/ACL read so the console can list it.
-        assert file.is_file() and file.stat().st_mode & 0o777 == 0o640
+        assert file.is_file() and file.stat().st_mode & 0o777 == 0o600
         assert not (file.parent/'access.csv').exists()
         from openpyxl import load_workbook
         book=load_workbook(file,data_only=True)
@@ -49,8 +65,8 @@ async def test_repeated_scope_executes_twice_and_delivers_only_new_workbooks(tmp
     for run in (tmp_path/'hermes-workspace/output/private/ccma-runs').iterdir():
         assert not (run/'access.csv').exists()
         assert (run/'fuente.csv').read_text() == source.replace('\r\n','\n')
-    assert files[0].name == 'cliente-prueba-ccma-obligaciones-pagos-arca-2025.xlsx'
-    assert files[1].name.endswith('-v02.xlsx')
+    assert names[0] == 'cliente-prueba-cuenta-corriente-arca-2025.xlsx'
+    assert names[1] == 'cliente-prueba-cuenta-corriente-arca-2025-v02.xlsx'
     flow.handle_message.assert_not_awaited()
     assert verify.await_count == 2
     probe.write_text(preflight+"console.log('result=runner_error')")

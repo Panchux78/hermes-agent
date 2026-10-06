@@ -22,6 +22,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
+from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, mensaje_si_cuota
 from plugins.platforms.telegram.contributor_selector import (
     CONTRIBUTOR_PROMPT,
     MULTIPLE_CONTRIBUTORS_TEXT,
@@ -244,6 +245,10 @@ class AgipDdjjFlow:
     @staticmethod
     def _worker_error_message(result: dict[str, Any], evidence_preserved: bool = False) -> str:
         """Translate known business outcomes without exposing worker internals."""
+        cuota = mensaje_si_cuota(result)
+        if cuota:
+            # Sin espacio en Documentos: el mensaje de ContaBot, tal cual (Ágora #115).
+            return cuota
         code = str(result.get("error_code", ""))
         period = str(result.get("period", ""))
         if code == "AGIP_DDJJ_NOT_FOUND":
@@ -613,7 +618,9 @@ class AgipDdjjFlow:
                     self._worker_error_message(result, evidence is not None),
                 )
                 await finish_history(
-                    "fallido", self._history_reason_code(result.get("error_code")),
+                    "fallido",
+                    CODIGO_CUOTA if mensaje_si_cuota(result)
+                    else self._history_reason_code(result.get("error_code")),
                     self._worker_error_message(result, evidence is not None),
                 )
                 return

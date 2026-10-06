@@ -13,6 +13,7 @@ from plugins.platforms.telegram import fiscal_credentials as credentials
 from plugins.platforms.telegram import fiscal_interaction as interaction
 from plugins.platforms.telegram.fiscal_execution import terminate_owned_group
 from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow, _WorkflowMenuState
+from tests.gateway.documentos_falsos import instalar as instalar_documentos
 
 
 def test_canonical_access_decrypts_only_inside_postgresql():
@@ -195,6 +196,7 @@ async def test_dispatch_uses_private_stdin_and_never_a_csv(tmp_path,monkeypatch,
     monkeypatch.setattr(Path,'home',lambda:tmp_path)
     monkeypatch.setenv('HOME',str(tmp_path));monkeypatch.setenv('HERMES_HOME',str(home))
     monkeypatch.setenv('CONTABOT_CLIENTES_ROOT',str(tmp_path/'clients'))
+    instalar_documentos(monkeypatch, tmp_path)
     monkeypatch.setattr(fiscal_query_flow,'_WORKFLOW_MENU_OUTPUT_DIR',str(tmp_path/'output'))
     payload=json.dumps({'type':'access','usuario':'20123456783','representado':'20987654321','password':'synthetic-only'}).encode()+b'\n'
     accessor=AsyncMock(return_value=payload)

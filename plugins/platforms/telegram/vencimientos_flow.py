@@ -14,13 +14,14 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
-from plugins.platforms.telegram.ccma_artifact import publish_named, validate_identity
+from plugins.platforms.telegram.ccma_artifact import nombre_guardado, vencimientos_destino
+from plugins.platforms.telegram import documentos_contabot as documentos
 from plugins.platforms.telegram.contributor_selector import (
     CONTRIBUTOR_PROMPT,
     MULTIPLE_CONTRIBUTORS_TEXT,
@@ -233,17 +234,13 @@ class VencimientosFlow:
         state.contributor_cuit = str(row["cuit"])
         state.stage = "format"
 
-    def _destination(self, state: State, rows: list[dict[str, Any]]) -> Path:
-        validate_identity(state.contributor_slug, state.contributor_cuit)
-        years: set[str] = set()
-        for row in rows:
-            value = str(row.get("fecha", ""))
-            parsed = date.fromisoformat(value)
-            years.add(str(parsed.year))
-        if not years:
-            raise ValueError("vencimientos_dates_missing")
-        base = self.clients_root / state.contributor_slug / state.contributor_cuit / "arca"
-        return base / next(iter(years)) / "anual" / "consultas" if len(years) == 1 else base / "consultas"
+    @staticmethod
+    def _destination(state: State, rows: list[dict[str, Any]], kind: str) -> dict[str, Any]:
+        """Destino documental; la ruta y la versión las decide ContaBot (Ágora #115)."""
+        return vencimientos_destino(
+            state.contributor_slug, state.contributor_cuit, state.contributor_id,
+            [row.get("fecha", "") for row in rows], kind,
+        )
 
     async def _ask_format(self, target, state: State, *, edit: bool) -> None:
         text = f"Vencimientos ARCA · {state.contributor_name}\nElegí el archivo que querés recibir."
@@ -280,11 +277,12 @@ class VencimientosFlow:
                 self._generate, kind, output, state.contributor_id,
                 state.contributor_slug, rows,
             )
-            destination = self._destination(state, rows)
-            output = await asyncio.to_thread(publish_named, output, destination, output.name)
+            guardado = await documentos.guardar(output, self._destination(state, rows, kind))
             metadata = {"thread_id": thread_id} if thread_id is not None else None
+            # Se envía el archivo producido, con el nombre con que quedó en Documentos.
             result = await adapter.send_document(
-                chat_id=str(chat_id), file_path=str(output), file_name=output.name,
+                chat_id=str(chat_id), file_path=str(output),
+                file_name=nombre_guardado(guardado, output.name),
                 caption=f"Vencimientos ARCA · {state.contributor_name} · {len(rows)} registro(s).",
                 metadata=metadata,
             )
@@ -335,6 +333,9 @@ class VencimientosFlow:
             except LookupError:
                 self.states.pop(key, None)
                 await query.edit_message_text("No hay vencimientos ARCA publicados para ese contribuyente.")
+                return True
+            except documentos.CuotaInsuficiente as error:
+                await query.edit_message_text(error.mensaje, reply_markup=self._formats(state.nonce))
                 return True
             except Exception:
                 await query.edit_message_text(

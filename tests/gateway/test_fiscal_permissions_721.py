@@ -41,6 +41,10 @@ async def test_missing_sql_permission_never_starts_portal_or_suggests_retry(tmp_
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HOME', str(tmp_path)); monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('CONTABOT_CLIENTES_ROOT', str(tmp_path/'clients'))
+    # Reemplazan asyncio.create_subprocess_exec: el módulo de documentos se simula directo.
+    monkeypatch.setattr('plugins.platforms.telegram.documentos_contabot.espacio', AsyncMock())
+    monkeypatch.setattr('plugins.platforms.telegram.documentos_contabot.guardar', AsyncMock(
+        return_value={'status': 'OK', 'id_archivo': 1, 'ruta': 'estudios/1/20987654321/2026/01/arca/x.xlsx'}))
     monkeypatch.setattr(fiscal_query_flow, '_WORKFLOW_MENU_OUTPUT_DIR', str(tmp_path/'output'))
     skill = 'ccma-obligaciones-pagos' if kind == 'ccma' else 'sct-estado-cumplimiento'
     scripts = tmp_path/'skills/productivity'/skill/'scripts'; scripts.mkdir(parents=True)
@@ -82,6 +86,10 @@ async def test_verification_database_failure_reports_completed_portal_stage(tmp_
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HOME', str(tmp_path)); monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('CONTABOT_CLIENTES_ROOT', str(tmp_path/'clients'))
+    # Reemplazan asyncio.create_subprocess_exec: el módulo de documentos se simula directo.
+    monkeypatch.setattr('plugins.platforms.telegram.documentos_contabot.espacio', AsyncMock())
+    monkeypatch.setattr('plugins.platforms.telegram.documentos_contabot.guardar', AsyncMock(
+        return_value={'status': 'OK', 'id_archivo': 1, 'ruta': 'estudios/1/20987654321/2026/01/arca/x.xlsx'}))
     monkeypatch.setattr(fiscal_query_flow, '_WORKFLOW_MENU_OUTPUT_DIR', str(tmp_path/'output'))
     skill = 'ccma-obligaciones-pagos' if kind == 'ccma' else 'sct-estado-cumplimiento'
     scripts = tmp_path/'skills/productivity'/skill/'scripts'; scripts.mkdir(parents=True)

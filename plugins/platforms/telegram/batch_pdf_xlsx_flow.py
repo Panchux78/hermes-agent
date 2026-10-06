@@ -20,12 +20,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
+from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, mensaje_si_cuota
 
 from plugins.platforms.telegram.pdf_xlsx_flow import PdfXlsxFlow, pending_request
 
 logger = logging.getLogger(__name__)
 _PROJECT = Path("/home/pancho/hermes-workspace/Contabot")
-_BATCH_ROOT = Path("/home/pancho/clientes/_recepcion_lotes")
 _MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 
 
@@ -38,7 +38,7 @@ class BatchUploadRequest:
 class BatchPdfXlsxFlow:
     def __init__(self, project_dir: Path = _PROJECT, *, history: BotRunHistory | None = None) -> None:
         self.project_dir = Path(os.getenv("CONTA_PDF_ROUTER_PROJECT_DIR", str(project_dir)))
-        self.batch_root = Path(os.getenv("CONTABOT_BATCH_ROOT", str(_BATCH_ROOT)))
+        self.batch_root = self._default_batch_root()
         self.input_cache = Path(os.getenv("CONTABOT_BATCH_INPUT_CACHE_DIR", "/home/pancho/.hermes/cache/batch-pdf-xlsx-inputs"))
         self.requests: dict[str, BatchUploadRequest] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
@@ -48,6 +48,17 @@ class BatchPdfXlsxFlow:
         self.max_concurrent_batches = 2
         self.clients_root = Path(os.getenv("CONTABOT_CLIENTES_ROOT", "/home/pancho/clientes"))
         self.history = history
+
+    @staticmethod
+    def _default_batch_root() -> Path:
+        """Lotes en curso: estado de ejecución, fuera del árbol de clientes (Ágora #115)."""
+        explicit = os.getenv("CONTABOT_BATCH_ROOT")
+        if explicit:
+            return Path(explicit)
+        state_root = os.getenv("CONTABOT_STATE_ROOT")
+        if state_root:
+            return Path(state_root) / "recepcion-lotes"
+        return Path.home() / ".local/state/contabot/recepcion-lotes"
 
     @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
@@ -273,12 +284,13 @@ class BatchPdfXlsxFlow:
                 result = await self._run(key, self._command("batch-process", "--batch-id", batch_id, "--confirmation-digest", digest, "--batch-root", str(self.batch_root), "--telegram-user-id", user_id, "--telegram-chat-id", str(chat_id)), progress)
                 if result.get("status") != "COMPLETED":
                     logger.error("[BATCH-XLSX] router blocked: %s", result.get("reason", "unknown"))
+                    cuota = mensaje_si_cuota(result)
                     await self._history_finish_open_items(
                         history_run, history_items, state="fallido",
-                        reason_code=self._history_reason_code(result.get("reason")),
-                        reason_text="El lote no pudo completar la conversión; el original y el avance se conservaron.",
+                        reason_code=CODIGO_CUOTA if cuota else self._history_reason_code(result.get("reason")),
+                        reason_text=cuota or "El lote no pudo completar la conversión; el original y el avance se conservaron.",
                     )
-                    await query.edit_message_text("No pude completar el lote. El archivo original y el avance ya realizado quedaron conservados para revisión.", reply_markup=self._confirmation_keyboard(batch_id))
+                    await query.edit_message_text(cuota or "No pude completar el lote. El archivo original y el avance ya realizado quedaron conservados para revisión.", reply_markup=self._confirmation_keyboard(batch_id))
                     return True
             outputs = result.get("outputs") if isinstance(result.get("outputs"), list) else []
             await query.edit_message_text(f"Lote procesado. Entregando {len(outputs)} archivo(s)…")
@@ -384,10 +396,15 @@ class BatchPdfXlsxFlow:
         path = Path(str(output.get("path", "")))
         if path.is_symlink() or not path.is_file():
             raise RuntimeError("BATCH_HISTORY_OUTPUT_INVALID")
-        try:
-            relative = str(path.relative_to(self.clients_root))
-        except ValueError as exc:
-            raise RuntimeError("BATCH_HISTORY_OUTPUT_INVALID") from exc
+        reported = output.get("ruta")
+        if isinstance(reported, str) and reported.startswith("estudios/") and ".." not in Path(reported).parts:
+            # Ruta que devolvió el módulo de documentos, relativa a la raíz de clientes.
+            relative = reported
+        else:
+            try:
+                relative = str(path.relative_to(self.clients_root))
+            except ValueError as exc:
+                raise RuntimeError("BATCH_HISTORY_OUTPUT_INVALID") from exc
         documents = status.get("documents") if isinstance(status.get("documents"), list) else []
         matched = [doc for doc in documents if isinstance(doc, dict) and self._output_matches_document(output, doc)]
         if not matched:
@@ -560,6 +577,18 @@ class BatchPdfXlsxFlow:
                     "El lote quedó preservado, pero no pude registrar la operación. No se procesará hasta reparar el historial."
                 )
                 return True
+        cuota = mensaje_si_cuota(result)
+        if cuota and result.get("status") != "AWAITING_CONFIRMATION":
+            # Sin espacio en Documentos: falla (nunca éxito) con el mensaje de ContaBot.
+            if history_run is not None:
+                await self._history_finish_open_items(
+                    history_run, history_items, state="fallido",
+                    reason_code=CODIGO_CUOTA, reason_text=cuota,
+                )
+            else:
+                await self._reject(message, code=CODIGO_CUOTA, text=cuota, reference=name)
+            await progress_message.edit_text(cuota)
+            return True
         if result.get("status") != "AWAITING_CONFIRMATION":
             problems = result.get("problems") if isinstance(result.get("problems"), list) else []
             lines = ["No se procesó el lote."]

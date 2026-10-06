@@ -16,6 +16,7 @@ from openpyxl import load_workbook
 from plugins.platforms.telegram import ccma_workbook, ccma_dispatch
 from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
 import plugins.platforms.telegram.fiscal_query_flow as fiscal_module
+from tests.gateway.documentos_falsos import instalar as instalar_documentos
 
 
 @pytest.mark.parametrize('amount', ['22,307.45', 'NO_LEGIBLE'])
@@ -84,6 +85,7 @@ async def test_sct_freezes_selected_source_before_real_subprocess(tmp_path, monk
     (home / 'bin/uv').touch()
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.setenv('ARCA_CSV_FILE', str(access))
+    instalar_documentos(monkeypatch, tmp_path)
     monkeypatch.setattr(fiscal_module.shutil, 'which', lambda _: sys.executable)
     flow = FiscalQueryFlow()
     flow.send = AsyncMock()
@@ -99,7 +101,7 @@ async def test_sct_freezes_selected_source_before_real_subprocess(tmp_path, monk
     await flow._run_sct_dispatch(chat_id='synthetic', state_key=('0', '0'),
         credential_line=2, credential_sha256=expected, period_mode='empty',
         period_from='', period_until='', period_label='',
-        client_slug='synthetic', client_cuit='00000000000')
+        client_slug='synthetic', client_cuit='00000000000', scope_item={'id': 1})
     if state == 'valid':
         assert json.loads(observed.read_text()) == {
             'sha256':expected, 'path':str(frozen), 'profile':str(home), 'mode':0o600}
@@ -128,6 +130,7 @@ async def test_ccma_stops_its_real_child(tmp_path, monkeypatch, operation):
     scripts=home/'skills/productivity/ccma-obligaciones-pagos/scripts';scripts.mkdir(parents=True)
     access=tmp_path/'access.csv';access.write_text('synthetic-only');access.chmod(0o600)
     monkeypatch.setenv('ARCA_CSV_FILE',str(access))
+    instalar_documentos(monkeypatch, tmp_path)
     child_file=tmp_path/'child.pid'
     child_ready=tmp_path/'child.ready'
     child_code=('import signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); '
@@ -147,7 +150,8 @@ async def test_ccma_stops_its_real_child(tmp_path, monkeypatch, operation):
         _sct_dispatch_processes={},_sct_runner_status=FiscalQueryFlow._sct_runner_status)
     task=asyncio.create_task(ccma_dispatch.run_ccma(flow,chat_id='synthetic',state_key=('0','0'),
         credential_line=2,credential_sha256=hashlib.sha256(access.read_bytes()).hexdigest(),
-        period_from='01/2026',period_to='01/2026',client_slug='synthetic',client_cuit='00000000000'))
+        period_from='01/2026',period_to='01/2026',client_slug='synthetic',client_cuit='00000000000',
+        scope_item={'id': 1}))
     child=None
     try:
         for _ in range(150):

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 from plugins.platforms.telegram.ccma_diagnostics import Diagnostics, CODES
 from plugins.platforms.telegram.ccma_dispatch import run_ccma
+from tests.gateway.documentos_falsos import instalar as instalar_documentos
 
 
 def test_projection_never_stores_unknown_strings_or_raw_exceptions(tmp_path):
@@ -90,6 +91,7 @@ def test_selenium_exception_class_and_location_survive_without_exception_text(tm
 @pytest.mark.parametrize('status', ['subject_not_verified', 'login_not_verified', 'source_table_ambiguous', 'source_table_evaluation_failed'])
 async def test_real_process_preserves_stage_code_and_reference(tmp_path, monkeypatch, status):
     monkeypatch.setenv('HOME', str(tmp_path))
+    documentos = instalar_documentos(monkeypatch, tmp_path)
     home = tmp_path / '.hermes'
     monkeypatch.setenv('HERMES_HOME', str(home))
     scripts = home / 'skills/productivity/ccma-obligaciones-pagos/scripts'
@@ -104,7 +106,9 @@ async def test_real_process_preserves_stage_code_and_reference(tmp_path, monkeyp
               _sct_dispatch_processes={}, _sct_runner_status=lambda b: b.decode().strip().split('=', 1)[1])
     await run_ccma(flow, chat_id='test', state_key=('test','test'), credential_line=2,
                    credential_sha256=hashlib.sha256(credential.read_bytes()).hexdigest(),
-                   period_from='01/2025', period_to='12/2025', client_slug='synthetic', client_cuit='00000000000')
+                   period_from='01/2025', period_to='12/2025', client_slug='synthetic', client_cuit='00000000000',
+                   scope_item={'id': 1})
+    assert documentos.destinos() == []
     files = list(tmp_path.glob('hermes-workspace/output/private/ccma-runs/*/diagnostic.jsonl'))
     assert len(files) == 1
     rows = [json.loads(line) for line in files[0].read_text().splitlines()]

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
+from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, mensaje_si_cuota
 
 logger = logging.getLogger(__name__)
 _DEFAULT_PROJECT_DIR = Path("/home/pancho/hermes-workspace/conversion-documentos-contables-xlsx")
@@ -47,11 +48,13 @@ def pending_request(requests: dict, key: str, *, flow: str):
 class ConversionFailure(RuntimeError):
     """Falla saneada del subprocess de conversión."""
 
-    def __init__(self, status: str, reason: str, run_id: str) -> None:
+    def __init__(self, status: str, reason: str, run_id: str, cuota: str | None = None) -> None:
         super().__init__(f"{status}: {reason}")
         self.status = status
         self.reason = reason
         self.run_id = run_id
+        # Mensaje de ContaBot cuando el estudio no tiene espacio (Ágora #115).
+        self.cuota = cuota or mensaje_si_cuota(status) or mensaje_si_cuota(reason)
 
 
 class PdfXlsxFlow:
@@ -270,7 +273,7 @@ class PdfXlsxFlow:
                 await self._history_finish(
                     history,
                     state="fallido",
-                    reason_code=self._history_reason_code(exc.reason),
+                    reason_code=CODIGO_CUOTA if exc.cuota else self._history_reason_code(exc.reason),
                     reason_text=self._failure_message(exc),
                     result=result,
                     converted=False,
@@ -433,7 +436,7 @@ class PdfXlsxFlow:
                 reason,
                 bool(stderr.strip()),
             )
-            raise ConversionFailure(status, reason, run_id)
+            raise ConversionFailure(status, reason, run_id, mensaje_si_cuota(result))
         return output, result
 
     def _router_command(self, source: Path) -> list[str]:
@@ -493,7 +496,7 @@ class PdfXlsxFlow:
                 "[PDF-XLSX] run_id=%s stage=router status=%s reason=%s stderr_present=%s",
                 run_id, status, reason, bool(stderr.strip()),
             )
-            raise ConversionFailure(status, reason, run_id)
+            raise ConversionFailure(status, reason, run_id, mensaje_si_cuota(result))
         if progress is not None:
             await progress("validating", 1, 1)
         if result.get("reception_preserved") is True:
@@ -572,6 +575,8 @@ class PdfXlsxFlow:
 
     @staticmethod
     def _failure_message(error: ConversionFailure) -> str:
+        if getattr(error, "cuota", None):
+            return error.cuota
         business_messages = {
             "ROUTER_UNIDENTIFIED": "El documento no corresponde todavía a un emisor reconocido.",
             "ROUTER_IDENTIFIED_NO_ROUTE": "El formato de este documento todavía no está soportado.",

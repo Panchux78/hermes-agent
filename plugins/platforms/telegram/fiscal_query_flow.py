@@ -22,6 +22,7 @@ from plugins.platforms.telegram.fiscal_runtime import browser_environment, requi
 from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, verify_representation
 from plugins.platforms.telegram.fiscal_scope import ACCOUNT_NOT_LINKED_MESSAGE, AccountNotLinked, InvalidCuit
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
+from plugins.platforms.telegram import documentos_contabot as documentos
 from plugins.platforms.telegram.contributor_selector import (
     CONTRIBUTOR_PROMPT,
     MULTIPLE_CONTRIBUTORS_TEXT,
@@ -34,6 +35,15 @@ _WORKFLOW_MENU_OUTPUT_DIR = str(_Path.home() / "hermes-workspace" / "output")
 _SCT_DISPATCH_TIMEOUT_SECONDS = 240
 _SCT_RESULT_PATTERN = re.compile(r"^result=([a-z0-9_]+)$", re.MULTILINE)
 _WORKFLOW_MENU_TIMEOUT_SECONDS = 600
+# Previsión para el chequeo de cuota antes de consultar ARCA (Ágora #115).
+_SCT_BYTES_PREVISTOS = 2_000_000
+
+
+def _fecha_consulta():
+    """Fecha de la consulta en horario de Argentina («a la fecha» de SCT)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo('America/Argentina/Buenos_Aires')).date()
 
 
 def sct_failure_message(status: str, reference: str) -> str:
@@ -492,13 +502,23 @@ class FiscalQueryFlow:
         except RuntimeError as error:
             await self.send(chat_id, unavailable_message('SCT', str(error)))
             return
-        from plugins.platforms.telegram.ccma_artifact import sct_destination, publish_named
+        from plugins.platforms.telegram.ccma_artifact import sct_destino, nombre_guardado
+        from plugins.platforms.telegram.ccma_dispatch import id_contribuyente_de
         try:
-            destination_dir, destination_name = sct_destination(
-                _Path(os.environ.get('CONTABOT_CLIENTES_ROOT', _Path.home() / 'clientes')),
-                client_slug, client_cuit, period_mode, period_from, period_until)
+            # El documento se describe antes de consultar; la ruta la decide ContaBot.
+            destino = sct_destino(
+                client_slug, client_cuit, id_contribuyente_de(contributor_id, scope_item),
+                period_mode, period_from, period_until, hoy=_fecha_consulta())
         except ValueError:
             await self.send(chat_id, 'SCT no pudo verificar el contribuyente o período del archivo. No se consultó ARCA.')
+            return
+        try:
+            await documentos.espacio(destino['id_contribuyente'], _SCT_BYTES_PREVISTOS)
+        except documentos.CuotaInsuficiente as error:
+            await self.send(chat_id, error.mensaje)
+            return
+        except documentos.DocumentoNoGuardado:
+            await self.send(chat_id, 'SCT no pudo verificar el espacio de Documentos. No se consultó ARCA.')
             return
 
         xlsx_file, source_csv, login_screenshot, service_screenshot, result_screenshot = self._sct_dispatch_paths()
@@ -586,11 +606,19 @@ class FiscalQueryFlow:
             if process.returncode != 0 or not xlsx_file.is_file():
                 await self.send(chat_id, "La fuente SCT se obtuvo, pero no se pudo generar el XLSX. No se entregó un archivo incompleto.")
                 return
-            xlsx_file = await asyncio.to_thread(publish_named, xlsx_file, destination_dir, destination_name)
+            try:
+                guardado = await documentos.guardar(xlsx_file, destino)
+            except documentos.CuotaInsuficiente as error:
+                await self.send(chat_id, error.mensaje)
+                return
+            except documentos.DocumentoNoGuardado:
+                await self.send(chat_id, "SCT generó el XLSX, pero no se pudo guardar en Documentos. No se entregó el archivo.")
+                return
+            # Se envía el archivo producido, con el nombre con que quedó en Documentos.
             delivery = await self.send_document(
                 chat_id=chat_id,
                 file_path=str(xlsx_file),
-                file_name=xlsx_file.name,
+                file_name=nombre_guardado(guardado, xlsx_file.name),
                 caption="Estado de Cumplimiento SCT — consulta read-only.",
             )
             if not delivery.success:

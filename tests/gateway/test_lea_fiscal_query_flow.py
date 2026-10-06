@@ -193,6 +193,8 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
         lambda name: {"node": "/fake/node", "uv": "/fake/uv"}.get(name),
     )
     monkeypatch.setattr(fiscal_module.asyncio, "create_subprocess_exec", create_process)
+    # create_subprocess_exec está reemplazado: el módulo de documentos se simula directo.
+    monkeypatch.setattr(fiscal_module.documentos, 'espacio', AsyncMock())
     monkeypatch.setattr(
         flow,
         "_sct_dispatch_paths",
@@ -217,6 +219,7 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
         period_until="20261231",
         period_label="2026",
         client_slug="cliente-prueba", client_cuit="20123456786",
+        scope_item={'id': 3},
     )
 
     create_process.assert_awaited_once()
@@ -306,6 +309,13 @@ async def test_sct_dispatcher_builds_and_delivers_xlsx_without_model(flow, monke
         lambda name: {"node": "/fake/node", "uv": "/fake/uv"}.get(name),
     )
     monkeypatch.setattr(fiscal_module.asyncio, "create_subprocess_exec", create_process)
+    # create_subprocess_exec está reemplazado: el módulo de documentos se simula directo.
+    espacio = AsyncMock()
+    guardar = AsyncMock(return_value={
+        'status': 'OK', 'id_archivo': 9,
+        'ruta': 'estudios/1/20123456786/2026/anual/arca/cliente-prueba-estado-cumplimiento-arca-2026.xlsx'})
+    monkeypatch.setattr(fiscal_module.documentos, 'espacio', espacio)
+    monkeypatch.setattr(fiscal_module.documentos, 'guardar', guardar)
     monkeypatch.setattr(
         flow,
         "_sct_dispatch_paths",
@@ -340,11 +350,20 @@ async def test_sct_dispatcher_builds_and_delivers_xlsx_without_model(flow, monke
 
     assert create_process.await_count == 2
     assert create_process.await_args_list[1].args[:2] == (sys.executable, "-B")
-    published = tmp_path/'clientes/cliente-prueba/20123456786/arca/2026/anual/consultas/cliente-prueba-sct-estado-cumplimiento-arca-2026.xlsx'
+    espacio.assert_awaited_once_with(3, 2_000_000)
+    guardar.assert_awaited_once_with(xlsx_file, {
+        'seccion': 'arca', 'anio': 2026, 'mes': None,
+        'base': 'cliente-prueba-estado-cumplimiento-arca-2026', 'ext': 'xlsx',
+        'etiqueta': 'Estado de cumplimiento · 2026', 'tipo': 'Estado de cumplimiento',
+        'origen': 'ARCA', 'productor': 'sct', 'id_contribuyente': 3,
+        'periodo_desde': '2026-01-01', 'periodo_hasta': '2026-12-01',
+    })
+    # Ágora #115: nada en el árbol viejo; se entrega el archivo producido.
+    assert not (tmp_path/'clientes').exists()
     flow.send_document.assert_awaited_once_with(
         chat_id="123",
-        file_path=str(published),
-        file_name=published.name,
+        file_path=str(xlsx_file),
+        file_name='cliente-prueba-estado-cumplimiento-arca-2026.xlsx',
         caption="Estado de Cumplimiento SCT — consulta read-only.",
     )
     flow._adapter.handle_message.assert_not_awaited()

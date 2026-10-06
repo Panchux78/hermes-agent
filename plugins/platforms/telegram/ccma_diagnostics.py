@@ -15,6 +15,8 @@ CODES.update({'captcha_answer_received', 'captcha_image_changed', 'captcha_input
               'captcha_input_not_retained', 'login_fields_verified', 'login_fields_not_retained',
               'captcha_rejected', 'stage_evidence_unavailable'})
 CODES.update({'runner_exception', 'evidence_metadata_unavailable'})
+# Ágora #115: el guardado en Documentos puede fallar por cuota o por el módulo.
+CODES.update({'cuota_insuficiente', 'documento_no_guardado'})
 KINDS = {'TimeoutError', 'TimeoutException', 'Error', 'TypeError', 'ReferenceError', 'ValueError', 'OSError',
          'JavascriptException', 'WebDriverException', 'NoSuchWindowException', 'NoSuchFrameException',
          'NoSuchElementException', 'StaleElementReferenceException', 'InvalidSessionIdException',

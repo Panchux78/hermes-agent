@@ -26,6 +26,7 @@ from hermes_constants import get_hermes_home
 
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
+from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, mensaje_si_cuota
 from plugins.platforms.telegram.contributor_selector import (
     CONTRIBUTOR_PROMPT,
     MULTIPLE_CONTRIBUTORS_TEXT,
@@ -1033,6 +1034,10 @@ class PortalIvaFlow:
 
     @staticmethod
     def _error_message(result: dict[str, Any] | None, fallback: str, operation: str) -> str:
+        cuota = mensaje_si_cuota(result)
+        if cuota:
+            # Sin espacio en Documentos: el mensaje de ContaBot, tal cual (Ágora #115).
+            return cuota
         prefix = "Generar CSV de período nuevo" if operation == "generar" else "Descargar CSV presentados"
         reason = str((result or {}).get("motivo", ""))
         if reason.startswith("CREDENCIAL_") or "CREDENTIAL" in reason:
@@ -1347,7 +1352,7 @@ class PortalIvaFlow:
                 type(result.get("id_lote")) is int and result["id_lote"] > 0
             )
             if proc.returncode or not result.get("ok"):
-                raise RuntimeError("PORTAL_IVA_BATCH_FAILED")
+                raise RuntimeError("PORTAL_IVA_BATCH_QUOTA" if mensaje_si_cuota(result) else "PORTAL_IVA_BATCH_FAILED")
             source = self._batch_deliverables(result)
             evidence = self._batch_evidence(result)
             if source or evidence:
@@ -1402,7 +1407,7 @@ class PortalIvaFlow:
                     success = bool(case.get("ok"))
                     case_state = "completado" if success else ("rechazado" if case.get("estado") == "no_presentado" else "fallido")
                     await self.history.finish_item(history_run, item,
-                        state=case_state, reason_code="ok" if success else self._history_reason_code(case.get("motivo_codigo") or case.get("motivo")),
+                        state=case_state, reason_code="ok" if success else (CODIGO_CUOTA if mensaje_si_cuota(case) else self._history_reason_code(case.get("motivo_codigo") or case.get("motivo"))),
                         reason_text="Libros IVA descargados." if success else str(case.get("motivo_texto", "ARCA respondió algo que no esperábamos."))[:500],
                         effects=[{"tipo": "consulta_read_only", "realizado": True}],
                         contributor_id=int(case["id_contribuyente"]), period=str(case["periodo"]),
@@ -1412,7 +1417,7 @@ class PortalIvaFlow:
             summary = result.get("resumen", {})
             pending = [case for case in result.get("casos", []) if not case.get("ok")]
             detail = "\n".join(
-                f"• {case.get('cliente')} · {case.get('periodo')}: {case.get('motivo_texto', 'ARCA respondió algo que no esperábamos.')}"
+                f"• {case.get('cliente')} · {case.get('periodo')}: {mensaje_si_cuota(case) or case.get('motivo_texto', 'ARCA respondió algo que no esperábamos.')}"
                 + (f" {case.get('accion_sugerida')}" if case.get("accion_sugerida") else "")
                 for case in pending[:8]
             )
@@ -1452,19 +1457,22 @@ class PortalIvaFlow:
             raise
         except Exception:
             logger.exception("[PORTAL-IVA] lote no completado")
+            # Sin espacio en Documentos: falla con el mensaje de ContaBot (Ágora #115).
+            quota = mensaje_si_cuota(result) if result is not None else None
+            code = CODIGO_CUOTA if quota else "lote_no_completado"
             if not database_authoritative and history_run is not None and verified_clients and periods:
                 try:
                     await asyncio.to_thread(self._register_terminal_batch, history_run.run_id, verified_clients,
-                                            periods, "fallido", "lote_no_completado")
+                                            periods, "fallido", code)
                     database_authoritative = True
                 except Exception:
                     logger.exception("[PORTAL-IVA] lote fallido no pudo registrarse para aviso")
             if not database_authoritative:
                 try:
-                    await finish_remaining("fallido", "lote_no_completado", "El lote no pudo completarse.")
+                    await finish_remaining("fallido", code, quota or "El lote no pudo completarse.")
                 except Exception:
                     logger.exception("[PORTAL-IVA] lote fallido no pudo cerrar historial")
-            await self._edit_progress(state, "No pude completar el lote. El avance y la evidencia quedaron preservados.")
+            await self._edit_progress(state, quota or "No pude completar el lote. El avance y la evidencia quedaron preservados.")
         finally:
             if staging: shutil.rmtree(staging, ignore_errors=True)
             for folder in archive_staging:
@@ -1572,7 +1580,9 @@ class PortalIvaFlow:
                 # Editing an older progress message alone is easy to miss in Telegram.
                 await self._send(adapter, chat_id, failure_message, thread_id)
                 await finish_remaining(
-                    "fallido", self._history_reason_code(result.get("motivo")), failure_message,
+                    "fallido",
+                    CODIGO_CUOTA if mensaje_si_cuota(result) else self._history_reason_code(result.get("motivo")),
+                    failure_message,
                 )
                 return
             if result.get("etapa") != "completado":

@@ -1,20 +1,20 @@
 """Offline runtime, publication and error regressions; no Telegram or portal."""
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
-import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
-import pwd
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock
 
 import pytest
 
 from plugins.platforms.telegram.fiscal_runtime import require_fiscal_runtime
-from plugins.platforms.telegram.ccma_artifact import sct_destination, publish_named
+from datetime import date
+
+from plugins.platforms.telegram.ccma_artifact import ccma_destino, sct_destino, vencimientos_destino
+from tests.gateway.documentos_falsos import instalar as instalar_documentos
 from plugins.platforms.telegram.ccma_dispatch import run_ccma
 from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
 
@@ -66,7 +66,8 @@ async def test_missing_dependency_stops_before_reading_access_or_opening_portal(
     flow.send = AsyncMock()
     flow.send_document = AsyncMock()
     common = dict(chat_id='1', state_key=('1','1'), credential_line=2, credential_sha256='0'*64,
-                  period_from='01/2026', client_slug='synthetic', client_cuit='00000000000')
+                  period_from='01/2026', client_slug='synthetic', client_cuit='00000000000',
+                  scope_item={'id': 1})
     if kind == 'ccma':
         await run_ccma(flow, **common, period_to='01/2026')
     else:
@@ -76,90 +77,61 @@ async def test_missing_dependency_stops_before_reading_access_or_opening_portal(
     flow.send_document.assert_not_awaited()
 
 
-@pytest.mark.parametrize('mode,start,end,reference,folder', [
-    ('range','20260000','20261231','2026','2026/anual'),
-    ('range','20260600','20260631','2026-06','2026/06'),
-    ('range','20260100','20260631','202601-202606','2026/anual'),
-    ('empty','','','sin-filtro',''),
+@pytest.mark.parametrize('mode,start,end,reference,anio,mes,desde,hasta', [
+    ('range','20260000','20261231','2026',2026,None,'2026-01-01','2026-12-01'),
+    ('range','20260600','20260631','2026-06',2026,6,'2026-06-01','2026-06-01'),
+    ('range','20260100','20260631','2026-01-a-2026-06',2026,6,'2026-01-01','2026-06-01'),
+    ('range','20260100','20261231','2026',2026,None,'2026-01-01','2026-12-01'),
 ])
-def test_sct_naming_uses_validated_identity_and_scope(tmp_path, mode, start, end, reference, folder):
-    directory, name = sct_destination(tmp_path, 'cliente-prueba', '00000000000', mode, start, end)
-    assert name == f'cliente-prueba-sct-estado-cumplimiento-arca-{reference}.xlsx'
-    assert directory == tmp_path/'cliente-prueba/00000000000/arca'/folder/'consultas'
-    slug='cliente-ccma-obligaciones-pagos-arca-prueba'
-    _, unusual=sct_destination(tmp_path,slug,'00000000000',mode,start,end)
-    assert unusual.startswith(slug+'-sct-estado-cumplimiento-arca-')
+def test_sct_destino_uses_validated_identity_and_contract_period(mode, start, end, reference, anio, mes, desde, hasta):
+    destino = sct_destino('cliente-prueba', '00000000000', 7, mode, start, end, hoy=date(2026, 9, 5))
+    assert destino == {
+        'seccion': 'arca', 'anio': anio, 'mes': mes,
+        'base': f'cliente-prueba-estado-cumplimiento-arca-{reference}', 'ext': 'xlsx',
+        'etiqueta': destino['etiqueta'], 'tipo': 'Estado de cumplimiento', 'origen': 'ARCA',
+        'productor': 'sct', 'id_contribuyente': 7, 'periodo_desde': desde, 'periodo_hasta': hasta,
+    }
     with pytest.raises(ValueError):
-        sct_destination(tmp_path, '../other', '00000000000', mode, start, end)
+        sct_destino('../other', '00000000000', 7, mode, start, end, hoy=date(2026, 9, 5))
     with pytest.raises(ValueError):
-        sct_destination(tmp_path, 'cliente', '00000000000', 'range', '20260600', '20260131')
-
-
-def test_publication_concurrent_no_partial_no_clobber(tmp_path, monkeypatch):
-    source = tmp_path/'source.xlsx'
-    source.write_bytes(b'synthetic-complete-book')
-    directory = tmp_path/'legajo'
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        files = list(executor.map(lambda _: publish_named(source, directory, 'book.xlsx'), range(4)))
-    assert len(set(files)) == 4
-    assert {p.name for p in files} == {'book.xlsx','book-v02.xlsx','book-v03.xlsx','book-v04.xlsx'}
-    assert directory.stat().st_mode & 0o777 == 0o750
-    assert all(p.read_bytes() == source.read_bytes() and p.stat().st_mode & 0o777 == 0o640 for p in files)
-    def interrupted(inp, out):
-        out.write(b'partial')
-        raise OSError('simulated_copy_failure')
-    monkeypatch.setattr('plugins.platforms.telegram.ccma_artifact.shutil.copyfileobj', interrupted)
-    with pytest.raises(OSError):
-        publish_named(source, directory, 'book.xlsx')
-    assert set(directory.iterdir()) == set(files)
-    target = tmp_path/'target'; target.mkdir()
-    link = tmp_path/'link'; link.symlink_to(target, target_is_directory=True)
+        sct_destino('cliente', '00000000000', 7, 'range', '20260600', '20260131', hoy=date(2026, 9, 5))
     with pytest.raises(ValueError):
-        publish_named(source, link/'must-not-exist', 'book.xlsx')
-    assert not list(target.iterdir())
+        sct_destino('cliente', '00000000000', None, mode, start, end, hoy=date(2026, 9, 5))
 
 
-def test_publication_preserves_read_only_named_acl(tmp_path):
-    if not shutil.which('setfacl') or not shutil.which('getfacl'):
-        pytest.skip('POSIX ACL tools unavailable')
-    try:
-        service_uid = pwd.getpwnam('contabot-console').pw_uid
-    except KeyError:
-        pytest.skip('console service identity unavailable')
-    root = tmp_path / 'clients'
-    root.mkdir()
-    subprocess.run(
-        ['setfacl', '-m', f'u:{service_uid}:r-x,d:u:{service_uid}:r-x', str(root)],
-        check=True,
-    )
-    source = tmp_path / 'source.xlsx'
-    source.write_bytes(b'synthetic-complete-book')
-
-    target = publish_named(source, root / 'client/year/consultas', 'book.xlsx')
-
-    directory_acl = subprocess.run(
-        ['getfacl', '-cpn', str(target.parent)], check=True, text=True,
-        stdout=subprocess.PIPE,
-    ).stdout
-    file_acl = subprocess.run(
-        ['getfacl', '-cpn', str(target)], check=True, text=True,
-        stdout=subprocess.PIPE,
-    ).stdout
-    assert f'user:{service_uid}:r-x' in directory_acl
-    assert f'user:{service_uid}:r-x\t#effective:r--' in file_acl
+def test_sct_without_filter_is_as_of_query_date():
+    destino = sct_destino('cliente-prueba', '00000000000', 7, 'empty', '', '', hoy=date(2026, 9, 5))
+    assert destino['base'] == 'cliente-prueba-estado-cumplimiento-arca-2026-09-05'
+    assert (destino['anio'], destino['mes']) == (2026, 9)
+    assert destino['fecha_documento'] == '2026-09-05'
+    assert 'periodo_desde' not in destino and 'periodo_hasta' not in destino
 
 
-def test_publication_versions_ics_without_changing_extension(tmp_path):
-    source = tmp_path / 'calendar.ics'
-    source.write_bytes(b'BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n')
-    directory = tmp_path / 'client/arca/consultas'
+@pytest.mark.parametrize('desde,hasta,ref,anio,mes,pdesde,phasta', [
+    ('03/2026', '03/2026', '2026-03', 2026, 3, '2026-03-01', '2026-03-01'),
+    ('01/2026', '12/2026', '2026', 2026, None, '2026-01-01', '2026-12-01'),
+    ('02/2026', '05/2026', '2026-02-a-2026-05', 2026, 5, '2026-02-01', '2026-05-01'),
+    ('11/2025', '02/2026', '2025-11-a-2026-02', 2026, 2, '2025-11-01', '2026-02-01'),
+])
+def test_ccma_destino_follows_contract(desde, hasta, ref, anio, mes, pdesde, phasta):
+    destino = ccma_destino('cliente-prueba', '00000000000', 4, desde, hasta)
+    assert destino['base'] == f'cliente-prueba-cuenta-corriente-arca-{ref}'
+    assert (destino['anio'], destino['mes'], destino['seccion']) == (anio, mes, 'arca')
+    assert (destino['periodo_desde'], destino['periodo_hasta']) == (pdesde, phasta)
+    assert (destino['tipo'], destino['origen'], destino['productor']) == ('Cuenta corriente', 'ARCA', 'ccma')
+    with pytest.raises(ValueError):
+        ccma_destino('cliente-prueba', '00000000000', 4, hasta, '01/2020')
 
-    first = publish_named(source, directory, 'client-vencimientos-arca.ics')
-    second = publish_named(source, directory, 'client-vencimientos-arca.ics')
 
-    assert first.name == 'client-vencimientos-arca.ics'
-    assert second.name == 'client-vencimientos-arca-v02.ics'
-    assert first.read_bytes() == second.read_bytes() == source.read_bytes()
+def test_vencimientos_destino_year_or_range():
+    anual = vencimientos_destino('c', '00000000000', 1, ['2026-03-01', '2026-11-30'], 'xlsx')
+    assert (anual['base'], anual['anio'], anual['mes']) == ('c-vencimientos-arca-2026', 2026, None)
+    assert (anual['periodo_desde'], anual['periodo_hasta']) == ('2026-01-01', '2026-12-01')
+    rango = vencimientos_destino('c', '00000000000', 1, ['2027-01-02', '2026-12-31'], 'ics')
+    assert (rango['base'], rango['anio'], rango['mes'], rango['ext']) == (
+        'c-vencimientos-arca-2026-12-a-2027-01', 2027, 1, 'ics')
+    with pytest.raises(ValueError):
+        vencimientos_destino('c', '00000000000', 1, [], 'xlsx')
 
 
 @pytest.mark.asyncio
@@ -167,6 +139,7 @@ async def test_ccma_reports_unreadable_amount_without_private_diagnostics(tmp_pa
     verify = AsyncMock()
     monkeypatch.setattr('plugins.platforms.telegram.ccma_dispatch.verify_representation', verify)
     monkeypatch.setenv('HOME',str(tmp_path)); monkeypatch.setenv('HERMES_HOME',str(tmp_path))
+    documentos = instalar_documentos(monkeypatch, tmp_path)
     scripts=tmp_path/'skills/productivity/ccma-obligaciones-pagos/scripts'
     scripts.mkdir(parents=True)
     access=tmp_path/'.arca.csv';access.write_bytes(b'synthetic');access.chmod(0o600)
@@ -188,3 +161,4 @@ async def test_ccma_reports_unreadable_amount_without_private_diagnostics(tmp_pa
     assert 'importe ilegible; no se generó el libro' in flow.send.await_args.args[1]
     flow.send_document.assert_not_awaited()
     assert not list(tmp_path.rglob('*.xlsx'))
+    assert documentos.destinos() == []

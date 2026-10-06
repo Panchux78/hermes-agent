@@ -12,14 +12,34 @@ from plugins.platforms.telegram.fiscal_runtime import browser_environment, requi
 from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, verify_representation
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
 from plugins.platforms.telegram.ccma_diagnostics import Diagnostics
+from plugins.platforms.telegram import documentos_contabot as documentos
+
+# Previsión para el chequeo de cuota antes de consultar ARCA (Ágora #115).
+BYTES_PREVISTOS = 2_000_000
+
+
+def id_contribuyente_de(contributor_id, scope_item):
+    """id_contribuyente canónico: el elegido en el selector o el de la fila de alcance."""
+    if type(contributor_id) is int and contributor_id > 0:
+        return contributor_id
+    for clave in ('id', 'id_contribuyente'):
+        valor = (scope_item or {}).get(clave)
+        if type(valor) is int and valor > 0:
+            return valor
+    return None
 
 
 async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha256,
                    period_from, period_to, client_slug, client_cuit,
                    contributor_id=None, holder_cuit=None, telegram_id=None, scope_item=None):
-    from plugins.platforms.telegram.ccma_artifact import destination, publish
-    clients_root = Path(os.environ.get('CONTABOT_CLIENTES_ROOT', Path.home() / 'clientes'))
-    destination(clients_root, client_slug, client_cuit, period_from, period_to)
+    from plugins.platforms.telegram.ccma_artifact import ccma_destino, nombre_guardado
+    try:
+        # El documento se describe antes de consultar; la ruta la decide ContaBot.
+        destino = ccma_destino(client_slug, client_cuit, id_contribuyente_de(contributor_id, scope_item),
+                               period_from, period_to)
+    except ValueError:
+        await flow.send(chat_id, 'CCMA no pudo verificar el contribuyente o período del archivo. No se consultó ARCA.')
+        return
     home = Path(os.environ.get('HERMES_HOME', Path.home() / '.hermes'))
     probe = home / 'skills/productivity/ccma-obligaciones-pagos/scripts/arca_ccma_probe.js'
     builder = Path(__file__).with_name('ccma_workbook.py')
@@ -36,6 +56,22 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         diagnostic.failure(str(error))
         diagnostic.close()
         await flow.send(chat_id, unavailable_message('CCMA', str(error)) + f' Referencia: {run_dir.name}.')
+        return
+    except BaseException:
+        diagnostic.close()
+        raise
+    try:
+        await documentos.espacio(destino['id_contribuyente'], BYTES_PREVISTOS)
+    except documentos.CuotaInsuficiente as error:
+        diagnostic.record({'code': 'cuota_insuficiente'})
+        diagnostic.close()
+        await flow.send(chat_id, error.mensaje)
+        return
+    except documentos.DocumentoNoGuardado:
+        diagnostic.record({'code': 'documento_no_guardado'})
+        diagnostic.close()
+        await flow.send(chat_id, 'CCMA no pudo verificar el espacio de Documentos. No se consultó ARCA. '
+                        f'Referencia: {run_dir.name}.')
         return
     except BaseException:
         diagnostic.close()
@@ -104,10 +140,22 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
             await flow.send(chat_id, text + f' Referencia: {run_dir.name}.')
             return
         workbook.chmod(0o600)
-        workbook = await asyncio.to_thread(publish, workbook, clients_root, client_slug, client_cuit, period_from, period_to)
+        try:
+            guardado = await documentos.guardar(workbook, destino)
+        except documentos.CuotaInsuficiente as error:
+            diagnostic.record({'code': 'cuota_insuficiente'})
+            await flow.send(chat_id, error.mensaje)
+            return
+        except documentos.DocumentoNoGuardado:
+            diagnostic.record({'code': 'documento_no_guardado'})
+            await flow.send(chat_id, 'CCMA generó el Excel, pero no se pudo guardar en Documentos. '
+                            f'No se entregó el archivo. Referencia: {run_dir.name}.')
+            return
         diagnostic.record({'stage': 'delivery'})
+        # Se envía el archivo producido, con el nombre con que quedó en Documentos.
         delivery = await flow.send_document(chat_id=chat_id, file_path=str(workbook),
-                    file_name=workbook.name, caption=f'CCMA — consulta nueva de {period_from} a {period_to}.')
+                    file_name=nombre_guardado(guardado, workbook.name),
+                    caption=f'CCMA — consulta nueva de {period_from} a {period_to}.')
         diagnostic.record({'code': 'complete' if delivery.success else 'delivery_failed'})
         await flow.send(chat_id, 'Consulta CCMA finalizada. Se entregó el Excel de esta ejecución.' if delivery.success
                         else 'La consulta CCMA finalizó, pero Telegram no pudo entregar el Excel.')
