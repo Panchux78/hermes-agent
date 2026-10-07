@@ -9,7 +9,7 @@ from plugins.platforms.telegram import fiscal_query_flow as module
 from tests.gateway.documentos_falsos import instalar as instalar_documentos
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('status', ['login_credentials_rejected', 'runner_error', 'sct_subject_mismatch', 'sct_subject_identity_missing', 'subject_selector_does_not_contain_target', 'sct_parameters_load_timeout', 'parameters_screen_not_verified', None, 'sct_exported'])
+@pytest.mark.parametrize('status', ['login_credentials_rejected', 'runner_error', 'sct_subject_mismatch', 'sct_subject_identity_missing', 'subject_selector_does_not_contain_target', 'sct_parameters_load_timeout', 'sct_compliance_menu_load_timeout', 'parameters_screen_not_verified', None, 'sct_exported'])
 async def test_nonzero_child_reports_status_without_delivering(tmp_path, monkeypatch, status):
     scripts=tmp_path/'profile/skills/productivity/sct-estado-cumplimiento/scripts'
     scripts.mkdir(parents=True)
@@ -36,6 +36,7 @@ async def test_nonzero_child_reports_status_without_delivering(tmp_path, monkeyp
             'sct_subject_identity_missing': 'CUIT verificable en Información del usuario',
             'subject_selector_does_not_contain_target': 'no figura entre los representados',
             'sct_parameters_load_timeout': 'no terminó de cargar el formulario de Estado de cumplimiento',
+            'sct_compliance_menu_load_timeout': 'no habilitó la opción Estado de cumplimiento',
             'parameters_screen_not_verified': 'formulario de Estado de cumplimiento ambiguo',
         }[status]
         assert expected in text and status not in text
