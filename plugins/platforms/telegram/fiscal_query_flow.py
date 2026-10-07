@@ -58,6 +58,8 @@ def sct_failure_message(status: str, reference: str) -> str:
         'subject_selector_missing_after_selection': 'ARCA cambió el selector antes de confirmar el contribuyente',
         'login_credentials_rejected': 'ARCA rechazó el usuario o la clave del acceso guardado',
         'login_transition_timeout': 'ARCA no terminó de confirmar el ingreso',
+        'login_not_verified': 'ARCA no confirmó el ingreso con la clave guardada',
+        'sct_login_not_verified': 'ARCA no confirmó el ingreso al abrir el Sistema de Cuentas Tributarias',
         'service_open_timeout': 'el Sistema de Cuentas Tributarias no terminó de abrir',
         'sct_service_not_found': 'no se encontró el acceso al Sistema de Cuentas Tributarias',
         'sct_compliance_menu_load_timeout': 'ARCA no habilitó la opción Estado de cumplimiento en el menú de Cuenta corriente',

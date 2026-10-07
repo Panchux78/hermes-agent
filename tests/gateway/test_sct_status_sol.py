@@ -42,3 +42,16 @@ async def test_nonzero_child_reports_status_without_delivering(tmp_path, monkeyp
         assert expected in text and status not in text
     assert 'Referencia:' in text and 'private-synthetic' not in text
     flow.send_document.assert_not_awaited()
+
+
+def test_sct_login_not_verified_messages_are_plain_and_keep_reference():
+    # El segundo ingreso que pide ARCA al abrir SCT y el ingreso inicial se distinguen,
+    # en lenguaje del contador, sin códigos internos y con la referencia privada.
+    abrir = module.sct_failure_message('sct_login_not_verified', 'ref-123')
+    assert 'ARCA no confirmó el ingreso al abrir el Sistema de Cuentas Tributarias' in abrir
+    assert 'No se generó ni se envió un Excel' in abrir
+    assert 'ref-123' in abrir
+    assert 'sct_login_not_verified' not in abrir
+    inicial = module.sct_failure_message('login_not_verified', 'ref-124')
+    assert 'ARCA no confirmó el ingreso con la clave guardada' in inicial
+    assert 'login_not_verified' not in inicial and 'error técnico' not in inicial
