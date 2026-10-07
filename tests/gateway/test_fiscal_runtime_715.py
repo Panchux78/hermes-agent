@@ -46,7 +46,7 @@ async def test_preflight_checks_selected_python_without_installing(tmp_path, mon
     with pytest.raises(RuntimeError, match='fiscal_python_missing'):
         await require_fiscal_runtime(empty/'bin/python', node, probe, tmp_path, canonical=False)
     probe.write_text("process.exit(1)")
-    with pytest.raises(RuntimeError, match='fiscal_browser_missing'):
+    with pytest.raises(RuntimeError, match='fiscal_browser_start_failed'):
         await require_fiscal_runtime(sys.executable, node, probe, tmp_path, canonical=False)
     assert not (empty/'bin/pip').exists()
 
