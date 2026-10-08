@@ -5,6 +5,7 @@ selection to its local runner. Neither flow dispatches an agent turn.
 """
 from __future__ import annotations
 import asyncio
+import calendar
 import dataclasses
 import logging
 import os
@@ -60,6 +61,7 @@ def sct_failure_message(status: str, reference: str) -> str:
         'login_transition_timeout': 'ARCA no terminó de confirmar el ingreso',
         'login_not_verified': 'ARCA no confirmó el ingreso con la clave guardada',
         'sct_login_not_verified': 'ARCA no confirmó el ingreso al abrir el Sistema de Cuentas Tributarias',
+        'sct_period_rejected': 'ARCA rechazó el período consultado',
         'service_open_timeout': 'el Sistema de Cuentas Tributarias no terminó de abrir',
         'sct_service_not_found': 'no se encontró el acceso al Sistema de Cuentas Tributarias',
         'sct_compliance_menu_load_timeout': 'ARCA no habilitó la opción Estado de cumplimiento en el menú de Cuenta corriente',
@@ -299,7 +301,9 @@ class FiscalQueryFlow:
         to_month, to_year = to_period.split("/")
         if from_year != to_year:
             return None
-        return "range", f"{from_year}{from_month}00", f"{to_year}{to_month}31"
+        # ARCA rechaza fechas inexistentes («El período esta mal formado», 02/2025 → 20250231).
+        last_day = calendar.monthrange(int(to_year), int(to_month))[1]
+        return "range", f"{from_year}{from_month}00", f"{to_year}{to_month}{last_day:02d}"
 
 
     async def _resolve_sct_credential_line(self, usuario: str, represented: str) -> Optional[tuple[int, str]]:

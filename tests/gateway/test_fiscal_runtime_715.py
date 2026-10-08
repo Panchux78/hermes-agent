@@ -79,8 +79,8 @@ async def test_missing_dependency_stops_before_reading_access_or_opening_portal(
 
 @pytest.mark.parametrize('mode,start,end,reference,anio,mes,desde,hasta', [
     ('range','20260000','20261231','2026',2026,None,'2026-01-01','2026-12-01'),
-    ('range','20260600','20260631','2026-06',2026,6,'2026-06-01','2026-06-01'),
-    ('range','20260100','20260631','2026-01-a-2026-06',2026,6,'2026-01-01','2026-06-01'),
+    ('range','20260600','20260630','2026-06',2026,6,'2026-06-01','2026-06-01'),
+    ('range','20260100','20260630','2026-01-a-2026-06',2026,6,'2026-01-01','2026-06-01'),
     ('range','20260100','20261231','2026',2026,None,'2026-01-01','2026-12-01'),
 ])
 def test_sct_destino_uses_validated_identity_and_contract_period(mode, start, end, reference, anio, mes, desde, hasta):

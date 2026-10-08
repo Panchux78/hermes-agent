@@ -6,6 +6,7 @@ ContaBot. Acá no se escribe nada en el árbol de clientes.
 """
 from __future__ import annotations
 
+import calendar
 import re
 from datetime import date
 
@@ -85,8 +86,10 @@ def sct_destino(slug, cuit, id_contribuyente, mode, start, end, *, hoy: date) ->
     if mode != 'range':
         raise ValueError('invalid_period')
     match_start = re.fullmatch(r'(\d{4})(00|0[1-9]|1[0-2])00', start or '')
-    match_end = re.fullmatch(r'(\d{4})(0[1-9]|1[0-2])31', end or '')
-    if not match_start or not match_end or match_start[1] != match_end[1]:
+    # «Hasta» es el último día real del mes pedido (ARCA rechaza 20250231).
+    match_end = re.fullmatch(r'(\d{4})(0[1-9]|1[0-2])(\d{2})', end or '')
+    if (not match_start or not match_end or match_start[1] != match_end[1]
+            or int(match_end[3]) != calendar.monthrange(int(match_end[1]), int(match_end[2]))[1]):
         raise ValueError('invalid_period')
     desde = (int(match_start[1]), int(match_start[2]) or 1)
     hasta = (int(match_end[1]), int(match_end[2]))

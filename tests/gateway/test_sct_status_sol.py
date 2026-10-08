@@ -1,5 +1,6 @@
 """SCT failure status survives a real child process exiting nonzero."""
 import json
+from datetime import date
 import sys
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -55,3 +56,33 @@ def test_sct_login_not_verified_messages_are_plain_and_keep_reference():
     inicial = module.sct_failure_message('login_not_verified', 'ref-124')
     assert 'ARCA no confirmó el ingreso con la clave guardada' in inicial
     assert 'login_not_verified' not in inicial and 'error técnico' not in inicial
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('02/2025', ('range', '20250200', '20250228')),
+    ('02/2024', ('range', '20240200', '20240229')),
+    ('04/2025', ('range', '20250400', '20250430')),
+    ('01/2025-06/2025', ('range', '20250100', '20250630')),
+    ('12/2025', ('range', '20251200', '20251231')),
+    ('2025', ('range', '20250000', '20251231')),
+])
+def test_sct_period_until_is_a_real_date(text, expected):
+    # 08/10/2026: «02/2025» enviaba 20250231 y ARCA respondió «El período esta mal formado».
+    from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
+    from plugins.platforms.telegram.ccma_artifact import sct_destino
+    assert FiscalQueryFlow._parse_sct_period_selection(text) == expected
+    destino = sct_destino('cliente-prueba', '00000000000', 7, *expected, hoy=date(2026, 10, 8))
+    assert destino['ext'] == 'xlsx'
+
+
+def test_sct_destino_rejects_impossible_month_end():
+    from plugins.platforms.telegram.ccma_artifact import sct_destino
+    for end in ('20250231', '20250431', '20250230'):
+        with pytest.raises(ValueError):
+            sct_destino('cliente-prueba', '00000000000', 7, 'range', '20250200', end, hoy=date(2026, 10, 8))
+
+
+def test_sct_period_rejected_message_is_plain():
+    from plugins.platforms.telegram.fiscal_query_flow import sct_failure_message
+    text = sct_failure_message('sct_period_rejected', 'ref-1')
+    assert 'ARCA rechazó el período consultado' in text and 'No se generó ni se envió un Excel' in text and 'ref-1' in text
