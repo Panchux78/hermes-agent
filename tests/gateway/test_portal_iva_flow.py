@@ -273,9 +273,30 @@ def test_command_is_exact_and_shell_free(tmp_path):
     flow.executor.touch()
     flow.uv.touch()
     assert flow._command("cliente", "2026-08", "generar") == [
-        str(tmp_path / "uv"), "run", "--with", "selenium", "xvfb-run", "-a",
+        str(tmp_path / "uv"), "run", "--no-project", "--with", "selenium", "xvfb-run", "-a",
         "python3", str(tmp_path / "portal_iva.py"), "--cliente", "cliente", "--periodo", "2026-08", "--operacion", "generar", "--captcha-stdin",
     ]
+
+
+def test_commands_run_outside_any_project_in_working_directory(tmp_path):
+    """El cwd del gateway es una release de root con pyproject.toml (09/10/2026).
+
+    Sin --no-project, uv intenta crear .venv en esa carpeta, falla con
+    «Permission denied» y el procedimiento nunca corre: el CSV de períodos
+    presentados terminaba en PORTAL_IVA_STDOUT_INVALID y el lote sin result.json.
+    """
+    executor = tmp_path / "portal_iva.py"
+    executor.touch()
+    (tmp_path / "portal_iva_lote.py").touch()
+    uv = tmp_path / "uv"
+    uv.touch()
+    flow = PortalIvaFlow(executor=executor, uv=uv, clients_root=tmp_path)
+    state = FlowState(user_id="7", nonce="a" * 10, stage="running", operation="descargar-lote",
+                      selected_clients=[{"slug": "uno", "access_id": 10, "representative_id": 20}],
+                      period_from="2026-05", period_to="2026-05")
+    for command in (flow._command("cliente", "2026-08", "descargar-presentados"),
+                    flow._batch_command(state, None, tmp_path / "result.json")):
+        assert command[1:3] == ["run", "--no-project"]
 
 
 def test_period_accepts_only_month_year_and_stores_executor_period(monkeypatch):
@@ -1167,7 +1188,7 @@ def test_batch_command_is_shell_free_and_contains_every_selected_slug(tmp_path):
                       period_from="2026-05", period_to="2026-06")
     result_file = tmp_path / "result.json"
     assert flow._batch_command(state, 321, result_file) == [
-        str(uv), "run", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
+        str(uv), "run", "--no-project", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
         "python3", str(batch_executor),
         "--caso", "uno:2026-05:10:20", "--caso", "uno:2026-06:10:20",
         "--caso", "dos:2026-05:11:21", "--caso", "dos:2026-06:11:21",

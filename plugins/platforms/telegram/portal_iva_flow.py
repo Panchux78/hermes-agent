@@ -585,8 +585,11 @@ class PortalIvaFlow:
             raise RuntimeError("PORTAL_IVA_RUNTIME_UNAVAILABLE")
         if operation not in {"generar", "descargar-presentados"}:
             raise RuntimeError("PORTAL_IVA_OPERATION_INVALID")
+        # --no-project: el gateway corre con cwd en una release de root que
+        # tiene pyproject.toml; sin esto uv intenta crear .venv ahí y sale
+        # antes de ejecutar el procedimiento (09/10/2026).
         return [
-            str(self.uv), "run", "--with", "selenium", "xvfb-run", "-a",
+            str(self.uv), "run", "--no-project", "--with", "selenium", "xvfb-run", "-a",
             "python3", str(self.executor), "--cliente", slug, "--periodo", period,
             "--operacion", operation, "--captcha-stdin",
         ]
@@ -595,7 +598,7 @@ class PortalIvaFlow:
                        result_file: Path) -> list[str]:
         if not self.batch_executor.is_file() or not state.period_from or not state.period_to:
             raise RuntimeError("PORTAL_IVA_BATCH_RUNTIME_UNAVAILABLE")
-        command = [str(self.uv), "run", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
+        command = [str(self.uv), "run", "--no-project", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
                    "python3", str(self.batch_executor)]
         periods = self._period_range(state.period_from, state.period_to)
         for client in state.selected_clients:
