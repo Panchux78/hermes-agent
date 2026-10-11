@@ -109,7 +109,8 @@ def test_telegram_offers_only_inscripto_and_explains_excluded_conditions():
     async def scenario():
         for operation in ("descargar-lote", "descargar-presentados"):
             for reason, fragment in (("monotributo", "monotributista"),
-                                     ("sin_consultar", "no se consultó")):
+                                     ("sin_consultar", "no se consultó"),
+                                     ("diferencia_iva", "difiere")):
                 flow = PortalIvaFlow()
                 adapter = FakeAdapter()
                 state = FlowState(user_id="7", nonce="a" * 10, stage="client", operation=operation)
@@ -128,6 +129,25 @@ def test_telegram_offers_only_inscripto_and_explains_excluded_conditions():
             assert await flow.text(adapter, _message("Uno")) is True
             assert state.stage == ("batch_clients" if operation == "descargar-lote" else "period")
 
+    asyncio.run(scenario())
+
+
+def test_batch_remembers_named_exclusion_in_selection_and_final_summary():
+    async def scenario():
+        flow, adapter = PortalIvaFlow(), FakeAdapter()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="batch_clients", operation="descargar-lote")
+        flow.states[flow._key("10", None, "7")] = state
+        flow._search = lambda _term,_actor: [_scope_item(id=2,nombre="Dos",access_id=None)]
+        flow._iva_reason = lambda _item,_actor: "diferencia_iva"
+        await flow.text(adapter,_message("Dos"))
+        assert "Dos:" in adapter._bot.send_message.await_args.kwargs['text']
+        await flow._select(adapter,"10",None,state,_scope_item())
+        await flow.text(adapter,_message("LISTO"))
+        summary = adapter._bot.send_message.await_args.kwargs['text']
+        assert "Contribuyentes incluidos: Uno" in summary and "No incluidos:" in summary
+        assert "Dos:" in flow._excluded_summary(state) and "difiere" in summary
+        await flow._select(adapter,"10",None,state,_scope_item(id=2,nombre="Dos"))
+        assert not state.excluded_clients
     asyncio.run(scenario())
 
 

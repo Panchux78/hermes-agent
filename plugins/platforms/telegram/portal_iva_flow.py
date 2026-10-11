@@ -78,6 +78,7 @@ _UNVERIFIED_KEY_HELP = (
     "en ARCA y clave verificada."
 )
 _IVA_INELIGIBLE = {
+    "diferencia_iva": "La condición IVA del estudio difiere de la informada por ARCA. Revisá ambas en la ficha fiscal del panel antes de pedir los Libros IVA.",
     "monotributo": "ARCA lo registra como responsable monotributista. No se puede iniciar Libro IVA para este contribuyente.",
     "revisar": "La condición frente al IVA quedó para revisar. Actualizala y confirmala antes de pedir los Libros IVA.",
     "sin_verificar": "ARCA no pudo verificar la condición frente al IVA. Consultala nuevamente antes de pedir los Libros IVA.",
@@ -108,6 +109,7 @@ class FlowState:
     candidates: dict[int, dict[str, Any]] = field(default_factory=dict)
     scope_item: dict[str, Any] | None = None
     selected_clients: list[dict[str, Any]] = field(default_factory=list)
+    excluded_clients: dict[int, str] = field(default_factory=dict)
     period_from: str | None = None
     period_to: str | None = None
     batch_months: int = 0
@@ -474,7 +476,7 @@ class PortalIvaFlow:
                 if len(checked) != 1 or not checked[0].get("access_id"):
                     reason = await self._ineligible_text(int(client["id"]), state.user_id)
                     self.states.pop(key, None)
-                    await self._send(adapter, chat_id, f"No inicié el lote: {reason}", thread_id)
+                    await self._send(adapter, chat_id, f"No inicié el lote. No incluido: {client['nombre']}: {reason}", thread_id)
                     return True
             state.stage = "running"
             state.progress_label = "Preparando lote de Libros IVA…"
@@ -521,7 +523,10 @@ class PortalIvaFlow:
                 await self._send(adapter, chat_id, "Elegí al menos un contribuyente.", thread_id)
                 return True
             state.stage = "batch_from"
-            await self._send(adapter, chat_id, "Ingresá el primer período como MM/AAAA.", thread_id)
+            await self._send(adapter, chat_id, "Contribuyentes incluidos: "
+                             + ", ".join(item['nombre'] for item in state.selected_clients)
+                             + self._excluded_summary(state)
+                             + "\nIngresá el primer período como MM/AAAA.", thread_id)
             return True
         try:
             raw_candidates = await asyncio.to_thread(self._search, message.text or "", state.user_id)
@@ -534,10 +539,18 @@ class PortalIvaFlow:
             return True
         offer = ContributorOffer.from_rows(candidates)
         state.candidates = offer.candidates
+        blocked = [item for item in raw_candidates if not item.get("access_id")]
+        blocked_texts = [f"{item['nombre']}: {await self._ineligible_text(int(item['id']), state.user_id)}"
+                         for item in blocked]
+        if len(raw_candidates) == 1 and blocked and state.operation == "descargar-lote":
+            state.excluded_clients[int(blocked[0]['id'])] = blocked_texts[0]
+        if blocked_texts and offer.status != "empty":
+            await self._send(adapter, chat_id, "No habilitados para Libros IVA:\n"
+                             + "\n".join(blocked_texts), thread_id)
         if offer.status == "empty":
             empty_text = (
-                await self._ineligible_text(int(raw_candidates[0]["id"]), state.user_id)
-                if len(raw_candidates) == 1 else
+                "No incluidos:\n" + "\n".join(blocked_texts)
+                if blocked_texts else
                 "No hay un responsable inscripto habilitado que coincida. Probá con nombre, CUIT o slug. "
                 + _UNVERIFIED_KEY_HELP
             )
@@ -569,6 +582,7 @@ class PortalIvaFlow:
                 return
             if not any(int(current["id"]) == int(item["id"]) for current in state.selected_clients):
                 state.selected_clients.append(dict(item))
+            state.excluded_clients.pop(int(item['id']), None)
             state.stage = "batch_clients"
             await self._send(adapter, chat_id, f"Agregado: {item['nombre']}. Escribí otro nombre/slug o LISTO para continuar.", thread_id)
             return
@@ -579,6 +593,11 @@ class PortalIvaFlow:
         state.scope_item = dict(item)
         state.stage = "period"
         await self._send(adapter, chat_id, "Ingresá el período como MM/AAAA. Ejemplo: 08/2026.", thread_id)
+
+    @staticmethod
+    def _excluded_summary(state: FlowState) -> str:
+        return ("\nNo incluidos:\n" + "\n".join(state.excluded_clients.values())
+                if state.excluded_clients else "")
 
     def _command(self, slug: str, period: str, operation: str) -> list[str]:
         if not self.available():
@@ -1468,7 +1487,7 @@ class PortalIvaFlow:
             await self._edit_progress(state,
                 f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos; "
                 f"{delivered}/{expected} libros descargados, {errors} con error. "
-                f"{delivery_text}{omitted}{suffix}")
+                f"{delivery_text}{omitted}{suffix}{self._excluded_summary(state)}")
         except asyncio.CancelledError:
             if proc and proc.returncode is None: await self._terminate_process(proc)
             if not database_authoritative and history_run is not None and verified_clients and periods:

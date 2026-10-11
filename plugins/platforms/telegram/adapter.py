@@ -453,6 +453,7 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
         from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
         from plugins.platforms.telegram.constancias_flow import ConstanciasFlow
+        from plugins.platforms.telegram.panel_captcha_bridge import PanelCaptchaBridge
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
         from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
         from plugins.platforms.telegram.fiscal_credentials import lookup_connection, verification_connection
@@ -496,6 +497,7 @@ class TelegramAdapter(BasePlatformAdapter):
             runtime_python=runtime_python
         )
         self._constancias_flow = ConstanciasFlow(extra.get("constancias_console_api_url", "http://127.0.0.1:8000"))
+        self._panel_captcha_bridge = PanelCaptchaBridge()
         self._cruce_iva_flow = CruceIvaFlow()
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection, runtime_python=runtime_python,
@@ -3495,6 +3497,9 @@ class TelegramAdapter(BasePlatformAdapter):
             # gateway wraps in a connect timeout — means one slow call blows the whole connect and the
             # adapter never comes up, even though polling/webhook is already live (#46298).
             self._start_post_connect_housekeeping()
+            bridge = getattr(self, '_panel_captcha_bridge', None)
+            if bridge is not None:
+                self._restart_task_attr('_panel_captcha_task', bridge.run(self))
             return True
         except Exception as e:
             self._release_platform_lock()
@@ -3672,14 +3677,15 @@ class TelegramAdapter(BasePlatformAdapter):
         # await lets them start a new generation.
         current_task = asyncio.current_task()
         lifecycle_tasks = self._collect_live_tasks(
-            [getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None)], current_task)
+            [getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
+             getattr(self, '_panel_captcha_task', None)], current_task)
         for task in lifecycle_tasks:
             task.cancel()
         lifecycle_tasks = [t for t in lifecycle_tasks if asyncio.isfuture(t) or asyncio.iscoroutine(t)]
         if lifecycle_tasks:
             await self._await_disconnect_step(
                 asyncio.gather(*lifecycle_tasks, return_exceptions=True), _DISCONNECT_STEP_TIMEOUT, "lifecycle-task cancel")
-        self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task")
+        self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task", '_panel_captcha_task')
         # Cancellation callbacks may have run while awaited; the fence stays authoritative.
         self._polling_progress_accepting = False
         self._send_path_degraded = True
@@ -6510,6 +6516,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if msg.text in {"☰ Menú", menu_label("☰", "Menú")}:
             await self._reply_operational_menu(msg, context.bot)
+            return
+        bridge = getattr(self, '_panel_captcha_bridge', None)
+        if bridge is not None and await bridge.text(context.bot, msg):
             return
         if await self._pdf_security_flow.text(self, msg):
             return
