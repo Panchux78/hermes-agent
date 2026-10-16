@@ -26,6 +26,8 @@ def _make_adapter():
     adapter._pdf_security_flow = SimpleNamespace(text=AsyncMock(return_value=False))
     adapter._agip_ddjj_flow = SimpleNamespace(text=AsyncMock(return_value=False))
     adapter._portal_iva_flow = SimpleNamespace(text=AsyncMock(return_value=False))
+    adapter._vencimientos_flow = SimpleNamespace(text=AsyncMock(return_value=False))
+    adapter._constancias_flow = SimpleNamespace(text=AsyncMock(return_value=False))
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="fake-token", extra={})
     adapter._bot = SimpleNamespace(id=999, username="test_bot")

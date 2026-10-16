@@ -76,6 +76,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
         bot=bot,
         updater=updater,
         add_handler=MagicMock(),
+        add_error_handler=MagicMock(),
         initialize=AsyncMock(),
         start=AsyncMock(),
     )
@@ -232,6 +233,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
         bot=bot,
         updater=updater,
         add_handler=MagicMock(),
+        add_error_handler=MagicMock(),
         initialize=AsyncMock(),
         start=AsyncMock(),
     )
@@ -313,6 +315,7 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
         bot=bot,
         updater=updater,
         add_handler=MagicMock(),
+        add_error_handler=MagicMock(),
         initialize=AsyncMock(),
         start=AsyncMock(),
     )
@@ -378,6 +381,7 @@ async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
         bot=bot,
         updater=updater,
         add_handler=MagicMock(),
+        add_error_handler=MagicMock(),
         initialize=AsyncMock(),
         start=AsyncMock(),
         running=True,
@@ -457,6 +461,7 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
         bot=bot,
         updater=updater,
         add_handler=MagicMock(),
+        add_error_handler=MagicMock(),
         initialize=AsyncMock(),
         start=AsyncMock(),
     )
@@ -519,6 +524,7 @@ def _build_polling_app(monkeypatch, adapter):
         bot=bot,
         updater=updater,
         add_handler=MagicMock(),
+        add_error_handler=MagicMock(),
         initialize=AsyncMock(),
         start=AsyncMock(),
     )
@@ -616,6 +622,7 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
         bot=bot,
         updater=updater,
         add_handler=MagicMock(),
+        add_error_handler=MagicMock(),
         initialize=AsyncMock(),
         start=AsyncMock(),
     )

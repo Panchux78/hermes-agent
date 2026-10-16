@@ -369,7 +369,7 @@ class ComarbDeduccionesEntregas:
                                                           "tiene acceso a ese contribuyente. No se entregó el resultado."))
             else:
                 await bot.send_message(chat_id=chat, text=resumen(row))
-                if row.get("ruta"):
+                if row["estado"] == "terminada" and row.get("ruta"):
                     try:
                         path = archivo_guardado(None, self.flow.clients_root, row["ruta"], row.get("sha256"))
                     except ValueError:
@@ -381,6 +381,13 @@ class ComarbDeduccionesEntregas:
                         try:
                             if path.stat().st_size > 45_000_000:
                                 raise ValueError('archivo_grande')
+                            # El resumen cedió el control: volver a comprobar
+                            # el permiso vivo antes de enviar el archivo.
+                            vigente = await asyncio.to_thread(self.flow._query,
+                                f"SELECT console.fn_comarb_deducciones_estado_telegram({chat},{int(row['id_lectura'])})::text;")
+                            if len(vigente)!=1 or not isinstance(vigente[0],dict):
+                                await bot.send_message(chat_id=chat,text='Tu acceso cambió antes de enviar el Excel. No se entregó el archivo; revisá tus permisos en el panel.')
+                                continue
                             with open(path, "rb") as stream:
                                 await bot.send_document(chat_id=chat, document=stream, filename=path.name,
                                     caption=f"{res.get('filas', 0)} filas · también en Documentos")

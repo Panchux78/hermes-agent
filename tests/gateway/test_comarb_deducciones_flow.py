@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from gateway.config import PlatformConfig
 from plugins.platforms.telegram import comarb_deducciones_flow as flow_module
 from plugins.platforms.telegram.comarb_deducciones_flow import (
     ComarbDeduccionesEntregas,
@@ -208,4 +209,53 @@ def test_entrega_revalida_despues_del_claim_y_no_revela_nombre():
         bot.send_document.assert_not_awaited()
         assert 'ya no tiene acceso' in bot.send_message.await_args.kwargs['text']
         assert row['nombre_legal'] not in bot.send_message.await_args.kwargs['text']
+    asyncio.run(scenario())
+
+
+def test_revocacion_durante_el_resumen_impide_enviar_excel(tmp_path):
+    async def scenario():
+        import hashlib
+        relative = 'estudios/1/30000000011/2026/09/comarb/sintetica-deducciones.xlsx'
+        excel = tmp_path / relative
+        excel.parent.mkdir(parents=True)
+        excel.write_bytes(b'PK synthetic')
+        row = {'id_lectura':9,'id_contribuyente':7,'telegram_id':42,'periodo':'09/2026',
+               'estado':'terminada','nombre_legal':'Empresa Sintética SA','autorizado':True,
+               'resultado':RESULT,'ruta':relative,'sha256':hashlib.sha256(excel.read_bytes()).hexdigest()}
+        flow = FakeFlow([[row],[True]], rows=[{'estado':'terminada'}])
+        flow.clients_root = tmp_path
+        async def revoke(**kwargs):
+            flow.rows = [None]  # permiso retirado mientras Telegram confirma el resumen
+        bot = SimpleNamespace(send_message=AsyncMock(side_effect=revoke),send_document=AsyncMock())
+        await ComarbDeduccionesEntregas(flow).poll(bot)
+        bot.send_document.assert_not_awaited()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('allowed,chat_type,dispatched',[(False,'private',False),(True,'group',False),(True,'private',True)])
+def test_adapter_autentica_y_restringe_consulta_a_privado(allowed,chat_type,dispatched):
+    async def scenario():
+        adapter = TelegramAdapter(PlatformConfig(enabled=True,token='synthetic'))
+        adapter.set_authorization_check(lambda *args, **kwargs: allowed)
+        handler = SimpleNamespace(callback=AsyncMock())
+        adapter._comarb_deducciones_flow = handler
+        query = _query('cd:uno')
+        query.message = SimpleNamespace(chat_id=42,chat=SimpleNamespace(type=chat_type),message_thread_id=None)
+        await adapter._handle_callback_query(SimpleNamespace(callback_query=query),SimpleNamespace())
+        assert handler.callback.await_count == int(dispatched)
+        if dispatched:
+            assert handler.callback.await_args.args[-1]=='42'
+        else:
+            query.answer.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+def test_cancelar_no_toma_la_identidad_del_dueno_del_boton():
+    async def scenario():
+        flow=FakeFlow([[False],[True]])
+        adapter=_adapter()
+        await flow.callback(adapter,_query('cd:stop:9',84),'cd:stop:9',84,None,'84')
+        await flow.callback(adapter,_query('cd:stop:9',42),'cd:stop:9',42,None,'42')
+        assert flow.sql==['SELECT console.fn_comarb_deducciones_cancelar_telegram(84,9)::text;',
+                          'SELECT console.fn_comarb_deducciones_cancelar_telegram(42,9)::text;']
     asyncio.run(scenario())
