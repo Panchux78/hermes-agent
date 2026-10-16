@@ -68,6 +68,13 @@ def importe(text: Any) -> str:
     return f"{sign}$ {int(entero):,}".replace(",", ".") + "," + dec
 
 
+def sin_cvu_pendiente(regimen: str, e: dict[str, Any]) -> bool:
+    return (regimen == 'SIRCUPA' and e.get('estado') == 'no_verificado' and not e.get('filas')
+            and (e.get('observacion') == 'sin_cvu_pendiente' or e.get('motivo') in (
+                'No se observaron CVU en la consulta conjunta. Eso no demuestra ausencia de recaudaciones SIRCUPA.',
+                'La consulta conjunta no aportó un resultado específico verificable de SIRCUPA.')))
+
+
 def resumen(row: dict[str, Any]) -> str:
     """Texto de cierre para un contribuyente: un renglón por régimen, nunca cero sin aclarar."""
     res = row.get("resultado") or {}
@@ -80,8 +87,9 @@ def resumen(row: dict[str, Any]) -> str:
     if row["estado"] != "terminada":
         return f"{head}\n\n{'Cancelada' if row['estado'] == 'cancelada' else 'No se pudo consultar'}. {row.get('motivo') or ''}".rstrip()
     estados = res.get("estados") or {}
-    faltan = any(v.get("estado") == "no_verificado" for v in estados.values())
-    lines = [head, "", "Terminada con faltantes." if faltan else "Terminada."]
+    faltan = [r for r in REGIMENES if estados.get(r, {}).get('estado') not in ('con_datos', 'sin_datos_verificado')
+              and not sin_cvu_pendiente(r, estados.get(r, {}))]
+    lines = [head, "", "Terminada con faltantes: " + ', '.join(faltan) + '.' if faltan else "Terminada."]
     avisos = res.get("advertencias") or []
     for regimen in REGIMENES:
         e = estados.get(regimen) or {}
@@ -90,6 +98,8 @@ def resumen(row: dict[str, Any]) -> str:
             line = f"• {name}: {e.get('filas', 0)} filas · {importe(e.get('importe'))}"
         elif e.get("estado") == "sin_datos_verificado":
             line = f"• {name}: SIFERE no registra deducciones de {regimen} para {row['periodo']}."
+        elif sin_cvu_pendiente(regimen, e):
+            line = f"• {name}: Sin cuentas virtuales en SIFERE (pendiente de confirmar)."
         else:
             line = f"• {name}: no se pudo verificar. {e.get('motivo') or ''}".rstrip()
         aviso = next((a.split(": ", 1)[1] for a in avisos if a.startswith(regimen + ":")), None)

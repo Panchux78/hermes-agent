@@ -164,9 +164,26 @@ RESULT = {"estado": "leida", "filas": 5, "posibles_duplicados": 2, "advertencias
                       "SIRCAR · Percepciones": {"estado": "sin_datos_verificado"}}}
 
 
+def test_sircupa_neutro_y_faltantes_identificados():
+    from copy import deepcopy
+    result = deepcopy(RESULT)
+    for regime in result['estados']:
+        result['estados'][regime] = {'estado':'sin_datos_verificado'}
+    result['estados']['SIRCUPA'] = {'estado':'no_verificado','motivo':'No se observaron CVU en la consulta conjunta. Eso no demuestra ausencia de recaudaciones SIRCUPA.'}
+    row = {'nombre_legal':'Empresa Sintética SA','periodo':'09/2026','estado':'terminada','resultado':result}
+    text = resumen(row)
+    assert '\nTerminada.\n' in text
+    assert 'Sin cuentas virtuales en SIFERE (pendiente de confirmar)' in text
+    assert 'faltantes' not in text
+    result['estados']['SIRCAR · Percepciones'] = {'estado':'no_verificado','motivo':'Sesión vencida'}
+    assert 'Terminada con faltantes: SIRCAR · Percepciones.' in resumen(row)
+    result['estados']['SIRCUPA']['motivo'] = 'Consulta conjunta incompleta'
+    assert 'SIRCUPA' in resumen(row).split('Terminada con faltantes: ',1)[1].split('\n',1)[0]
+
+
 def test_resumen_separa_regimenes_y_nunca_es_cero_sin_aclarar():
     text = resumen({"nombre_legal": "Empresa Sintética SA", "periodo": "09/2026", "estado": "terminada", "resultado": RESULT})
-    assert "Terminada con faltantes." in text
+    assert "Terminada con faltantes: SIRTAC." in text
     assert "• SIRCREB: 4 filas · $ 1.500,00" in text
     assert "• SIRTAC: no se pudo verificar. SIFERE no respondió" in text and "día 12" in text
     assert "• SIRPEI: SIFERE no registra deducciones de SIRPEI para 09/2026." in text
