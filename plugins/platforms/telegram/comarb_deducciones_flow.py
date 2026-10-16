@@ -46,6 +46,7 @@ ETIQUETA = {"SIRCAR · Retenciones": "SIRCAR, retenciones", "SIRCAR · Percepcio
 PROGRESO = {"captcha_telegram": "ARCA pidió un CAPTCHA: respondé a la imagen que te mandé.",
             "consulta_en_curso": "CAPTCHA respondido; ingresando a ARCA…"}
 RECHAZOS = {
+    "regimen_no_verificado": "No se pudo verificar el régimen de Ingresos Brutos de ese período. Revisá la ficha fiscal; no se consultó SIFERE.",
     "sin_permiso": "Tu usuario no tiene permiso para ejecutar consultas. No se consultó COMARB.",
     "sin_acceso": "No se puede consultar ese contribuyente con tu acceso actual. No se consultó COMARB.",
     "clave_sin_verificar": ("La clave ARCA de ese contribuyente, propia o del representante, no está verificada. "
@@ -152,8 +153,8 @@ class ComarbDeduccionesFlow:
 
     @staticmethod
     def _back() -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("‹", "Deducciones de IIBB"), callback_data="om:comarb_deducciones")],
-                                     [InlineKeyboardButton(menu_label("✕", "Cerrar"), callback_data="om:close")]])
+        return InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("‹", "Volver"), callback_data="om:comarb_deducciones"),
+                                     InlineKeyboardButton(menu_label("✕", "Cerrar"), callback_data="om:close")]])
 
     def _pedir_sql(self, actor: int, state: State, period: str) -> str:
         if state.modo == "cartera":
@@ -359,7 +360,11 @@ class ComarbDeduccionesEntregas:
                 f"SELECT console.fn_comarb_deducciones_entregada_telegram({int(row['id_lectura'])},{int(row['id_contribuyente'])})::text;")
             if claimed != [True]:
                 continue
-            if not row.get("autorizado"):
+            # Revalidar después del claim: el listado anterior puede haber sido
+            # leído antes de retirar una asignación o cambiar el estudio.
+            vigente = await asyncio.to_thread(self.flow._query,
+                f"SELECT console.fn_comarb_deducciones_estado_telegram({chat},{int(row['id_lectura'])})::text;")
+            if not row.get("autorizado") or len(vigente)!=1 or not isinstance(vigente[0],dict):
                 await bot.send_message(chat_id=chat, text=(f"{TITLE} · {row['periodo']}: la consulta terminó, pero tu usuario ya no "
                                                           "tiene acceso a ese contribuyente. No se entregó el resultado."))
             else:
@@ -373,9 +378,15 @@ class ComarbDeduccionesEntregas:
                         await bot.send_message(chat_id=chat, text="El Excel quedó en Documentos, pero no se pudo verificar para mandarlo por acá. Descargalo desde el panel.")
                     else:
                         res = row.get("resultado") or {}
-                        with open(path, "rb") as stream:
-                            await bot.send_document(chat_id=chat, document=stream, filename=path.name,
-                                caption=f"{res.get('filas', 0)} filas · también en Documentos")
+                        try:
+                            if path.stat().st_size > 45_000_000:
+                                raise ValueError('archivo_grande')
+                            with open(path, "rb") as stream:
+                                await bot.send_document(chat_id=chat, document=stream, filename=path.name,
+                                    caption=f"{res.get('filas', 0)} filas · también en Documentos")
+                        except Exception:
+                            logger.warning('[COMARB-DEDUCCIONES] Excel no entregado; conservado en Documentos')
+                            await bot.send_message(chat_id=chat,text='El Excel quedó guardado en Documentos, pero no pude enviarlo por Telegram. Descargalo desde el panel.')
 
     async def run(self, adapter) -> None:
         while True:

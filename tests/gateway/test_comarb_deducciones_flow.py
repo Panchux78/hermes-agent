@@ -100,7 +100,7 @@ def test_un_cliente_no_cm_informa_organismo_sin_encolar(monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("estado,texto", [("sin_acceso", "acceso actual"), ("clave_sin_verificar", "no está verificada"), ("ocupado", "en curso")])
+@pytest.mark.parametrize("estado,texto", [("sin_acceso", "acceso actual"), ("clave_sin_verificar", "no está verificada"), ("ocupado", "en curso"), ("regimen_no_verificado","régimen de Ingresos Brutos")])
 def test_rechazos_de_la_base_no_consultan(monkeypatch, estado, texto):
     async def scenario():
         flow = FakeFlow([[{"estado": estado}]])
@@ -186,6 +186,7 @@ def test_entrega_reclama_antes_de_enviar_y_revalida_acceso(tmp_path):
         flow = FakeFlow([[base, {**base, "id_contribuyente": 8, "autorizado": False}, {**base, "id_contribuyente": 10}],
                          [True], [True], [False]])
         flow.clients_root = tmp_path
+        flow.rows = [{"estado":"terminada"}]
         base["autorizado"] = True
         bot = SimpleNamespace(send_message=AsyncMock(), send_document=AsyncMock())
         await ComarbDeduccionesEntregas(flow).poll(bot)
@@ -194,4 +195,17 @@ def test_entrega_reclama_antes_de_enviar_y_revalida_acceso(tmp_path):
         assert any("ya no tiene acceso" in t for t in texts)
         assert sum("Empresa Sintética SA" in t for t in texts) == 1
         assert flow.sql[1].startswith("SELECT console.fn_comarb_deducciones_entregada_telegram(9,7)")
+    asyncio.run(scenario())
+
+
+def test_entrega_revalida_despues_del_claim_y_no_revela_nombre():
+    async def scenario():
+        row={"id_lectura":9,"id_contribuyente":7,"telegram_id":42,"periodo":"09/2026",
+             "estado":"terminada","nombre_legal":"Nombre que no debe revelarse","autorizado":True}
+        flow=FakeFlow([[row],[True]],rows=[None])
+        bot=SimpleNamespace(send_message=AsyncMock(),send_document=AsyncMock())
+        await ComarbDeduccionesEntregas(flow).poll(bot)
+        bot.send_document.assert_not_awaited()
+        assert 'ya no tiene acceso' in bot.send_message.await_args.kwargs['text']
+        assert row['nombre_legal'] not in bot.send_message.await_args.kwargs['text']
     asyncio.run(scenario())
