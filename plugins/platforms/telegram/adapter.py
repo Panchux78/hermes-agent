@@ -454,6 +454,7 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
         from plugins.platforms.telegram.constancias_flow import ConstanciasFlow
         from plugins.platforms.telegram.panel_captcha_bridge import PanelCaptchaBridge
+        from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow, ComarbDeduccionesEntregas
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
         from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
         from plugins.platforms.telegram.fiscal_credentials import lookup_connection, verification_connection
@@ -498,6 +499,9 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._constancias_flow = ConstanciasFlow(extra.get("constancias_console_api_url", "http://127.0.0.1:8000"))
         self._panel_captcha_bridge = PanelCaptchaBridge()
+        self._comarb_deducciones_flow = ComarbDeduccionesFlow(
+            query_connection=lookup_connection, write_connection=verification_connection)
+        self._comarb_deducciones_entregas = ComarbDeduccionesEntregas(self._comarb_deducciones_flow)
         self._cruce_iva_flow = CruceIvaFlow()
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection, runtime_python=runtime_python,
@@ -909,6 +913,13 @@ class TelegramAdapter(BasePlatformAdapter):
             "arca": "ARCA\n\nElegí qué necesitás hacer.",
             "agip": "AGIP\n\nElegí qué necesitás hacer.",
             "arba": "ARBA\n\nElegí qué necesitás hacer.",
+            "comarb": "🤝 COMARB\n\nConvenio Multilateral: SIFERE Web.",
+            "comarb_consultar": "🔎 COMARB · Consultar",
+            "comarb_deducciones": (
+                "📑 Deducciones de IIBB\n\n"
+                "SIRCREB, SIRCUPA, SIRTAC, SIRPEI y SIRCAR informados en SIFERE Web, en un Excel por "
+                "contribuyente. Sólo lectura: no se modifica nada en COMARB."
+            ),
             "arca_consultar": "ARCA · Consultar",
             "arca_preparar": "ARCA · Preparar",
             "arca_presentar": (
@@ -972,7 +983,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 [InlineKeyboardButton(aligned_menu_label(page, "🏛️", "ARCA"), callback_data="om:arca")],
                 [InlineKeyboardButton(aligned_menu_label(page, "💵", "AGIP"), callback_data="om:agip")],
                 [InlineKeyboardButton(aligned_menu_label(page, "🪙", "ARBA"), callback_data="om:arba")],
+                [InlineKeyboardButton(aligned_menu_label(page, "🤝", "COMARB"), callback_data="om:comarb")],
             ]
+        elif page == "comarb":
+            rows = [[InlineKeyboardButton(menu_label("🔎", "Consultar"), callback_data="om:comarb_consultar")]]
+            back_label = menu_label("‹", "Organismos")
+            back_page = "organismos"
+        elif page == "comarb_consultar":
+            rows = [[InlineKeyboardButton(menu_label("📑", "Deducciones de IIBB"), callback_data="om:comarb_deducciones")]]
+            back_label = menu_label("‹", "COMARB")
+            back_page = "comarb"
+        elif page == "comarb_deducciones":
+            rows = [
+                [InlineKeyboardButton(menu_label("👤", "Un cliente"), callback_data="cd:uno")],
+                [InlineKeyboardButton(menu_label("📋", "Cartera de Convenio"), callback_data="cd:cartera")],
+            ]
+            back_label = menu_label("‹", "Consultar")
+            back_page = "comarb_consultar"
         elif page in {"arca", "agip", "arba"}:
             rows = [
                 [
@@ -1166,6 +1193,9 @@ class TelegramAdapter(BasePlatformAdapter):
             "arca",
             "agip",
             "arba",
+            "comarb",
+            "comarb_consultar",
+            "comarb_deducciones",
             "arca_consultar",
             "arca_preparar",
             "arca_presentar",
@@ -3500,6 +3530,9 @@ class TelegramAdapter(BasePlatformAdapter):
             bridge = getattr(self, '_panel_captcha_bridge', None)
             if bridge is not None:
                 self._restart_task_attr('_panel_captcha_task', bridge.run(self))
+            deliveries = getattr(self, '_comarb_deducciones_entregas', None)
+            if deliveries is not None:
+                self._restart_task_attr('_comarb_deducciones_task', deliveries.run(self))
             return True
         except Exception as e:
             self._release_platform_lock()
@@ -3678,14 +3711,14 @@ class TelegramAdapter(BasePlatformAdapter):
         current_task = asyncio.current_task()
         lifecycle_tasks = self._collect_live_tasks(
             [getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
-             getattr(self, '_panel_captcha_task', None)], current_task)
+             getattr(self, '_panel_captcha_task', None), getattr(self, '_comarb_deducciones_task', None)], current_task)
         for task in lifecycle_tasks:
             task.cancel()
         lifecycle_tasks = [t for t in lifecycle_tasks if asyncio.isfuture(t) or asyncio.iscoroutine(t)]
         if lifecycle_tasks:
             await self._await_disconnect_step(
                 asyncio.gather(*lifecycle_tasks, return_exceptions=True), _DISCONNECT_STEP_TIMEOUT, "lifecycle-task cancel")
-        self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task", '_panel_captcha_task')
+        self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task", '_panel_captcha_task', '_comarb_deducciones_task')
         # Cancellation callbacks may have run while awaited; the fence stays authoritative.
         self._polling_progress_accepting = False
         self._send_path_degraded = True
@@ -4955,6 +4988,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 self, query, data, cb["chat_id"], cb["thread_id"], caller_id
             ):
                 return
+
+        # --- Deducciones de IIBB desde SIFERE Web (#133) ---
+        if data.startswith("cd:"):
+            if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para consultar COMARB."):
+                return
+            if str(cb["chat_type"]).lower() != "private":
+                await query.answer(text="Esta consulta se realiza por privado.")
+                return
+            await self._comarb_deducciones_flow.callback(
+                self, query, data, cb["chat_id"], cb["thread_id"], str(query.from_user.id))
+            return
 
         # --- Consulta DDJJ IIBB AGIP ---
         if data.startswith("ad:"):
@@ -6523,6 +6567,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if await self._pdf_security_flow.text(self, msg):
             return
         if await self._agip_ddjj_flow.text(self, msg):
+            return
+        comarb_flow = getattr(self, "_comarb_deducciones_flow", None)
+        if comarb_flow is not None and await comarb_flow.text(self, msg):
             return
         if await self._portal_iva_flow.text(self, msg):
             return

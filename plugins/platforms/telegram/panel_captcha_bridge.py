@@ -1,4 +1,4 @@
-"""CAPTCHA de una consulta del panel: bot existente, nonce, dueño y vencimiento."""
+"""CAPTCHA de una consulta COMARB (panel o Telegram): bot existente, nonce, dueño y vencimiento."""
 import asyncio
 import json
 import os
@@ -63,7 +63,7 @@ class PanelCaptchaBridge:
                 if not image.startswith(b'\x89PNG\r\n\x1a\n'): raise ValueError('captcha_image_invalid')
                 from telegram import ForceReply
                 message=await bot.send_photo(chat_id=request['telegram_id'],photo=image,
-                    caption='Consulta COMARB iniciada desde el panel. ARCA pide este CAPTCHA. Respondé a esta imagen con sus caracteres; vence en menos de dos minutos.',
+                    caption='Consulta COMARB. ARCA pide este CAPTCHA. Respondé a esta imagen con sus caracteres; vence en menos de dos minutos.',
                     reply_markup=ForceReply(selective=True))
                 publish(self.root/(nonce+'.delivered.json'),{'nonce':nonce,'message_id':message.message_id})
             except asyncio.CancelledError: raise
@@ -85,7 +85,7 @@ class PanelCaptchaBridge:
             if request['telegram_id']!=message.from_user.id or message.chat.id!=message.from_user.id:
                 return False
             if (self.root/(nonce+'.closed.json')).exists() or request['expires']<=time.time():
-                await bot.send_message(chat_id=message.chat.id,text='Ese CAPTCHA ya venció. La consulta se canceló sin cambiar la ficha; volvé a iniciarla desde el panel.')
+                await bot.send_message(chat_id=message.chat.id,text='Ese CAPTCHA ya venció. La consulta se canceló sin cambiar nada; volvé a iniciarla.')
                 return True
             solution=(message.text or '').strip()
             if not re.fullmatch('[A-Za-z0-9]{4,20}',solution):
@@ -100,7 +100,7 @@ class PanelCaptchaBridge:
             except FileExistsError:
                 await bot.send_message(chat_id=message.chat.id,text='La respuesta a ese CAPTCHA ya fue recibida.')
                 return True
-            await bot.send_message(chat_id=message.chat.id,text='CAPTCHA recibido. La consulta continúa en el panel.')
+            await bot.send_message(chat_id=message.chat.id,text='CAPTCHA recibido. La consulta continúa.')
             return True
         return False
 
