@@ -28,6 +28,10 @@ def browser_environment(home, *, python=None):
     environment.setdefault('PATH', '/usr/bin:/bin')
     environment.setdefault('LANG', 'C.UTF-8')
     environment['HERMES_HOME'] = str(home)
+    if 'CONTABOT_DB_PROFILE' in os.environ:
+        environment['CONTABOT_DB_PROFILE'] = os.environ['CONTABOT_DB_PROFILE']
+        import contabot_pg
+        environment['PYTHONPATH'] = str(Path(contabot_pg.__file__).resolve().parent)
     if python is not None:
         environment['FISCAL_RUNTIME_PYTHON'] = str(python)
     # Playwright's own optional setting must agree in preflight and consultation.

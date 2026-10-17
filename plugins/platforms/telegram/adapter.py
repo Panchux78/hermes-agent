@@ -917,8 +917,8 @@ class TelegramAdapter(BasePlatformAdapter):
             "comarb_consultar": "🔎 COMARB · Consultar",
             "comarb_deducciones": (
                 "📑 Deducciones de IIBB\n\n"
-                "SIRCREB, SIRCUPA, SIRTAC, SIRPEI y SIRCAR informados en SIFERE Web, en un Excel por "
-                "contribuyente. Sólo lectura: no se modifica nada en COMARB."
+                "Deducciones de SIFERE Web y AGIP · Gestión AR, según el régimen del período, "
+                "en un Excel por contribuyente. Sólo lectura: no se modifica nada ante los organismos."
             ),
             "arca_consultar": "ARCA · Consultar",
             "arca_preparar": "ARCA · Preparar",
@@ -996,7 +996,7 @@ class TelegramAdapter(BasePlatformAdapter):
         elif page == "comarb_deducciones":
             rows = [
                 [InlineKeyboardButton(menu_label("👤", "Un cliente"), callback_data="cd:uno")],
-                [InlineKeyboardButton(menu_label("📋", "Cartera de Convenio"), callback_data="cd:cartera")],
+                [InlineKeyboardButton(menu_label("📋", "Cartera de IIBB"), callback_data="cd:cartera")],
             ]
             back_label = menu_label("‹", "Consultar")
             back_page = "comarb_consultar"

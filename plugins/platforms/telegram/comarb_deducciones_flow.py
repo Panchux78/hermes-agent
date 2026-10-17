@@ -46,11 +46,12 @@ ETIQUETA = {"SIRCAR · Retenciones": "SIRCAR, retenciones", "SIRCAR · Percepcio
 PROGRESO = {"captcha_telegram": "ARCA pidió un CAPTCHA: respondé a la imagen que te mandé.",
             "consulta_en_curso": "CAPTCHA respondido; ingresando a ARCA…"}
 RECHAZOS = {
+    "solo_miba": "No se pudo verificar: el cliente tiene cargado sólo miBA, que todavía no está soportado. No se intentó ningún ingreso.",
     "regimen_no_verificado": "No se pudo verificar el régimen de Ingresos Brutos de ese período. Revisá la ficha fiscal; no se consultó SIFERE.",
     "sin_permiso": "Tu usuario no tiene permiso para ejecutar consultas. No se consultó COMARB.",
     "sin_acceso": "No se puede consultar ese contribuyente con tu acceso actual. No se consultó COMARB.",
-    "clave_sin_verificar": ("La clave ARCA de ese contribuyente, propia o del representante, no está verificada. "
-                            "Verificala en Accesos del panel. No se consultó COMARB."),
+    "clave_sin_verificar": ("No hay un acceso utilizable para las fuentes de ese período: ARCA comprobada o Clave Ciudad activa. "
+                            "Revisá Accesos del panel. miBA todavía no está soportado. No se inició ningún ingreso."),
     "ocupado": "Ya hay una consulta de COMARB en curso en tu estudio. Esperá que termine y volvé a pedirla.",
     "periodo_invalido": "Ingresá un mes ya cerrado como MM/AAAA. Ejemplo: 09/2026.",
     "sin_estudio": "Tu usuario no pertenece a un estudio: pedí la cartera desde el panel.",
@@ -87,17 +88,20 @@ def resumen(row: dict[str, Any]) -> str:
     if row["estado"] != "terminada":
         return f"{head}\n\n{'Cancelada' if row['estado'] == 'cancelada' else 'No se pudo consultar'}. {row.get('motivo') or ''}".rstrip()
     estados = res.get("estados") or {}
-    faltan = [r for r in REGIMENES if estados.get(r, {}).get('estado') not in ('con_datos', 'sin_datos_verificado')
-              and not sin_cvu_pendiente(r, estados.get(r, {}))]
+    regimes=tuple(dict.fromkeys((*REGIMENES,*estados)))
+    faltan = [r for r in regimes if estados.get(r, {}).get('estado') not in ('con_datos', 'sin_datos_verificado','no_aplica')]
     lines = [head, "", "Terminada con faltantes: " + ', '.join(faltan) + '.' if faltan else "Terminada."]
     avisos = res.get("advertencias") or []
-    for regimen in REGIMENES:
+    for regimen in regimes:
         e = estados.get(regimen) or {}
         name = ETIQUETA.get(regimen, regimen)
         if e.get("estado") == "con_datos":
             line = f"• {name}: {e.get('filas', 0)} filas · {importe(e.get('importe'))}"
         elif e.get("estado") == "sin_datos_verificado":
-            line = f"• {name}: SIFERE no registra deducciones de {regimen} para {row['periodo']}."
+            line = (f"• {name}: AGIP confirmó que no hubo deducciones para {row['periodo']}." if regimen.startswith('AGIP ·')
+                    else f"• {name}: SIFERE no registra deducciones de {regimen} para {row['periodo']}.")
+        elif e.get('estado')=='no_aplica':
+            continue
         elif sin_cvu_pendiente(regimen, e):
             line = f"• {name}: Sin cuentas virtuales en SIFERE (pendiente de confirmar)."
         else:
@@ -120,6 +124,13 @@ class State:
     contributor: dict[str, Any] | None = None
     offer: ContributorOffer | None = None
     created_at: float = field(default_factory=time.monotonic)
+
+
+class DeduccionesScope(FiscalScope):
+    """Mismo selector común; buscar no exige una clave de un organismo particular."""
+    def _resolve(self,actor,term_sql,contributor_sql):
+        return self.query('SELECT row_to_json(s)::text FROM console.fn_comarb_deducciones_buscar_telegram('
+            f'{actor},{term_sql},{contributor_sql}) s;')
 
 
 class ComarbDeduccionesFlow:
@@ -149,7 +160,7 @@ class ComarbDeduccionesFlow:
         return self._run(sql, self.write_connection)
 
     def _scope(self) -> FiscalScope:
-        return FiscalScope(self._query, "ARCA")
+        return DeduccionesScope(self._query, "ARCA")
 
     @staticmethod
     def _key(chat_id: Any, thread_id: Any, user_id: Any) -> str:
@@ -200,8 +211,8 @@ class ComarbDeduccionesFlow:
                 text = "Escribí nombre, CUIT o slug del contribuyente."
             else:
                 self.states[key] = State(user_id, nonce, "periodo", "cartera")
-                text = ("Cartera de Convenio: se consultan los contribuyentes que ves, de Convenio Multilateral en ese mes "
-                        "y con clave ARCA verificada. Recibís un Excel por contribuyente.\n\n"
+                text = ("Cartera de IIBB: se consultan los contribuyentes que ves, de Convenio Multilateral o locales mensuales de CABA en ese mes, "
+                        "con acceso utilizable a SIFERE o AGIP. Recibís un Excel por contribuyente, con el estado de cada fuente.\n\n"
                         "Ingresá el período como MM/AAAA. Ejemplo: 09/2026.")
             await query.answer()
             await adapter._bot.send_message(chat_id=chat_id, text=text,
@@ -294,6 +305,9 @@ class ComarbDeduccionesFlow:
             await msg.reply_text("No pude registrar el pedido en la base. No se consultó COMARB.", reply_markup=self._back())
             return True
         estado = answer.get("estado")
+        if estado == "no_aplica":
+            await msg.reply_text(str(answer.get("motivo") or "No aplica para el régimen del período.")+" No se consultó ningún organismo.",reply_markup=self._back())
+            return True
         if estado == "no_cm":
             organismos = answer.get("organismos") or []
             detail = "; ".join(f"{o['jurisdiccion']}: {o['organismo']} ({o['servicio']})" for o in organismos)
@@ -302,18 +316,18 @@ class ComarbDeduccionesFlow:
                                  reply_markup=self._back())
             return True
         if estado == "sin_candidatos":
-            extra = f" {answer.get('sin_clave')} de Convenio no tienen clave ARCA verificada." if answer.get("sin_clave") else ""
-            await msg.reply_text(f"No hay contribuyentes de Convenio Multilateral con clave ARCA verificada para {period}.{extra} No se consultó COMARB.",
+            extra = f" {answer.get('sin_clave')} no tienen acceso utilizable a las fuentes del período." if answer.get("sin_clave") else ""
+            await msg.reply_text(f"No hay contribuyentes consultables para {period}.{extra} No se inició ningún ingreso.",
                                  reply_markup=self._back())
             return True
         if estado != "encolada":
             await msg.reply_text(RECHAZOS.get(estado, "No se pudo iniciar la consulta. No se consultó COMARB."), reply_markup=self._back())
             return True
         jid = int(answer["id_lectura"])
-        who = state.contributor["nombre"] if state.modo == "uno" else f"Cartera de Convenio ({answer.get('solicitados')})"
-        extra = (f"\n{answer['sin_clave']} de Convenio quedan afuera por no tener clave ARCA verificada."
+        who = state.contributor["nombre"] if state.modo == "uno" else f"Cartera de IIBB ({answer.get('solicitados')})"
+        extra = (f"\n{answer['sin_clave']} quedan afuera por no tener acceso utilizable a sus fuentes."
                  if state.modo == "cartera" and answer.get("sin_clave") else "")
-        status = await msg.reply_text(f"{TITLE} · {who} · {period}\nEn espera de la consulta de SIFERE.{extra}",
+        status = await msg.reply_text(f"{TITLE} · {who} · {period}\nEn espera de la consulta de deducciones.{extra}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"cd:stop:{jid}")]]))
         self.watchers[jid] = asyncio.create_task(self._watch(status, actor, jid, f"{TITLE} · {who} · {period}", extra))
         return True

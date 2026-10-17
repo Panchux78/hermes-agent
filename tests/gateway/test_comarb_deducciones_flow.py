@@ -81,6 +81,21 @@ def _msg(text, user=42):
 ROW = {"id": 7, "nombre": "Empresa Sintética SA", "cuit": "30000000011"}
 
 
+def test_local_agip_no_inventa_consultas_sifere_ni_ceros_desconocidos():
+    states={r:{'estado':'no_aplica'} for r in flow_module.REGIMENES}
+    states.update({'AGIP · Retenciones':{'estado':'con_datos','filas':2,'importe':'10.25'},
+        'AGIP · Percepciones':{'estado':'no_verificado','motivo':'No se confirmó el filtro.'},
+        'AGIP · Retenciones bancarias':{'estado':'sin_datos_verificado'},
+        'AGIP · Percepciones aduaneras':{'estado':'sin_datos_verificado'}})
+    result=resumen({'nombre_legal':'Empresa Sintética SA','periodo':'08/2026','estado':'terminada',
+        'resultado':{'estados':states}})
+    assert 'Terminada con faltantes: AGIP · Percepciones' in result
+    assert '2 filas · $ 10,25' in result
+    assert 'SIFERE no registra' not in result
+    assert 'No se confirmó el filtro' in result
+    assert '$ 0,00' not in result
+
+
 def _adapter():
     return SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock(), send_document=AsyncMock()))
 
@@ -101,7 +116,7 @@ def test_un_cliente_no_cm_informa_organismo_sin_encolar(monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("estado,texto", [("sin_acceso", "acceso actual"), ("clave_sin_verificar", "no está verificada"), ("ocupado", "en curso"), ("regimen_no_verificado","régimen de Ingresos Brutos")])
+@pytest.mark.parametrize("estado,texto", [("sin_acceso", "acceso actual"), ("clave_sin_verificar", "No hay un acceso utilizable"), ("solo_miba", "sólo miBA"), ("ocupado", "en curso"), ("regimen_no_verificado","régimen de Ingresos Brutos")])
 def test_rechazos_de_la_base_no_consultan(monkeypatch, estado, texto):
     async def scenario():
         flow = FakeFlow([[{"estado": estado}]])
@@ -140,7 +155,7 @@ def test_cartera_encola_y_avisa_sin_clave(monkeypatch):
         await flow.text(adapter, msg)
         assert flow.sql == ["SELECT console.fn_comarb_deducciones_cartera_telegram(42,'08/2026')::text;"]
         text = msg.reply_text.await_args.args[0]
-        assert "Cartera de Convenio (3)" in text and "1 de Convenio quedan afuera" in text
+        assert "Cartera de IIBB (3)" in text and "1 quedan afuera" in text
         await asyncio.sleep(0)
     asyncio.run(scenario())
 
@@ -172,11 +187,10 @@ def test_sircupa_neutro_y_faltantes_identificados():
     result['estados']['SIRCUPA'] = {'estado':'no_verificado','motivo':'No se observaron CVU en la consulta conjunta. Eso no demuestra ausencia de recaudaciones SIRCUPA.'}
     row = {'nombre_legal':'Empresa Sintética SA','periodo':'09/2026','estado':'terminada','resultado':result}
     text = resumen(row)
-    assert '\nTerminada.\n' in text
+    assert '\nTerminada con faltantes: SIRCUPA.\n' in text
     assert 'Sin cuentas virtuales en SIFERE (pendiente de confirmar)' in text
-    assert 'faltantes' not in text
     result['estados']['SIRCAR · Percepciones'] = {'estado':'no_verificado','motivo':'Sesión vencida'}
-    assert 'Terminada con faltantes: SIRCAR · Percepciones.' in resumen(row)
+    assert 'Terminada con faltantes: SIRCUPA, SIRCAR · Percepciones.' in resumen(row)
     result['estados']['SIRCUPA']['motivo'] = 'Consulta conjunta incompleta'
     assert 'SIRCUPA' in resumen(row).split('Terminada con faltantes: ',1)[1].split('\n',1)[0]
 
