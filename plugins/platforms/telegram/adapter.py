@@ -455,6 +455,7 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.constancias_flow import ConstanciasFlow
         from plugins.platforms.telegram.panel_captcha_bridge import PanelCaptchaBridge
         from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow, ComarbDeduccionesEntregas
+        from plugins.platforms.telegram.agip_deducciones_flow import AgipDeduccionesFlow
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
         from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
         from plugins.platforms.telegram.fiscal_credentials import lookup_connection, verification_connection
@@ -502,6 +503,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._comarb_deducciones_flow = ComarbDeduccionesFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
         self._comarb_deducciones_entregas = ComarbDeduccionesEntregas(self._comarb_deducciones_flow)
+        self._agip_deducciones_flow = AgipDeduccionesFlow(
+            query_connection=lookup_connection, write_connection=verification_connection)
         self._cruce_iva_flow = CruceIvaFlow()
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection, runtime_python=runtime_python,
@@ -927,6 +930,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "Todavía no hay presentaciones habilitadas en ContaBot."
             ),
             "agip_consultar": "AGIP · Consultar",
+            "agip_retenciones": "AGIP · Retenciones y Percepciones\n\nConsulta mensual de Gestión AR con Clave Ciudad, sin ingresar a ARCA. Los originales y el Excel quedan en Documentos.",
             "agip_preparar": (
                 "AGIP · Preparar\n\n"
                 "Todavía no hay funciones de preparación habilitadas en ContaBot."
@@ -1044,9 +1048,17 @@ class TelegramAdapter(BasePlatformAdapter):
         elif page == "agip_consultar":
             rows = [
                 [InlineKeyboardButton(menu_label("🧾", "DDJJ de IIBB"), callback_data="ad:start")],
+                [InlineKeyboardButton(menu_label("📑", "Retenciones y Percepciones"), callback_data="om:agip_retenciones")],
             ]
             back_label = menu_label("‹", "AGIP")
             back_page = "agip"
+        elif page == "agip_retenciones":
+            rows = [
+                [InlineKeyboardButton(menu_label("👤", "Un cliente"), callback_data="ar:uno")],
+                [InlineKeyboardButton(menu_label("📋", "Cartera de IIBB"), callback_data="ar:cartera")],
+            ]
+            back_label = menu_label("‹", "Volver")
+            back_page = "agip_consultar"
         elif page in {
             "arca_presentar",
             "agip_preparar",
@@ -1200,6 +1212,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "arca_preparar",
             "arca_presentar",
             "agip_consultar",
+            "agip_retenciones",
             "agip_preparar",
             "agip_presentar",
             "arba_consultar",
@@ -4990,13 +5003,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
         # --- Deducciones de IIBB desde SIFERE Web (#133) ---
-        if data.startswith("cd:"):
-            if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para consultar COMARB."):
+        if data.startswith(("cd:", "ar:")):
+            organismo = "AGIP" if data.startswith("ar:") else "COMARB"
+            if not await self._callback_authorized(query, cb, f"⛔ No estás autorizado para consultar {organismo}."):
                 return
             if str(cb["chat_type"]).lower() != "private":
                 await query.answer(text="Esta consulta se realiza por privado.")
                 return
-            await self._comarb_deducciones_flow.callback(
+            flow = self._agip_deducciones_flow if data.startswith("ar:") else self._comarb_deducciones_flow
+            await flow.callback(
                 self, query, data, cb["chat_id"], cb["thread_id"], str(query.from_user.id))
             return
 
@@ -6570,6 +6585,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         comarb_flow = getattr(self, "_comarb_deducciones_flow", None)
         if comarb_flow is not None and await comarb_flow.text(self, msg):
+            return
+        agip_flow = getattr(self, "_agip_deducciones_flow", None)
+        if agip_flow is not None and await agip_flow.text(self, msg):
             return
         if await self._portal_iva_flow.text(self, msg):
             return

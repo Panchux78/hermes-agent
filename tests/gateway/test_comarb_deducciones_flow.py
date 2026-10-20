@@ -264,13 +264,14 @@ def test_revocacion_durante_el_resumen_impide_enviar_excel(tmp_path):
 
 
 @pytest.mark.parametrize('allowed,chat_type,dispatched',[(False,'private',False),(True,'group',False),(True,'private',True)])
-def test_adapter_autentica_y_restringe_consulta_a_privado(allowed,chat_type,dispatched):
+@pytest.mark.parametrize('prefix,attribute',[('cd','_comarb_deducciones_flow'),('ar','_agip_deducciones_flow')])
+def test_adapter_autentica_y_restringe_consulta_a_privado(allowed,chat_type,dispatched,prefix,attribute):
     async def scenario():
         adapter = TelegramAdapter(PlatformConfig(enabled=True,token='synthetic'))
         adapter.set_authorization_check(lambda *args, **kwargs: allowed)
         handler = SimpleNamespace(callback=AsyncMock())
-        adapter._comarb_deducciones_flow = handler
-        query = _query('cd:uno')
+        setattr(adapter,attribute,handler)
+        query = _query(prefix+':uno')
         query.message = SimpleNamespace(chat_id=42,chat=SimpleNamespace(type=chat_type),message_thread_id=None)
         await adapter._handle_callback_query(SimpleNamespace(callback_query=query),SimpleNamespace())
         assert handler.callback.await_count == int(dispatched)
