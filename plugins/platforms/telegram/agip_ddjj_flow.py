@@ -85,16 +85,14 @@ def normalize_period(value: str) -> str:
     value = (value or "").strip()
     if re.fullmatch(r"\d{4}", value):
         return value
-    if re.fullmatch(r"\d{6}", value):
-        value = f"{value[:4]}-{value[4:]}"
-    if re.fullmatch(r"\d{4}-\d{2}", value):
-        year, month = value.split("-")
-        if 1 <= int(month) <= 12:
-            return value
-    m = re.fullmatch(r"\d{2}/(\d{2})/(\d{4})", value)
-    if m and 1 <= int(m.group(1)) <= 12:
+    m = re.fullmatch(r"(0[1-9]|1[0-2])/(\d{4})", value)
+    if m:
         return f"{m.group(2)}-{m.group(1)}"
-    raise ValueError("Ingresá AAAA, AAAAMM, AAAA-MM o DD/MM/AAAA.")
+    raise ValueError("Ingresá el mes en MM/AAAA (ejemplo: 09/2025) o el año en AAAA (ejemplo: 2025).")
+
+
+def display_period(value: str) -> str:
+    return f"{value[5:]}/{value[:4]}" if re.fullmatch(r"\d{4}-\d{2}", value) else value
 
 
 @dataclass
@@ -425,7 +423,7 @@ class AgipDdjjFlow:
             state.progress_message = await self._send(
                 adapter,
                 chat_id,
-                f"Consulta AGIP iniciada para {period}.",
+                f"Consulta AGIP iniciada para {display_period(period)}.",
                 self._cancel_keyboard(state.nonce),
                 thread_id,
             )
@@ -517,7 +515,7 @@ class AgipDdjjFlow:
             state.stage = "period"
             await self._send(
                 adapter, chat_id,
-                "Ingresá el período o fecha: AAAA, AAAAMM, AAAA-MM o DD/MM/AAAA.",
+                "Ingresá el período: mensual MM/AAAA (ejemplo: 09/2025) o anual AAAA (ejemplo: 2025).",
                 thread_id=thread_id,
             )
             return
@@ -556,7 +554,7 @@ class AgipDdjjFlow:
                 history_run = await self.history.start(
                     telegram_id=int(state.user_id), operation="agip_ddjj_iibb",
                     key_material=f"agip-ddjj:{chat_id}:{thread_id or ''}:{state.nonce}:{period}",
-                    reference=f"DDJJ IIBB {period}", lease_seconds=_RUN_TIMEOUT_SECONDS + 120,
+                    reference=f"DDJJ IIBB {display_period(period)}", lease_seconds=_RUN_TIMEOUT_SECONDS + 120,
                 )
             execution_key = f"{state.contributor_id}:{state.represented_id}:{period}"
             owner = self.execution_locks.get(execution_key)
@@ -680,7 +678,7 @@ class AgipDdjjFlow:
             )
             await self._finish(
                 adapter, chat_id, thread_id, state,
-                f"{result.get('message')} Excel enviado (mensaje {delivery.message_id}).",
+                f"{str(result.get('message', '')).replace(period, display_period(period))} Excel enviado (mensaje {delivery.message_id}).",
             )
         except asyncio.CancelledError:
             state.cancelled = True

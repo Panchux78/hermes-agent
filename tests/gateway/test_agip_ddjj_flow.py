@@ -76,18 +76,16 @@ def _message(text):
     return SimpleNamespace(text=text, chat_id="10", from_user=SimpleNamespace(id="7"), message_thread_id=None)
 
 
-def test_normalize_period_accepts_year_month_and_date():
+def test_normalize_period_accepts_argentine_month_or_annual():
     assert normalize_period("2025") == "2025"
-    assert normalize_period("202512") == "2025-12"
-    assert normalize_period("2025-12") == "2025-12"
-    assert normalize_period("31/12/2025") == "2025-12"
+    assert normalize_period("12/2025") == "2025-12"
+    assert normalize_period(" 09/2025 ") == "2025-09"
 
 
 def test_normalize_period_rejects_invalid_values():
-    with pytest.raises(ValueError):
-        normalize_period("2025-13")
-    with pytest.raises(ValueError):
-        normalize_period("texto")
+    for value in ("2025-13","texto","202512","2025-12","31/12/2025","13/2025","9/2025","09/25"):
+        with pytest.raises(ValueError,match="MM/AAAA"):
+            normalize_period(value)
 
 
 def test_visible_cuit_masks_middle_digits():
@@ -129,6 +127,9 @@ def test_searching_represented_contributor_resolves_unique_credential_holder(mon
         assert state.contributor_id == 3
         assert state.represented_id == 102
         assert "período" in adapter._bot.send_message.await_args.kwargs["text"]
+        prompt = adapter._bot.send_message.await_args.kwargs["text"]
+        assert "MM/AAAA" in prompt and "09/2025" in prompt
+        assert "AAAAMM" not in prompt and "AAAA-MM" not in prompt
 
     asyncio.run(scenario())
 
@@ -197,7 +198,7 @@ def test_expired_state_is_rejected_before_starting_worker():
             created_at=time.monotonic() - 601,
         )
 
-        assert await flow.text(adapter, _message("2026-08")) is True
+        assert await flow.text(adapter, _message("08/2026")) is True
 
         assert key not in flow.states
         assert "venció" in adapter._bot.send_message.await_args.kwargs["text"]
@@ -322,8 +323,10 @@ def test_period_starts_tracked_task_with_cancel_button_and_cleans_state(monkeypa
         flow.states[key] = state
         started = asyncio.Event()
         finish = asyncio.Event()
+        periods = []
 
         async def controlled_worker(*_args):
+            periods.append(_args[-1])
             started.set()
             await finish.wait()
 
@@ -331,10 +334,12 @@ def test_period_starts_tracked_task_with_cancel_button_and_cleans_state(monkeypa
         cancel_markup = object()
         monkeypatch.setattr(flow, "_cancel_keyboard", lambda _nonce: cancel_markup)
 
-        assert await flow.text(adapter, _message("2026-08")) is True
+        assert await flow.text(adapter, _message("08/2026")) is True
         await asyncio.wait_for(started.wait(), timeout=1)
 
         assert key in flow.tasks
+        assert periods == ["2026-08"]
+        assert adapter._bot.send_message.await_args.kwargs["text"] == "Consulta AGIP iniciada para 08/2026."
         markup = adapter._bot.send_message.await_args.kwargs["reply_markup"]
         assert markup is cancel_markup
 
