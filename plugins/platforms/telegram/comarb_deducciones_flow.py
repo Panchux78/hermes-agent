@@ -77,7 +77,7 @@ def sin_cvu_pendiente(regimen: str, e: dict[str, Any]) -> bool:
 
 
 def titulo(row: dict[str, Any]) -> str:
-    return "📑 Retenciones y Percepciones" if (row.get('resultado') or {}).get('operacion')=='agip_deducciones' else TITLE
+    return "📑 Retenciones y Percepciones" if (row.get('resultado') or {}).get('operacion') in ('agip_deducciones','arba_deducciones','tucuman_deducciones','santafe_deducciones','cordoba_deducciones') else TITLE
 
 
 def resumen(row: dict[str, Any]) -> str:
@@ -92,7 +92,7 @@ def resumen(row: dict[str, Any]) -> str:
     if row["estado"] != "terminada":
         return f"{head}\n\n{'Cancelada' if row['estado'] == 'cancelada' else 'No se pudo consultar'}. {row.get('motivo') or ''}".rstrip()
     estados = res.get("estados") or {}
-    regimes=tuple(dict.fromkeys((*(REGIMENES if res.get('operacion')!='agip_deducciones' else ()),*estados)))
+    regimes=tuple(dict.fromkeys((*(REGIMENES if res.get('operacion') in (None,'deducciones') else ()),*estados)))
     faltan = [r for r in regimes if estados.get(r, {}).get('estado') not in ('con_datos', 'sin_datos_verificado','no_aplica')]
     lines = [head, "", "Terminada con faltantes: " + ', '.join(faltan) + '.' if faltan else "Terminada."]
     avisos = res.get("advertencias") or []
@@ -102,7 +102,7 @@ def resumen(row: dict[str, Any]) -> str:
         if e.get("estado") == "con_datos":
             line = f"• {name}: {e.get('filas', 0)} filas · {importe(e.get('importe'))}"
         elif e.get("estado") == "sin_datos_verificado":
-            line = (f"• {name}: AGIP confirmó que no hubo deducciones para {row['periodo']}." if regimen.startswith('AGIP ·')
+            line = (f"• {name}: {regimen.split(' ·')[0]} confirmó que no hubo deducciones para {row['periodo']}." if regimen.split(' ·')[0] in ('AGIP','ARBA','Tucumán','Santa Fe','Córdoba')
                     else f"• {name}: SIFERE no registra deducciones de {regimen} para {row['periodo']}.")
         elif e.get('estado')=='no_aplica':
             continue

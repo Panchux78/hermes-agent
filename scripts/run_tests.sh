@@ -167,6 +167,7 @@ echo "▶ pre-compiling bytecode cache"
 
 echo "▶ launching test runner"
 exec env -i \
+  CONTABOT_CHECKOUT="${CONTABOT_CHECKOUT:-}" \
   PATH="$PATH" \
   HOME="$HOME" \
   ${WIN_ENV[@]+"${WIN_ENV[@]}"} \

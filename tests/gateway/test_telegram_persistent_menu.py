@@ -131,6 +131,9 @@ def test_organisms_menu_separates_tax_authorities(monkeypatch):
                 [{"text": "🏛️  ARCA", "callback_data": "om:arca"}],
                 [{"text": "💵  AGIP" + "\u200a" * 2, "callback_data": "om:agip"}],
                 [{"text": "🪙  ARBA", "callback_data": "om:arba"}],
+                [{"text": "🌿  Tucumán", "callback_data": "om:tucuman"}],
+                [{"text": "🌾  Santa Fe", "callback_data": "om:santafe"}],
+                [{"text": "🏔️  Córdoba", "callback_data": "om:cordoba"}],
                 [{"text": "🤝  COMARB", "callback_data": "om:comarb"}],
                 [
                     {"text": "‹  Menú", "callback_data": "om:main"},

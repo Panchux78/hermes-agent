@@ -505,6 +505,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._comarb_deducciones_entregas = ComarbDeduccionesEntregas(self._comarb_deducciones_flow)
         self._agip_deducciones_flow = AgipDeduccionesFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
+        from plugins.platforms.telegram.provinciales_iibb import PROVINCIAS, ProvincialDeduccionesFlow
+        self._provinciales_iibb_flows = {prefix: ProvincialDeduccionesFlow(code,
+            query_connection=lookup_connection, write_connection=verification_connection)
+            for code,(_,_,prefix) in PROVINCIAS.items()}
         self._cruce_iva_flow = CruceIvaFlow()
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection, runtime_python=runtime_python,
@@ -974,7 +978,8 @@ class TelegramAdapter(BasePlatformAdapter):
             "consulta": "Hacer una consulta\n\nEscribí tu consulta en el chat.",
             "administracion": "Administración — acceso restringido",
         }
-        return titles.get(page, titles["main"])
+        from plugins.platforms.telegram.provinciales_iibb import PAGINAS, titulo_pagina
+        return titulo_pagina(page) if page in PAGINAS else titles.get(page, titles["main"])
 
     @staticmethod
     def _menu_panel_keyboard(page: str = "main", *, show_administration: bool = False):
@@ -982,11 +987,17 @@ class TelegramAdapter(BasePlatformAdapter):
         back_label = menu_label("‹", "Menú")
         back_page = "main"
 
-        if page == "organismos":
+        from plugins.platforms.telegram.provinciales_iibb import PAGINAS, teclado_pagina
+        if page in PAGINAS:
+            rows, back_label, back_page = teclado_pagina(page,InlineKeyboardButton)
+        elif page == "organismos":
             rows = [
                 [InlineKeyboardButton(aligned_menu_label(page, "🏛️", "ARCA"), callback_data="om:arca")],
                 [InlineKeyboardButton(aligned_menu_label(page, "💵", "AGIP"), callback_data="om:agip")],
                 [InlineKeyboardButton(aligned_menu_label(page, "🪙", "ARBA"), callback_data="om:arba")],
+                [InlineKeyboardButton(aligned_menu_label(page, "🌿", "Tucumán"), callback_data="om:tucuman")],
+                [InlineKeyboardButton(aligned_menu_label(page, "🌾", "Santa Fe"), callback_data="om:santafe")],
+                [InlineKeyboardButton(aligned_menu_label(page, "🏔️", "Córdoba"), callback_data="om:cordoba")],
                 [InlineKeyboardButton(aligned_menu_label(page, "🤝", "COMARB"), callback_data="om:comarb")],
             ]
         elif page == "comarb":
@@ -1199,7 +1210,8 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer()
             await query.edit_message_reply_markup(reply_markup=None)
             return
-        if page not in {
+        from plugins.platforms.telegram.provinciales_iibb import PAGINAS
+        if page not in PAGINAS | {
             "main",
             "organismos",
             "arca",
@@ -5003,14 +5015,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
         # --- Deducciones de IIBB desde SIFERE Web (#133) ---
-        if data.startswith(("cd:", "ar:")):
-            organismo = "AGIP" if data.startswith("ar:") else "COMARB"
+        from plugins.platforms.telegram.provinciales_iibb import flows as iibb_flows
+        flow = iibb_flows(self).get(data.partition(':')[0])
+        if flow is not None:
+            from plugins.platforms.telegram.provinciales_iibb import organismo_prefijo
+            organismo = organismo_prefijo(data.partition(':')[0])
             if not await self._callback_authorized(query, cb, f"⛔ No estás autorizado para consultar {organismo}."):
                 return
             if str(cb["chat_type"]).lower() != "private":
                 await query.answer(text="Esta consulta se realiza por privado.")
                 return
-            flow = self._agip_deducciones_flow if data.startswith("ar:") else self._comarb_deducciones_flow
             await flow.callback(
                 self, query, data, cb["chat_id"], cb["thread_id"], str(query.from_user.id))
             return
@@ -6583,12 +6597,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if await self._agip_ddjj_flow.text(self, msg):
             return
-        comarb_flow = getattr(self, "_comarb_deducciones_flow", None)
-        if comarb_flow is not None and await comarb_flow.text(self, msg):
-            return
-        agip_flow = getattr(self, "_agip_deducciones_flow", None)
-        if agip_flow is not None and await agip_flow.text(self, msg):
-            return
+        from plugins.platforms.telegram.provinciales_iibb import flows as iibb_flows
+        for flow in iibb_flows(self).values():
+            if await flow.text(self, msg):return
         if await self._portal_iva_flow.text(self, msg):
             return
         if await self._vencimientos_flow.text(self, msg):
