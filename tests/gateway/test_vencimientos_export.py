@@ -22,6 +22,24 @@ ROWS = [{
 
 
 class VencimientosExportTests(unittest.TestCase):
+    def test_pair_same_concept_keeps_two_operations_and_human_labels(self):
+        from openpyxl import load_workbook
+        rows=[dict(ROWS[0],tipo='PAGO'),ROWS[0]]
+        with tempfile.TemporaryDirectory() as directory:
+            excel=Path(directory)/'cliente-demo-vencimientos-arca.xlsx'
+            ics=Path(directory)/'cliente-demo-vencimientos-arca.ics'
+            generate('xlsx',excel,9,'cliente-demo',rows)
+            generate('ics',ics,9,'cliente-demo',rows)
+            book=load_workbook(excel,data_only=True)
+            self.assertEqual(book.active.max_column,10)
+            self.assertEqual([book.active.cell(n,5).value for n in (2,3)],['Pago','Presentación'])
+            book.close()
+            text=ics.read_text()
+            for label in ('Pago','Presentación'):
+                self.assertIn(f'SUMMARY:{label} · IVA · Declaración jurada',text)
+            uids=[x for x in text.splitlines() if x.startswith('UID:')]
+            self.assertEqual(len(set(uids)),2)
+
     @unittest.skipUnless(importlib.util.find_spec("openpyxl"), "openpyxl is provided by the fiscal runtime")
     def test_excel_is_readable_and_preserves_the_operational_columns(self):
         from openpyxl import load_workbook
@@ -52,7 +70,7 @@ class VencimientosExportTests(unittest.TestCase):
             self.assertIn("BEGIN:VCALENDAR", content)
             self.assertIn("DTSTART;VALUE=DATE:20260918", content)
             self.assertIn("DTEND;VALUE=DATE:20260919", content)
-            self.assertIn("SUMMARY:IVA · Declaración jurada", content)
+            self.assertIn("SUMMARY:Presentación · IVA · Declaración jurada", content)
             uid = next(line for line in content.splitlines() if line.startswith("UID:"))
 
             second_dir = Path(directory) / "second"

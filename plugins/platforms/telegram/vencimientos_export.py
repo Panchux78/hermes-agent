@@ -38,6 +38,10 @@ def _periodo(value):
     return match[2]+'/'+match[1] if match else str(value)
 
 
+def _operacion(value):
+    return {'PAGO':'Pago','PRESENTACION':'Presentación'}.get(value,value)
+
+
 def write_xlsx(output: Path, rows: list[dict]) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Font
@@ -54,7 +58,7 @@ def write_xlsx(output: Path, rows: list[dict]) -> None:
             _safe_excel_text(_text(row, "concepto")),
             _safe_excel_text(_periodo(_text(row, "periodo"))),
             _safe_excel_text(_text(row, "anticipo_cuota")),
-            _safe_excel_text(_text(row, "tipo")),
+            _safe_excel_text(_operacion(_text(row, "tipo"))),
             _due_date(row),
             _safe_excel_text(_text(row, "formularios")),
             _safe_excel_text(_text(row, "estado")),
@@ -102,8 +106,8 @@ def write_ics(output: Path, contributor_id: int, rows: list[dict]) -> None:
             f"UID:{_ics_uid(contributor_id, row)}",
             f"DTSTART;VALUE=DATE:{due:%Y%m%d}",
             f"DTEND;VALUE=DATE:{due + timedelta(days=1):%Y%m%d}",
-            f"SUMMARY:{_ics_escape(_text(row, 'impuesto') + ' · ' + _text(row, 'concepto'))}",
-            f"DESCRIPTION:{_ics_escape(str(row.get('organismo','ARCA'))+' · Período ' + _periodo(_text(row, 'periodo')) + ' · Estado ' + _text(row, 'estado')+' · '+str(row.get('estado_fuente','vigente')))}",
+            f"SUMMARY:{_ics_escape(_operacion(_text(row, 'tipo'))+' · '+_text(row, 'impuesto') + ' · ' + _text(row, 'concepto'))}",
+            f"DESCRIPTION:{_ics_escape(str(row.get('organismo','ARCA'))+' · '+_operacion(_text(row, 'tipo'))+' · Período ' + _periodo(_text(row, 'periodo')) + ' · Estado ' + _text(row, 'estado')+' · '+str(row.get('estado_fuente','vigente')))}",
             "END:VEVENT",
         ])
     lines.append("END:VCALENDAR")
