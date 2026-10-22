@@ -13,7 +13,7 @@ import uuid
 
 HEADERS = (
     "Impuesto", "Concepto", "Período", "Anticipo/Cuota",
-    "Tipo de operación", "Vencimiento", "Formularios", "Estado",
+    "Tipo de operación", "Vencimiento", "Formularios", "Estado", "Organismo", "Fuente vigente",
 )
 SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -33,6 +33,11 @@ def _text(row: dict, key: str) -> str:
     return "" if value is None else str(value)
 
 
+def _periodo(value):
+    match=re.fullmatch(r'(\d{4})-?(\d{2})',str(value))
+    return match[2]+'/'+match[1] if match else str(value)
+
+
 def write_xlsx(output: Path, rows: list[dict]) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Font
@@ -47,12 +52,14 @@ def write_xlsx(output: Path, rows: list[dict]) -> None:
         sheet.append([
             _safe_excel_text(_text(row, "impuesto")),
             _safe_excel_text(_text(row, "concepto")),
-            _safe_excel_text(_text(row, "periodo")),
+            _safe_excel_text(_periodo(_text(row, "periodo"))),
             _safe_excel_text(_text(row, "anticipo_cuota")),
             _safe_excel_text(_text(row, "tipo")),
             _due_date(row),
             _safe_excel_text(_text(row, "formularios")),
             _safe_excel_text(_text(row, "estado")),
+            _safe_excel_text(str(row.get('organismo','ARCA'))),
+            'Sí' if row.get('estado_fuente','vigente')=='vigente' else 'Sin fuente vigente',
         ])
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
@@ -77,6 +84,8 @@ def _ics_uid(contributor_id: int, row: dict) -> str:
     stable = "\x1f".join(str(row[key]) for key in (
         "id_impuesto", "id_concepto", "periodo", "anticipo_cuota", "tipo",
     ))
+    if row.get('organismo','ARCA') != 'ARCA':
+        stable = row['organismo'] + '\x1f' + stable
     digest = hashlib.sha256(stable.encode("utf-8")).hexdigest()[:32]
     return f"{contributor_id}-{digest}@contabot.vectux.com"
 
@@ -94,7 +103,7 @@ def write_ics(output: Path, contributor_id: int, rows: list[dict]) -> None:
             f"DTSTART;VALUE=DATE:{due:%Y%m%d}",
             f"DTEND;VALUE=DATE:{due + timedelta(days=1):%Y%m%d}",
             f"SUMMARY:{_ics_escape(_text(row, 'impuesto') + ' · ' + _text(row, 'concepto'))}",
-            f"DESCRIPTION:{_ics_escape('Período ' + _text(row, 'periodo') + ' · Estado ' + _text(row, 'estado'))}",
+            f"DESCRIPTION:{_ics_escape(str(row.get('organismo','ARCA'))+' · Período ' + _periodo(_text(row, 'periodo')) + ' · Estado ' + _text(row, 'estado')+' · '+str(row.get('estado_fuente','vigente')))}",
             "END:VEVENT",
         ])
     lines.append("END:VCALENDAR")

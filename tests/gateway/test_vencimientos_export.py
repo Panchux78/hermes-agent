@@ -34,11 +34,13 @@ class VencimientosExportTests(unittest.TestCase):
             self.assertEqual(
                 [cell.value for cell in sheet[1]],
                 ["Impuesto", "Concepto", "Período", "Anticipo/Cuota",
-                 "Tipo de operación", "Vencimiento", "Formularios", "Estado"],
+                 "Tipo de operación", "Vencimiento", "Formularios", "Estado", "Organismo", "Fuente vigente"],
             )
             self.assertEqual(sheet.max_row, 2)
-            self.assertEqual(sheet["F2"].value, date(2026, 9, 18))
+            self.assertEqual(str(sheet["F2"].value)[:10], date(2026, 9, 18).isoformat())
             self.assertEqual(sheet["F2"].number_format, "dd/mm/yyyy")
+            self.assertEqual(sheet['I2'].value,'ARCA')
+            self.assertEqual(sheet['J2'].value,'Sí')
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
             book.close()
 

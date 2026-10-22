@@ -130,11 +130,13 @@ class VencimientosConversationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(rows, live)
             output.write_bytes(b"xlsx")
 
-        with (patch.object(flow, "_calendar", return_value=[]),
+        with (patch.object(flow, "_calendar", side_effect=[[],live]),
               patch.object(flow, "_source_calendar", return_value=live) as source,
+              patch.object(flow, "_publish_calendar") as publish,
               patch.object(flow, "_generate", side_effect=generate)):
             await flow.callback(adapter, query, "ve:format:abc:xlsx", 10, None, "123")
         source.assert_called_once_with("20123456786")
+        publish.assert_called_once_with(123,158,live)
         self.assertEqual(query.edit_message_text.await_args_list[-1].args[0], "Excel enviado.")
 
     async def test_unique_subject_asks_for_excel_or_ics_without_listing_rows(self):

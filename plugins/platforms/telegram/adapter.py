@@ -455,6 +455,7 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.constancias_flow import ConstanciasFlow
         from plugins.platforms.telegram.panel_captcha_bridge import PanelCaptchaBridge
         from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow, ComarbDeduccionesEntregas
+        from plugins.platforms.telegram.vencimientos_avisos import VencimientosAvisos
         from plugins.platforms.telegram.agip_deducciones_flow import AgipDeduccionesFlow
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
         from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
@@ -498,6 +499,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._vencimientos_flow = VencimientosFlow(
             runtime_python=runtime_python
         )
+        self._vencimientos_avisos = VencimientosAvisos(self._vencimientos_flow._query)
         self._constancias_flow = ConstanciasFlow(extra.get("constancias_console_api_url", "http://127.0.0.1:8000"))
         self._panel_captcha_bridge = PanelCaptchaBridge()
         self._comarb_deducciones_flow = ComarbDeduccionesFlow(
@@ -3558,6 +3560,9 @@ class TelegramAdapter(BasePlatformAdapter):
             deliveries = getattr(self, '_comarb_deducciones_entregas', None)
             if deliveries is not None:
                 self._restart_task_attr('_comarb_deducciones_task', deliveries.run(self))
+            notices=getattr(self,'_vencimientos_avisos',None)
+            if notices is not None:
+                self._restart_task_attr('_vencimientos_avisos_task',notices.run(self))
             return True
         except Exception as e:
             self._release_platform_lock()
@@ -3736,14 +3741,14 @@ class TelegramAdapter(BasePlatformAdapter):
         current_task = asyncio.current_task()
         lifecycle_tasks = self._collect_live_tasks(
             [getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
-             getattr(self, '_panel_captcha_task', None), getattr(self, '_comarb_deducciones_task', None)], current_task)
+             getattr(self, '_panel_captcha_task', None), getattr(self, '_comarb_deducciones_task', None), getattr(self,'_vencimientos_avisos_task',None)], current_task)
         for task in lifecycle_tasks:
             task.cancel()
         lifecycle_tasks = [t for t in lifecycle_tasks if asyncio.isfuture(t) or asyncio.iscoroutine(t)]
         if lifecycle_tasks:
             await self._await_disconnect_step(
                 asyncio.gather(*lifecycle_tasks, return_exceptions=True), _DISCONNECT_STEP_TIMEOUT, "lifecycle-task cancel")
-        self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task", '_panel_captcha_task', '_comarb_deducciones_task')
+        self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task", '_panel_captcha_task', '_comarb_deducciones_task','_vencimientos_avisos_task')
         # Cancellation callbacks may have run while awaited; the fence stays authoritative.
         self._polling_progress_accepting = False
         self._send_path_degraded = True

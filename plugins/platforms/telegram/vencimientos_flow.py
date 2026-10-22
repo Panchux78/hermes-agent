@@ -118,7 +118,8 @@ class VencimientosFlow:
                  'id_concepto',id_concepto,'concepto',concepto,'periodo',periodo,
                  'anticipo_cuota',anticipo_cuota,'tipo',tipo_operacion,
                  'fecha',to_char(fecha_vencimiento,'YYYY-MM-DD'),
-                 'formularios',formularios,'estado',estado)::text
+                 'formularios',formularios,'estado',estado,'organismo',organismo,
+                 'estado_fuente',estado_fuente,'componentes',componentes)::text
             FROM console.vw_vencimientos_telegram
            WHERE telegram_id={int(telegram_id)} AND id_contribuyente={int(contributor_id)}
            ORDER BY fecha_vencimiento,id_vencimiento;
@@ -133,6 +134,11 @@ class VencimientosFlow:
             raise RuntimeError("vencimientos_source_file_invalid")
         if info.st_mode & 0o022:
             raise RuntimeError("vencimientos_source_permissions_invalid")
+
+    def _publish_calendar(self, telegram_id: int, contributor_id: int, rows: list[dict]) -> None:
+        canonical = [dict(r, tipo_operacion=r['tipo'], fecha_vencimiento=r['fecha']) for r in rows]
+        literal = self._literal(json.dumps(canonical, ensure_ascii=False))
+        self._query(f"SELECT to_json(console.fn_vencimientos_telegram_publicar({int(telegram_id)},{int(contributor_id)},{literal}::jsonb))::text;")
 
     def _source_calendar(self, cuit: str) -> list[dict[str, Any]]:
         python = self.runtime_python
@@ -243,7 +249,7 @@ class VencimientosFlow:
         )
 
     async def _ask_format(self, target, state: State, *, edit: bool) -> None:
-        text = f"Vencimientos ARCA · {state.contributor_name}\nElegí el archivo que querés recibir."
+        text = f"Vencimientos · {state.contributor_name}\nElegí el archivo que querés recibir."
         method = target.edit_message_text if edit else target.reply_text
         await method(text, reply_markup=self._formats(state.nonce))
 
@@ -271,6 +277,10 @@ class VencimientosFlow:
         rows = await asyncio.to_thread(self._calendar, telegram_id, state.contributor_id)
         if not rows:
             rows = await asyncio.to_thread(self._source_calendar, state.contributor_cuit)
+            await asyncio.to_thread(self._publish_calendar, telegram_id, state.contributor_id, rows)
+            rows = await asyncio.to_thread(self._calendar, telegram_id, state.contributor_id)
+        if not rows:
+            raise LookupError('sin_vencimientos_publicados')
         with tempfile.TemporaryDirectory(prefix="contabot-vencimientos-") as directory:
             output = Path(directory) / f"{state.contributor_slug}-vencimientos-arca.{kind}"
             await asyncio.to_thread(
@@ -283,7 +293,7 @@ class VencimientosFlow:
             result = await adapter.send_document(
                 chat_id=str(chat_id), file_path=str(output),
                 file_name=nombre_guardado(guardado, output.name),
-                caption=f"Vencimientos ARCA · {state.contributor_name} · {len(rows)} registro(s).",
+                caption=f"Vencimientos · {state.contributor_name} · {len(rows)} registro(s).",
                 metadata=metadata,
             )
             if not getattr(result, "success", False):
@@ -332,7 +342,7 @@ class VencimientosFlow:
                 await self._deliver(adapter, chat_id, thread_id, int(user_id), state, kind)
             except LookupError:
                 self.states.pop(key, None)
-                await query.edit_message_text("No hay vencimientos ARCA publicados para ese contribuyente.")
+                await query.edit_message_text("No hay vencimientos publicados para ese contribuyente. Revisá la ficha fiscal y las fuentes en el panel.")
                 return True
             except documentos.CuotaInsuficiente as error:
                 await query.edit_message_text(error.mensaje, reply_markup=self._formats(state.nonce))
