@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 from plugins.platforms.telegram.panel_captcha_bridge import PanelCaptchaBridge, publish
 
 
-def challenge(tmp_path):
+def challenge(tmp_path,**extra):
     tmp_path.chmod(0o700)
     nonce='a'*16;now=time.time()
-    publish(tmp_path/(nonce+'.request.json'),dict(nonce=nonce,telegram_id=7,captured_at=now,expires=now+120))
+    publish(tmp_path/(nonce+'.request.json'),dict(nonce=nonce,telegram_id=7,captured_at=now,expires=now+120,**extra))
     image=tmp_path/(nonce+'.png');image.write_bytes(b'\x89PNG\r\n\x1a\nsynthetic');image.chmod(0o600)
     bot=SimpleNamespace(send_photo=AsyncMock(return_value=SimpleNamespace(message_id=42)),send_message=AsyncMock())
     return PanelCaptchaBridge(tmp_path),bot,nonce
@@ -43,3 +43,21 @@ def test_expired_image_never_sent(tmp_path):
         await bridge.poll(bot)
         bot.send_photo.assert_not_awaited()
     asyncio.run(scenario())
+
+
+def test_origen_rentas_tucuman_cambia_solo_el_texto(tmp_path):
+    async def scenario():
+        bridge,bot,nonce=challenge(tmp_path,origen='Rentas Tucumán')
+        await bridge.poll(bot)
+        assert 'Rentas Tucumán pide' in bot.send_photo.await_args.kwargs['caption']
+    asyncio.run(scenario())
+
+
+def test_origen_desconocido_se_rechaza(tmp_path):
+    bridge,bot,nonce=challenge(tmp_path,origen='Otro')
+    try:
+        bridge.requests()
+    except ValueError as exc:
+        assert str(exc)=='captcha_request_invalid'
+    else:
+        raise AssertionError('origen desconocido aceptado')

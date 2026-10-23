@@ -22,6 +22,12 @@ def publish(path,payload):
         stream.flush();os.fsync(stream.fileno())
 
 
+CAPTIONS={
+    'ARCA':'Consulta COMARB. ARCA pide este CAPTCHA. Respondé a esta imagen con sus caracteres; vence en menos de dos minutos.',
+    'Rentas Tucumán':'Consulta de Tucumán. Rentas Tucumán pide este código de seguridad. Respondé a esta imagen con sus caracteres; vence en menos de dos minutos.',
+}
+
+
 class PanelCaptchaBridge:
     def __init__(self,root=None):
         self.root=Path(root or Path(os.environ.get('CONTABOT_STATE_ROOT',str(Path.home()/'.local/state/contabot')))/'panel-captcha')
@@ -36,7 +42,10 @@ class PanelCaptchaBridge:
             nonce=path.name.removesuffix('.request.json')
             if not re.fullmatch('[a-f0-9]{16}',nonce): continue
             request=private_json(path)
-            if set(request)!={'nonce','telegram_id','expires','captured_at'} or request['nonce']!=nonce:
+            # 'origen' es opcional: quién pide el CAPTCHA, de una lista cerrada.
+            if not {'nonce','telegram_id','expires','captured_at'}<=set(request)<={'nonce','telegram_id','expires','captured_at','origen'} or request['nonce']!=nonce:
+                raise ValueError('captcha_request_invalid')
+            if request.get('origen','ARCA') not in CAPTIONS:
                 raise ValueError('captcha_request_invalid')
             if type(request['telegram_id']) is not int or request['telegram_id']<=0:
                 raise ValueError('captcha_recipient_invalid')
@@ -63,7 +72,7 @@ class PanelCaptchaBridge:
                 if not image.startswith(b'\x89PNG\r\n\x1a\n'): raise ValueError('captcha_image_invalid')
                 from telegram import ForceReply
                 message=await bot.send_photo(chat_id=request['telegram_id'],photo=image,
-                    caption='Consulta COMARB. ARCA pide este CAPTCHA. Respondé a esta imagen con sus caracteres; vence en menos de dos minutos.',
+                    caption=CAPTIONS[request.get('origen','ARCA')],
                     reply_markup=ForceReply(selective=True))
                 publish(self.root/(nonce+'.delivered.json'),{'nonce':nonce,'message_id':message.message_id})
             except asyncio.CancelledError: raise
