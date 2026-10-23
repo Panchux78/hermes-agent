@@ -1761,10 +1761,17 @@ class PortalIvaFlow:
 
     @staticmethod
     def _history_outcome(label: str, warnings: list[str]) -> tuple[str, str, str]:
+        # #142: «no se leyeron los números» no es «hay comprobantes sin importar».
+        if f"IMPORTACION_COMPROBANTES_NO_IMPORTADOS_{label}" in warnings:
+            return (
+                "incompleto", f"comprobantes_no_importados_{label}",
+                f"Hay comprobantes de {label} que no se pudieron importar; revisalos antes de presentar.",
+            )
         if f"IMPORTACION_NUMEROS_NO_PARSEADOS_{label}" in warnings:
             return (
-                "incompleto", f"numeros_no_importados_{label}",
-                f"Hay comprobantes de {label} que no se pudieron importar; revisalos antes de presentar.",
+                "incompleto", f"numeros_importacion_no_leidos_{label}",
+                f"ARCA terminó de procesar la importación de {label}, pero no se pudieron leer sus números "
+                f"(encontrados y agregados); revisá el Historial de Importaciones antes de presentar.",
             )
         return (
             "completado", "archivo_entregado",

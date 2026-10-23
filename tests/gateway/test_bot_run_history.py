@@ -85,9 +85,15 @@ def test_portal_iva_operations_and_warning_results_remain_distinct() -> None:
     presentados = PortalIvaFlow._history_effects("descargar-presentados", prepared=True)
     assert generar[0] == {"codigo": "preparar", "realizado": True}
     assert presentados[0] == {"codigo": "consultar", "realizado": True}
-    assert PortalIvaFlow._history_outcome(
+    # #142: números no leídos no es lo mismo que comprobantes sin importar.
+    estado, codigo, motivo = PortalIvaFlow._history_outcome(
         "ventas", ["IMPORTACION_NUMEROS_NO_PARSEADOS_ventas"],
-    )[:2] == ("incompleto", "numeros_no_importados_ventas")
+    )
+    assert (estado, codigo) == ("incompleto", "numeros_importacion_no_leidos_ventas")
+    assert "no se pudieron leer sus números" in motivo and "no se pudieron importar" not in motivo
+    assert PortalIvaFlow._history_outcome(
+        "compras", ["IMPORTACION_COMPROBANTES_NO_IMPORTADOS_compras"],
+    )[:2] == ("incompleto", "comprobantes_no_importados_compras")
     assert PortalIvaFlow._history_outcome("compras", [])[0] == "completado"
 
 
