@@ -16,6 +16,14 @@ def private_json(path, limit=8192):
         return json.loads(stream.read(limit+1))
 
 
+def teclado_menu():
+    """El CAPTCHA llega con ForceReply, que oculta el teclado fijo «☰ Menú»;
+    se vuelve a mandar con la respuesta para que el botón no desaparezca."""
+    from telegram import KeyboardButton,ReplyKeyboardMarkup
+    from plugins.platforms.telegram.menu_buttons import menu_label
+    return ReplyKeyboardMarkup([[KeyboardButton(menu_label("☰", "Menú"))]],resize_keyboard=True,is_persistent=True)
+
+
 def publish(path,payload):
     with os.fdopen(os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600),'w') as stream:
         json.dump(payload,stream,separators=(',',':'))
@@ -94,7 +102,7 @@ class PanelCaptchaBridge:
             if request['telegram_id']!=message.from_user.id or message.chat.id!=message.from_user.id:
                 return False
             if (self.root/(nonce+'.closed.json')).exists() or request['expires']<=time.time():
-                await bot.send_message(chat_id=message.chat.id,text='Ese CAPTCHA ya venció. La consulta se canceló sin cambiar nada; volvé a iniciarla.')
+                await bot.send_message(chat_id=message.chat.id,text='Ese CAPTCHA ya venció. La consulta se canceló sin cambiar nada; volvé a iniciarla.',reply_markup=teclado_menu())
                 return True
             solution=(message.text or '').strip()
             if not re.fullmatch('[A-Za-z0-9]{4,20}',solution):
@@ -109,7 +117,7 @@ class PanelCaptchaBridge:
             except FileExistsError:
                 await bot.send_message(chat_id=message.chat.id,text='La respuesta a ese CAPTCHA ya fue recibida.')
                 return True
-            await bot.send_message(chat_id=message.chat.id,text='CAPTCHA recibido. La consulta continúa.')
+            await bot.send_message(chat_id=message.chat.id,text='CAPTCHA recibido. La consulta continúa.',reply_markup=teclado_menu())
             return True
         return False
 

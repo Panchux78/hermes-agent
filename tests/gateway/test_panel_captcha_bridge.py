@@ -61,3 +61,15 @@ def test_origen_desconocido_se_rechaza(tmp_path):
         assert str(exc)=='captcha_request_invalid'
     else:
         raise AssertionError('origen desconocido aceptado')
+
+
+def test_respuesta_restaura_el_boton_menu(tmp_path):
+    # ForceReply oculta el teclado fijo: el acuse lo vuelve a mandar.
+    async def scenario():
+        bridge,bot,nonce=challenge(tmp_path)
+        await bridge.poll(bot)
+        message=SimpleNamespace(chat=SimpleNamespace(type='private',id=7),from_user=SimpleNamespace(id=7),reply_to_message=SimpleNamespace(message_id=42),text='AB12')
+        assert await bridge.text(bot,message)
+        markup=bot.send_message.await_args.kwargs['reply_markup']
+        assert markup.is_persistent and markup.keyboard[0][0].text.endswith('Menú')
+    asyncio.run(scenario())
