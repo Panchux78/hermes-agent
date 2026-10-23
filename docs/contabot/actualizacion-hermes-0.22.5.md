@@ -106,9 +106,14 @@ código, y se repitió por archivo hasta aislar cada causa:
 la prueba invoca `_handle_text_message` con un contexto sin `bot` y el puente de CAPTCHA del fork
 usa `context.bot`. Se deja como está y se declara.
 
-[DESCONOCIDO al escribir esto] La regresión amplia (`scripts/run_tests.sh` completa, ~50.000
-pruebas de upstream) corre desde el clon independiente; su resultado se anexa en una sección
-final antes de activar.
+[HECHO parcial] La regresión amplia (`scripts/run_tests.sh` completa, ~50.000 pruebas de upstream,
+`-j 5` desde el clon independiente) seguía corriendo al activar: al 32 % (16.155 pruebas
+recorridas), 20.729 verdes y 116 fallos en 101 archivos, todos fuera de los flujos de ContaBot
+(`acp_adapter`, transportes y streaming de `agent`, Bedrock, OpenCode) salvo dos ya declarados:
+`test_fiscal_adapter_integration` (preexistente) y
+`test_documentos_contabot::test_timeout_y_cancelacion_terminan_padre_e_hijo`, una carrera de la
+prueba (`/proc/<pid>/stat` del hijo ya terminado) que pasa al repetirla (30/30 en la tanda con
+`node`). Se activó con la suite enfocada verde; el total de la amplia se anexa al terminar.
 
 ## Respaldo y recuperación
 
@@ -146,18 +151,68 @@ reiniciar el worker de Portal IVA por lotes, que usa el mismo venv.
 4. `mv venv venv-0.21.2 && mv venv-0.22.5 venv` en `~/.hermes/hermes-agent`; mover
    `hermes_agent.egg-info` (declara 0.21.2) a la evidencia; comprobar
    `venv/bin/python -c "import hermes_cli, telegram, selenium, openpyxl, pymupdf, boto3"`.
-5. Crear la release como root: `mkdir -m 755 …/hermes-hotfix-a2131798c237`,
-   `git archive HEAD | tar -x`, `chmod 755` de directorios, y el sello
-   `install-stamp.json` generado con `scripts/write_install_stamp.py --commit a2131798… --branch
-   main --base-version 0.22.5 --distance 199 --source local --update-mechanism external`
-   (sin sello, una copia sin `.git` informa `vunknown`; con sello, `v0.22.5+199`).
+5. Crear la release como root con la misma función `archive()` del activador
+   (`…/hermes-hotfix-<sha12 del HEAD de main>`, `git archive HEAD`, directorios 755) y el sello
+   `install-stamp.json` generado con `scripts/write_install_stamp.py --commit <HEAD> --branch
+   main --base-version 0.22.5 --distance <git rev-list --count v0.22.5..HEAD> --source local
+   --update-mechanism external` (sin sello, una copia sin `.git` informa `vunknown`; con sello,
+   `0.22.5+<distancia>`). El mecanismo `external` es deliberado: el actualizador es el activador de
+   ContaBot, nunca `hermes update`, y con ese valor el runtime no intenta sincronizar dependencias.
 6. `python3 deploy_hermes_hotfix.py --repo ~/.hermes/hermes-agent --evidence <dir> --reuse-release`
    (coteja cada archivo de la release con `git archive HEAD`, tolera el sello adicional, cambia el
    drop-in y reinicia el gateway; si falla, repone el drop-in anterior y reinicia).
 7. `systemctl start contabot-portal-iva-lote-worker.service`.
 8. Comprobar: `active/running`, PID nuevo con `cwd` en la release, `gateway_state.json`
-   `code_version=0.22.5+199`, Telegram `connected`, journal sin ERROR/CRITICAL/Traceback,
-   `state.db` con los mismos conteos, `hermes version` sin el aviso de «update sin reinicio».
+   `code_version=0.22.5`, Telegram `connected`, journal sin ERROR/CRITICAL/Traceback,
+   `state.db` con los mismos conteos, `hermes --version` sin el aviso de «update sin reinicio».
+
+## Activación realizada — 23/10/2026, 15:55 a 15:57 ART
+
+[HECHO] Ejecutada con el script `activar-0.22.5.sh` de la carpeta de respaldo (autorizado por el
+propietario en la terminal), que sigue los ocho pasos anteriores con vuelta atrás automática si
+algo falla antes del activador. Evidencia en `…/hermes-update-20261023-HzBI8j/activacion/`
+(`activar-0.22.5.log`, `state-before.db` SHA-256 `dae0ee76…`, `gateway-before.conf`,
+`release-preflight.log`, `activation.json`, `hermes_agent.egg-info` retirado del checkout).
+
+- Precondiciones: HEAD = origin/main = `d792059d021f246e05ed4a2df345071fcfbc1828`, árbol limpio,
+  distancia 200 desde v0.22.5, 0 trabajos en curso en las cuatro tablas de la consulta del
+  activador, `state.db` con 70 sesiones y 34.714 mensajes.
+- Release `hermes-hotfix-d792059d021f` creada con `archive()` y sellada; la copia informa
+  `0.22.5+200`. Activador canónico con `--reuse-release`: `ACTIVATED`, preflight SCT y CCMA `PASS`
+  sin consultar ARCA, release anterior `hermes-hotfix-96cca81572ba`.
+- Resultado: gateway PID 3215868 → **4162060**, `cwd` en la release, intérprete CPython 3.14.7,
+  línea de comando `venv/bin/python -m hermes_cli.main gateway run` (la del drop-in);
+  Telegram `connected` a las 15:57:17 (intento 1/8); `code_version=0.22.5`; `state.db` con los
+  mismos conteos; journal sin ERROR/CRITICAL/Traceback; worker de Portal IVA por lotes `active`
+  con el venv nuevo; `hermes --version` desde el checkout: `v0.22.5+200.gd792059`, Python 3.14.7,
+  sin el aviso de «update sin reinicio» (el gateway lo mostró una sola vez al arrancar, antes de
+  registrar su versión nueva).
+- El gateway anterior terminó con `status=1/FAILURE` al recibir SIGTERM (0.21.2); no afectó al
+  arranque nuevo.
+
+[HECHO] Dos efectos de 0.22.5 observados al activar, para el propietario:
+
+1. Al arrancar, el gateway **reescribió la unidad de usuario** `hermes-gateway.service`
+   («Updated gateway user service definition to match the current Hermes install»): `ExecStart`,
+   `ExecStop` y `ExecStopPost` pasan a un lanzador `-I -c` que fija `sys.path` a la release activa y
+   descarta `PYTHONPATH`; desaparece `VIRTUAL_ENV` del `PATH`. **No cambia lo que corre**: el drop-in
+   `zz-115-documentos-release.conf` sigue reemplazando `ExecStart`, `WorkingDirectory` y
+   `PYTHONPATH` (verificado en `/proc/<pid>/cmdline` y `systemctl show -p ExecStart`). El diff
+   completo quedó en la evidencia; la unidad anterior está en `systemd-user-before.tar`.
+2. El checkout `~/.hermes/hermes-agent` no tenía sello; la primera invocación de un subcomando de
+   `hermes` (no `--version`) le escribió `install-stamp.json` con `updateMechanism: "self"`
+   (ignorado por Git) y, por ese valor, intentó completar una «source update» sincronizando
+   dependencias; se negó porque `.venv/` (entorno uv de agosto, ajeno al despliegue, con archivos
+   propiedad de root desde el 16/08) contiene archivos de otro usuario. El gateway no pasa por ese
+   camino (su sello dice `external`). Recomendación: reescribir el sello del checkout con
+   `scripts/write_install_stamp.py --output install-stamp.json --source local --update-mechanism
+   external` (misma política que la release) y retirar `.venv/` a la carpeta de respaldo. Este turno
+   no lo hizo: la reescritura fue denegada por el clasificador de la sesión y queda a decisión del
+   propietario. Mientras tanto, cada subcomando de `hermes` desde el checkout imprime el intento y
+   sigue «con las dependencias anteriores», sin modificar nada.
+
+[DESCONOCIDO] La corrida real por Telegram del propietario (menú, un flujo con CAPTCHA, entrega de
+un documento) es el gate de aceptación; Telegram `connected` no la sustituye.
 
 ## Próximas actualizaciones
 
