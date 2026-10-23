@@ -266,7 +266,11 @@ class ConstanciasFlow:
                 "Solicitud de PDF cancelada. La consulta IVA se conserva."
                 if archived is None else "La constancia quedó en Documentos; se canceló la entrega por Telegram.")
         except Exception as exc:
-            logger.warning("constancia_pdf_failed stage=%s error=%s", state.stage, type(exc).__name__)
+            # Detalle: el código fijo del RuntimeError propio o la primera línea acotada del
+            # mensaje de Selenium; nunca el cuerpo de la página ni el CUIT.
+            detail = (str(exc).splitlines() or [""])[0][:160]
+            logger.warning("constancia_pdf_failed stage=%s error=%s detail=%s",
+                           state.stage, type(exc).__name__, detail)
             await self._pdf_notice(adapter, state, chat_id, thread_id,
                 "No pude obtener o guardar la constancia PDF. La consulta IVA se conserva; probá nuevamente más tarde."
                 if archived is None else "La constancia quedó en Documentos, pero Telegram no confirmó su entrega.")
