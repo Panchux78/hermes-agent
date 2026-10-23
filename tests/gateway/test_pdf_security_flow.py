@@ -21,7 +21,8 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 
 def _plain_pdf(tmp_path: Path) -> Path:
     source = tmp_path / "plain.pdf"
-    fixture = Path("docs/hermes-kanban-v1-spec.pdf").resolve()
+    # docs/hermes-kanban-v1-spec.pdf desapareció en Hermes 0.22; cualquier PDF versionado sirve de insumo.
+    fixture = Path("optional-skills/research/research-paper-writing/templates/colm2025/colm2025_conference.pdf").resolve()
     subprocess.run(
         ["qpdf", "--empty", "--pages", str(fixture), "1", "--", str(source)],
         check=True,

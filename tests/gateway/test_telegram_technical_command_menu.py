@@ -37,8 +37,8 @@ def test_technical_menu_clears_general_scopes_and_registers_model_for_one_chat(m
             set_my_commands=AsyncMock(),
         )
 
-        with patch("hermes_cli.commands.telegram_menu_max_commands", return_value=60), patch(
-            "hermes_cli.commands.telegram_menu_commands",
+        with patch("hermes_cli.commands_platforms.telegram_menu_max_commands", return_value=60), patch(
+            "hermes_cli.commands_platforms.telegram_menu_commands",
             return_value=(
                 [
                     ("model", "Cambiar modelo de esta sesión"),

@@ -116,7 +116,7 @@ async def test_sct_freezes_selected_source_before_real_subprocess(tmp_path, monk
     flow.send_document.assert_not_awaited()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 @pytest.mark.parametrize('operation', ['cancel', 'timeout'])
 async def test_ccma_stops_its_real_child(tmp_path, monkeypatch, operation):
