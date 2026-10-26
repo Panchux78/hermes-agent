@@ -66,6 +66,13 @@ _LOCK_ROOT = _STATE_ROOT / "portal-iva/telegram-locks"
 _CAPTCHA_ROOT = _STATE_ROOT / "portal-iva/runs"
 _BATCH_RESULT_ROOT = _STATE_ROOT / "portal-iva/telegram-results"
 _RUN_TIMEOUT_SECONDS = 1800
+# #144: un caso sin motivo informado no es una respuesta de ARCA.
+_SIN_MOTIVO = "Caso sin resultado informado."
+# Fallos del lote que no son errores internos de ContaBot: tienen su propio texto.
+_FALLOS_NO_INTERNOS = {"PORTAL_IVA_BATCH_QUOTA", "PORTAL_IVA_STATE_INVALID", "PORTAL_IVA_SELECTION_STALE",
+                       "PORTAL_IVA_DATABASE_PERMISSIONS", "PORTAL_IVA_DATABASE_UNAVAILABLE"}
+_ERROR_INTERNO_AVISADO = "Error interno de ContaBot; ya fue avisado."
+_ERROR_INTERNO_SIN_AVISO = "Error interno de ContaBot; no se pudo avisar al equipo técnico."
 _PIPE_STREAM_LIMIT = 256 * 1024
 _PIPE_CAPTURE_LIMIT = 4 * 1024 * 1024
 _TELEGRAM_ZIP_LIMIT = 45_000_000
@@ -249,13 +256,42 @@ class PortalIvaFlow:
             return "No pude verificar la condición IVA en la base. No inicié la consulta."
         return _IVA_INELIGIBLE.get(reason, "El contribuyente no está habilitado para Libros IVA.")
 
+    def _destinatarios_tecnicos(self) -> list[int]:
+        """Telegram de los administradores globales activos (#144), vía la base."""
+        rows = self._query("SELECT to_json(unnest(console.fn_telegram_avisos_tecnicos()))::text;")
+        return [int(row) for row in rows if isinstance(row, int) or (isinstance(row, str) and row.isdigit())]
+
+    async def _avisar_error_interno(self, adapter, exc: BaseException, referencia: str) -> bool:
+        """Aviso inmediato al equipo técnico. True sólo si al menos un envío salió."""
+        try:
+            destinatarios = await asyncio.to_thread(self._destinatarios_tecnicos)
+        except Exception:
+            logger.exception("[PORTAL-IVA] no se pudieron obtener los destinatarios técnicos")
+            return False
+        texto = (f"ContaBot · error interno en Lote de Libros IVA presentados (Telegram).\n{referencia}\n"
+                 f"Excepción: {type(exc).__name__}: {str(exc)[:200]}\n"
+                 "Detalle en el journal del gateway. La contadora recibió "
+                 f"«{_ERROR_INTERNO_AVISADO}».")
+        enviados = 0
+        for chat_id in destinatarios:
+            try:
+                await self._send(adapter, chat_id, texto)
+                enviados += 1
+            except Exception:
+                logger.exception("[PORTAL-IVA] aviso técnico no entregado")
+        return enviados > 0
+
     def _register_terminal_batch(self, run_id: int, clients: list[dict[str, Any]],
-                                 periods: list[str], state: str, reason: str) -> None:
+                                 periods: list[str], state: str, reason: str,
+                                 text: str | None = None) -> None:
         if state not in {"fallido", "cancelado"} or not clients or not periods:
             raise RuntimeError("PORTAL_IVA_TERMINAL_BATCH_INVALID")
+        # #144: el código y el texto públicos viajan a la base; sin ellos la
+        # función SQL asumía el comodín de ARCA para cualquier lote fallido.
         payload = {"casos": [
             {"id_contribuyente": int(client["id"]), "periodo": period, "ok": False,
-             "estado": state, "motivo": reason}
+             "estado": state, "motivo": reason, "motivo_codigo": reason,
+             "motivo_texto": text or ("El lote fue cancelado." if state == "cancelado" else "El lote no pudo completarse.")}
             for client in clients for period in periods
         ]}
         encoded = self._sql_scalar(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
@@ -1396,10 +1432,15 @@ class PortalIvaFlow:
             database_authoritative = (
                 type(result.get("id_lote")) is int and result["id_lote"] > 0
             )
-            if proc.returncode or not result.get("ok"):
+            # #144: un lote con todos los casos fallidos vuelve con ok=False y
+            # etapa='fallido' pero con el motivo de cada caso: se informa como
+            # fallido, sin archivos. Sólo un ejecutor que no terminó es un error.
+            batch_failed = (result.get("etapa") == "fallido"
+                            and isinstance(result.get("casos"), list) and bool(result["casos"]))
+            if proc.returncode or not (result.get("ok") or batch_failed):
                 raise RuntimeError("PORTAL_IVA_BATCH_QUOTA" if mensaje_si_cuota(result) else "PORTAL_IVA_BATCH_FAILED")
-            source = self._batch_deliverables(result)
-            evidence = self._batch_evidence(result)
+            source = [] if batch_failed else self._batch_deliverables(result)
+            evidence = [] if batch_failed else self._batch_evidence(result)
             if source or evidence:
                 state.stage = "delivering"
                 if len(source) + len(evidence) > 2:
@@ -1453,7 +1494,7 @@ class PortalIvaFlow:
                     case_state = "completado" if success else ("rechazado" if case.get("estado") == "no_presentado" else "fallido")
                     await self.history.finish_item(history_run, item,
                         state=case_state, reason_code="ok" if success else (CODIGO_CUOTA if mensaje_si_cuota(case) else self._history_reason_code(case.get("motivo_codigo") or case.get("motivo"))),
-                        reason_text="Libros IVA descargados." if success else str(case.get("motivo_texto", "ARCA respondió algo que no esperábamos."))[:500],
+                        reason_text="Libros IVA descargados." if success else str(case.get("motivo_texto") or _SIN_MOTIVO)[:500],
                         effects=[{"tipo": "consulta_read_only", "realizado": True}],
                         contributor_id=int(case["id_contribuyente"]), period=str(case["periodo"]),
                         delivered_count=sum(int(x.get("filas", 0)) for x in case.get("archivos", [])))
@@ -1462,7 +1503,7 @@ class PortalIvaFlow:
             summary = result.get("resumen", {})
             pending = [case for case in result.get("casos", []) if not case.get("ok")]
             detail = "\n".join(
-                f"• {case.get('cliente')} · {case.get('periodo')}: {mensaje_si_cuota(case) or case.get('motivo_texto', 'ARCA respondió algo que no esperábamos.')}"
+                f"• {case.get('cliente')} · {case.get('periodo')}: {mensaje_si_cuota(case) or case.get('motivo_texto') or _SIN_MOTIVO}"
                 + (f" {case.get('accion_sugerida')}" if case.get("accion_sugerida") else "")
                 for case in pending[:8]
             )
@@ -1484,10 +1525,16 @@ class PortalIvaFlow:
                 delivery_text = "Sin archivos enviados por Telegram."
             else:
                 delivery_text = "Resultados enviados."
-            await self._edit_progress(state,
-                f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos; "
-                f"{delivered}/{expected} libros descargados, {errors} con error. "
-                f"{delivery_text}{omitted}{suffix}{self._excluded_summary(state)}")
+            if batch_failed:
+                # #144: ningún caso se completó: no hay Excel ni «completado».
+                await self._edit_progress(state,
+                    f"Lote fallido: ningún caso se completó ({summary.get('total', len(result['casos']))} casos). "
+                    f"No se generaron archivos.{suffix}{self._excluded_summary(state)}")
+            else:
+                await self._edit_progress(state,
+                    f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos; "
+                    f"{delivered}/{expected} libros descargados, {errors} con error. "
+                    f"{delivery_text}{omitted}{suffix}{self._excluded_summary(state)}")
         except asyncio.CancelledError:
             if proc and proc.returncode is None: await self._terminate_process(proc)
             if not database_authoritative and history_run is not None and verified_clients and periods:
@@ -1503,24 +1550,37 @@ class PortalIvaFlow:
                 except Exception:
                     logger.exception("[PORTAL-IVA] lote cancelado no pudo cerrar historial")
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("[PORTAL-IVA] lote no completado")
             # Sin espacio en Documentos: falla con el mensaje de ContaBot (Ágora #115).
             quota = mensaje_si_cuota(result) if result is not None else None
             code = CODIGO_CUOTA if quota else "lote_no_completado"
+            texto = quota or "No pude completar el lote. El avance y la evidencia quedaron preservados."
+            # #144: un ejecutor que no terminó, un resultado ilegible o una
+            # excepción no prevista del flujo es un error interno de ContaBot:
+            # se avisa al equipo técnico en el momento y no se presenta como ARCA.
+            if not quota and not isinstance(exc, PermissionError) and str(exc) not in _FALLOS_NO_INTERNOS:
+                code = "error_interno_contabot"
+                if result is not None and result.get("motivo_codigo") == "error_interno_contabot":
+                    # El ejecutor ya avisó (o ya dijo que no pudo).
+                    texto = str(result.get("motivo_texto") or _ERROR_INTERNO_SIN_AVISO)
+                else:
+                    avisado = await self._avisar_error_interno(
+                        adapter, exc, f"{len(verified_clients)} contribuyentes · {state.period_from} a {state.period_to}")
+                    texto = _ERROR_INTERNO_AVISADO if avisado else _ERROR_INTERNO_SIN_AVISO
             if not database_authoritative and history_run is not None and verified_clients and periods:
                 try:
                     await asyncio.to_thread(self._register_terminal_batch, history_run.run_id, verified_clients,
-                                            periods, "fallido", code)
+                                            periods, "fallido", code, texto)
                     database_authoritative = True
                 except Exception:
                     logger.exception("[PORTAL-IVA] lote fallido no pudo registrarse para aviso")
             if not database_authoritative:
                 try:
-                    await finish_remaining("fallido", code, quota or "El lote no pudo completarse.")
+                    await finish_remaining("fallido", code, texto if code != "lote_no_completado" else "El lote no pudo completarse.")
                 except Exception:
                     logger.exception("[PORTAL-IVA] lote fallido no pudo cerrar historial")
-            await self._edit_progress(state, quota or "No pude completar el lote. El avance y la evidencia quedaron preservados.")
+            await self._edit_progress(state, texto)
         finally:
             if staging: shutil.rmtree(staging, ignore_errors=True)
             for folder in archive_staging:

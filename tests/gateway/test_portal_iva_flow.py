@@ -1653,3 +1653,152 @@ def test_batch_summary_shows_quota_cases_and_workbook_errors(monkeypatch, tmp_pa
         assert f"• uno · consolidado: {MENSAJE_CUOTA}" in text
 
     asyncio.run(scenario())
+
+
+# ── Ágora #144: error interno de ContaBot ≠ respuesta de ARCA; lote todo fallido ──
+
+def _flow_144(tmp_path, result, returncode=0, destinatarios=(99,)):
+    root = tmp_path / "clientes"
+    root.mkdir(exist_ok=True)
+    flow = PortalIvaFlow(clients_root=root, batch_result_root=tmp_path / "results")
+    flow._query = _scope_query
+    flow._by_id = lambda _item_id, _user_id: [_scope_item()]
+    flow._batch_command = lambda *_args: ["fake"]
+    flow._batch_evidence = lambda _result: []
+    flow._batch_deliverables = lambda _result: []
+    flow._read_batch_result = lambda _path: result
+    flow._destinatarios_tecnicos = lambda: list(destinatarios)
+
+    class Proc:
+        pid = 4321
+
+    Proc.returncode = returncode
+
+    async def subprocess_exec(*_args, **_kwargs):
+        return Proc()
+
+    async def communicate(*_args, **_kwargs):
+        return b"", b""
+
+    flow._communicate_with_progress = communicate
+    state = FlowState(user_id="7", nonce="a" * 10, stage="running",
+                      operation="descargar-lote", selected_clients=[_scope_item()],
+                      period_from="2026-01", period_to="2026-01",
+                      progress_message=FakeMessage())
+    return flow, state, subprocess_exec
+
+
+def _caso_144(**overrides):
+    base = {"ok": False, "cliente": "uno", "periodo": "2026-01", "id_contribuyente": 1,
+            "estado": "fallido", "motivo_codigo": "error_interno_contabot",
+            "motivo_texto": "Error interno de ContaBot; ya fue avisado.",
+            "accion_sugerida": "No tenés que hacer nada: el equipo técnico ya recibió el aviso. Reintentá más tarde.",
+            "archivos": [], "f2083": {"estado": "no_disponible"}}
+    base.update(overrides)
+    return base
+
+
+def test_batch_all_failed_is_reported_fallido_without_files(monkeypatch, tmp_path):
+    async def scenario():
+        result = {"ok": False, "etapa": "fallido", "xlsx": [], "xlsx_errores": [],
+                  "casos": [_caso_144()], "resumen": {"total": 1, "completados": 0, "fallidos": 1}}
+        flow, state, subprocess_exec = _flow_144(tmp_path, result)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
+        adapter = FakeAdapter()
+        await flow._run_batch(adapter, "10", None, "key", state)
+        text = state.progress_message.edits[-1][0]
+        assert text.startswith("Lote fallido: ningún caso se completó (1 casos). No se generaron archivos.")
+        assert "• uno · 2026-01: Error interno de ContaBot; ya fue avisado." in text
+        assert "Lote completado" not in text
+        assert "ARCA respondió" not in text
+        adapter.send_document.assert_not_called()
+        adapter._bot.send_message.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_executor_crash_is_internal_error_and_notifies_technical_admins(monkeypatch, tmp_path):
+    async def scenario():
+        flow, state, subprocess_exec = _flow_144(tmp_path, {"ok": False}, returncode=1)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
+        adapter = FakeAdapter()
+        await flow._run_batch(adapter, "10", None, "key", state)
+        text = state.progress_message.edits[-1][0]
+        assert text == "Error interno de ContaBot; ya fue avisado."
+        aviso = adapter._bot.send_message.await_args_list[-1].kwargs
+        assert aviso["chat_id"] == 99
+        assert "error interno en Lote de Libros IVA presentados" in aviso["text"]
+        assert "PORTAL_IVA_BATCH_FAILED" in aviso["text"]
+
+    asyncio.run(scenario())
+
+
+def test_executor_crash_without_technical_admins_says_it_could_not_notify(monkeypatch, tmp_path):
+    async def scenario():
+        flow, state, subprocess_exec = _flow_144(tmp_path, {"ok": False}, returncode=1, destinatarios=())
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
+        adapter = FakeAdapter()
+        await flow._run_batch(adapter, "10", None, "key", state)
+        assert state.progress_message.edits[-1][0] == "Error interno de ContaBot; no se pudo avisar al equipo técnico."
+        adapter._bot.send_message.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_executor_already_notified_internal_error_keeps_its_text(monkeypatch, tmp_path):
+    async def scenario():
+        result = {"ok": False, "operacion": "descargar-presentados-lote", "error": "KeyError",
+                  "motivo_codigo": "error_interno_contabot",
+                  "motivo_texto": "Error interno de ContaBot; ya fue avisado."}
+        flow, state, subprocess_exec = _flow_144(tmp_path, result, returncode=1)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
+        adapter = FakeAdapter()
+        await flow._run_batch(adapter, "10", None, "key", state)
+        assert state.progress_message.edits[-1][0] == "Error interno de ContaBot; ya fue avisado."
+        adapter._bot.send_message.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_quota_failure_is_not_an_internal_error(monkeypatch, tmp_path):
+    async def scenario():
+        result = {"ok": False, "motivo_codigo": "cuota_insuficiente", "motivo_texto": MENSAJE_CUOTA}
+        flow, state, subprocess_exec = _flow_144(tmp_path, result, returncode=1)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
+        adapter = FakeAdapter()
+        await flow._run_batch(adapter, "10", None, "key", state)
+        assert state.progress_message.edits[-1][0] == MENSAJE_CUOTA
+        adapter._bot.send_message.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_case_without_reason_is_not_presented_as_arca(monkeypatch, tmp_path):
+    async def scenario():
+        result = {"ok": True, "xlsx": [], "xlsx_errores": [],
+                  "casos": [_caso_144(motivo_codigo="x", motivo_texto=None, accion_sugerida=None)],
+                  "resumen": {"total": 1, "completados": 0}}
+        flow, state, subprocess_exec = _flow_144(tmp_path, result)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_exec)
+        await flow._run_batch(FakeAdapter(), "10", None, "key", state)
+        text = state.progress_message.edits[-1][0]
+        assert "• uno · 2026-01: Caso sin resultado informado." in text
+        assert "ARCA respondió" not in text
+
+    asyncio.run(scenario())
+
+
+def test_terminal_batch_payload_carries_public_code_and_text():
+    flow = PortalIvaFlow(write_connection=lambda: ([], {}))
+    captured = []
+    flow._write_query = lambda sql: captured.append(sql) or [51]
+    flow._register_terminal_batch(321, [{"id": 1}], ["2026-05"], "fallido", "error_interno_contabot",
+                                  "Error interno de ContaBot; ya fue avisado.")
+    import base64
+    encoded = captured[0].split("decode('", 1)[1].split("'", 1)[0]
+    caso = json.loads(base64.b64decode(encoded))["casos"][0]
+    assert caso["motivo_codigo"] == "error_interno_contabot"
+    assert caso["motivo_texto"] == "Error interno de ContaBot; ya fue avisado."
+    flow._register_terminal_batch(321, [{"id": 1}], ["2026-05"], "cancelado", "cancelado_por_usuario")
+    caso = json.loads(base64.b64decode(captured[1].split("decode('", 1)[1].split("'", 1)[0]))["casos"][0]
+    assert caso["motivo_texto"] == "El lote fue cancelado."
