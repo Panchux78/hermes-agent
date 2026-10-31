@@ -103,3 +103,26 @@ def test_adapter_injects_one_history_component_into_all_four_flows() -> None:
     assert "BatchPdfXlsxFlow(history=bot_run_history)" in source
     assert "PdfXlsxFlow(history=bot_run_history)" in source
     assert "history=bot_run_history" in source
+
+
+def test_attach_run_registers_the_consolidated_file_once_per_run(tmp_path: Path) -> None:
+    """Ágora #148: el consolidado pertenece a la corrida, no a cada PDF."""
+    async def scenario() -> None:
+        history = BotRunHistory(tmp_path, instance_id="00000000-0000-4000-8000-000000000001")
+        history._call = AsyncMock(return_value={"status": "OK", "id_archivo": 7})
+        run = RunHandle(22, 31, 1, None)
+        output = tmp_path / "consolidado.xlsx"
+        output.write_bytes(b"xlsx")
+
+        await history.attach_run(run, contributor_id=5, output=output,
+                                 output_relative="estudios/1/20111111112/2026/05/bancos/consolidado.xlsx")
+        await history.attach(run, 31, contributor_id=5, output=output,
+                             output_relative="estudios/1/20111111112/2026/05/bancos/uno.xlsx", libro="ventas")
+
+        first, second = (call.args for call in history._call.await_args_list)
+        assert first[0] == "attach-run" and "--item-id" not in first
+        assert first[first.index("--libro") + 1] == "consolidado"
+        assert first[first.index("--rol") + 1] == "entregable"
+        assert second[0] == "attach" and second[second.index("--libro") + 1] == "ventas"
+
+    asyncio.run(scenario())

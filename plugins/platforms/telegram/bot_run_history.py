@@ -149,12 +149,26 @@ class BotRunHistory:
 
     async def attach(
         self, run: RunHandle, item_id: int, *, contributor_id: int,
-        output: Path, output_relative: str,
+        output: Path, output_relative: str, rol: str = "entregable", libro: str | None = None,
     ) -> None:
-        await self._call(
+        args = [
             "attach", "--run-id", str(run.run_id), "--item-id", str(item_id),
             "--instance", self.instance_id, "--contributor-id", str(contributor_id),
-            "--output", str(output), "--output-relative", output_relative,
+            "--output", str(output), "--output-relative", output_relative, "--rol", rol,
+        ]
+        if libro:
+            args += ["--libro", libro]
+        await self._call(*args)
+
+    async def attach_run(
+        self, run: RunHandle, *, contributor_id: int, output: Path, output_relative: str,
+        rol: str = "entregable", libro: str = "consolidado",
+    ) -> None:
+        """Archivo que pertenece a la corrida entera (consolidado): una vez por corrida (#148)."""
+        await self._call(
+            "attach-run", "--run-id", str(run.run_id), "--instance", self.instance_id,
+            "--contributor-id", str(contributor_id), "--output", str(output),
+            "--output-relative", output_relative, "--rol", rol, "--libro", libro,
         )
 
     async def finish_item(

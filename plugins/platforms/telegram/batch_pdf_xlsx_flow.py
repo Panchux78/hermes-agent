@@ -449,6 +449,15 @@ class BatchPdfXlsxFlow:
         matched = [doc for doc in documents if isinstance(doc, dict) and self._output_matches_document(output, doc)]
         if not matched:
             raise RuntimeError("BATCH_HISTORY_GROUP_EMPTY")
+        # #148: el consolidado pertenece al lote entero: se registra una vez por
+        # corrida, no una vez por cada PDF que incluye.
+        if any(item.get("estado") == "en_curso"
+               for item in (items.get(Path(str(doc.get("member_name", ""))).as_posix()[:255]) for doc in matched)
+               if item is not None):
+            await self.history.attach_run(
+                run, contributor_id=int(matched[0]["id_contribuyente"]),
+                output=path, output_relative=relative, rol="entregable", libro="consolidado",
+            )
         for document in matched:
             reference = Path(str(document.get("member_name", ""))).as_posix()[:255]
             item = items.get(reference)
@@ -470,7 +479,6 @@ class BatchPdfXlsxFlow:
                 contributor_id=int(document["id_contribuyente"]),
                 period=str(document.get("period", "")).replace("/", "-") or None,
                 delivered_count=int(document.get("rows_ok", output.get("row_count", 0)) or 0),
-                output=path, output_relative=relative,
             )
             item["estado"] = "completado"
 

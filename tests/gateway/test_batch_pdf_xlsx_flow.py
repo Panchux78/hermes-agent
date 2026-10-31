@@ -278,3 +278,37 @@ def test_real_cancellation_terminates_descendant(tmp_path):
             os.kill(child_pid, 0)
         assert not flow.processes
     asyncio.run(scenario())
+
+
+def test_history_registers_consolidated_once_per_run_and_closes_each_pdf(tmp_path):
+    """Ágora #148: antes el consolidado quedaba registrado una vez por ítem (doce veces en la corrida 20462)."""
+    from plugins.platforms.telegram.bot_run_history import RunHandle
+
+    async def scenario():
+        history = SimpleNamespace(attach_run=AsyncMock(), finish_item=AsyncMock())
+        flow = BatchPdfXlsxFlow(project_dir=tmp_path, history=history)
+        flow.clients_root = tmp_path
+        output = tmp_path / "estudios" / "1" / "20111111112" / "2026" / "05" / "bancos" / "consolidado.xlsx"
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"xlsx")
+        run = RunHandle(40, 1, 1, None)
+        documents = [
+            {"member_name": f"{name}.pdf", "id_contribuyente": 3, "entity_code": "bco", "currency": "ARS",
+             "account_key": "cuenta-1", "period": "2026/05", "rows_ok": 4}
+            for name in ("uno", "dos", "tres")
+        ]
+        items = {f"{name}.pdf": {"id_item": index, "estado": "en_curso"} for index, name in enumerate(("uno", "dos", "tres"), start=1)}
+        result = {"path": str(output), "ruta": "estudios/1/20111111112/2026/05/bancos/consolidado.xlsx",
+                  "id_contribuyente": 3, "entity_code": "bco", "currency": "ARS",
+                  "account_alias": "cuenta-" + __import__("hashlib").sha256(b"cuenta-1").hexdigest()[:8], "row_count": 12}
+
+        await flow._history_finish_output(run, items, {"documents": documents}, result, already_delivered=False)
+
+        history.attach_run.assert_awaited_once()
+        assert history.attach_run.await_args.kwargs["output_relative"] == result["ruta"]
+        assert history.attach_run.await_args.kwargs["libro"] == "consolidado"
+        assert history.finish_item.await_count == 3
+        assert all("output" not in call.kwargs for call in history.finish_item.await_args_list)
+        assert [item["estado"] for item in items.values()] == ["completado"] * 3
+
+    asyncio.run(scenario())
