@@ -613,6 +613,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         from plugins.platforms.telegram.constancias_flow import ConstanciasFlow
         from plugins.platforms.telegram.panel_captcha_bridge import PanelCaptchaBridge
         from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow, ComarbDeduccionesEntregas
+        from plugins.platforms.telegram.comarb_ddjj_flow import ComarbPresentadasFlow, ComarbPresentadasEntregas
         from plugins.platforms.telegram.vencimientos_avisos import VencimientosAvisos
         from plugins.platforms.telegram.agip_deducciones_flow import AgipDeduccionesFlow
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
@@ -673,6 +674,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._comarb_deducciones_flow = ComarbDeduccionesFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
         self._comarb_deducciones_entregas = ComarbDeduccionesEntregas(self._comarb_deducciones_flow)
+        self._comarb_presentadas_flow = ComarbPresentadasFlow(
+            query_connection=lookup_connection, write_connection=verification_connection)
+        self._comarb_presentadas_entregas = ComarbPresentadasEntregas(self._comarb_presentadas_flow)
         self._agip_deducciones_flow = AgipDeduccionesFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
         from plugins.platforms.telegram.provinciales_iibb import PROVINCIAS, ProvincialDeduccionesFlow
@@ -1017,6 +1021,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             "arba": "ARBA\n\nElegí qué necesitás hacer.",
             "comarb": "🤝 COMARB\n\nConvenio Multilateral: SIFERE Web.",
             "comarb_consultar": "🔎 COMARB · Consultar",
+            "comarb_presentadas": (
+                "🧾 DDJJ presentadas · SIFERE\n\n"
+                "Consulta por período o por lote. Un único Excel con una hoja MM-AAAA "
+                "por período, con jurisdicciones y Total País. Sólo lectura: "
+                "no se presenta, rectifica, genera VEP ni paga."
+            ),
             "comarb_deducciones": (
                 "📑 Deducciones de IIBB\n\n"
                 "Deducciones de SIFERE Web y AGIP · Gestión AR, según el régimen del período, "
@@ -1100,9 +1110,19 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             back_label = menu_label("‹", "Organismos")
             back_page = "organismos"
         elif page == "comarb_consultar":
-            rows = [[InlineKeyboardButton(menu_label("📑", "Deducciones de IIBB"), callback_data="om:comarb_deducciones")]]
+            rows = [
+                [InlineKeyboardButton(menu_label("📑", "Deducciones de IIBB"), callback_data="om:comarb_deducciones")],
+                [InlineKeyboardButton(menu_label("🧾", "DDJJ presentadas"), callback_data="om:comarb_presentadas")],
+            ]
             back_label = menu_label("‹", "COMARB")
             back_page = "comarb"
+        elif page == "comarb_presentadas":
+            rows = [
+                [InlineKeyboardButton(menu_label("📅", "Consulta por período"), callback_data="dj:periodo")],
+                [InlineKeyboardButton(menu_label("📦", "Consulta por lote"), callback_data="dj:lote")],
+            ]
+            back_label = menu_label("‹", "Consultar")
+            back_page = "comarb_consultar"
         elif page == "comarb_deducciones":
             rows = [
                 [InlineKeyboardButton(menu_label("👤", "Un cliente"), callback_data="cd:uno")],
@@ -1314,6 +1334,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             "arba",
             "comarb",
             "comarb_consultar",
+            "comarb_presentadas",
             "comarb_deducciones",
             "arca_consultar",
             "arca_preparar",
@@ -3822,6 +3843,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             deliveries = getattr(self, '_comarb_deducciones_entregas', None)
             if deliveries is not None:
                 self._restart_task_attr('_comarb_deducciones_task', deliveries.run(self))
+            presentadas = getattr(self, '_comarb_presentadas_entregas', None)
+            if presentadas is not None:
+                self._restart_task_attr('_comarb_presentadas_task', presentadas.run(self))
             notices=getattr(self,'_vencimientos_avisos',None)
             if notices is not None:
                 self._restart_task_attr('_vencimientos_avisos_task',notices.run(self))
@@ -4004,14 +4028,18 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         current_task = asyncio.current_task()
         lifecycle_tasks = self._collect_live_tasks(
             [getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
-             getattr(self, '_panel_captcha_task', None), getattr(self, '_comarb_deducciones_task', None), getattr(self,'_vencimientos_avisos_task',None)], current_task)
+             getattr(self, '_panel_captcha_task', None), getattr(self, '_comarb_deducciones_task', None),
+             getattr(self, '_comarb_presentadas_task', None), getattr(self,'_vencimientos_avisos_task',None)], current_task)
         for task in lifecycle_tasks:
             task.cancel()
         lifecycle_tasks = [t for t in lifecycle_tasks if asyncio.isfuture(t) or asyncio.iscoroutine(t)]
         if lifecycle_tasks:
             await self._await_disconnect_step(
                 asyncio.gather(*lifecycle_tasks, return_exceptions=True), _DISCONNECT_STEP_TIMEOUT, "lifecycle-task cancel")
-        self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task", '_panel_captcha_task', '_comarb_deducciones_task','_vencimientos_avisos_task')
+        self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task", '_panel_captcha_task', '_comarb_deducciones_task', '_comarb_presentadas_task','_vencimientos_avisos_task')
+        presentadas = getattr(self, '_comarb_presentadas_flow', None)
+        if presentadas is not None:
+            await presentadas.close()
         # Cancellation callbacks may have run while awaited; the fence stays authoritative.
         self._polling_progress_accepting = False
         self._send_path_degraded = True
@@ -5336,6 +5364,43 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         except Exception:
             logger.info("[Telegram] rejection not persisted operation=%s code=%s", operation, code)
 
+    async def _handle_comarb_presentadas_callback(self, query, data, cb):
+        if not data.startswith('dj:'):
+            presentadas = getattr(self, '_comarb_presentadas_flow', None)
+            if presentadas is not None and getattr(presentadas, 'states', {}):
+                from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
+                from plugins.platforms.telegram.provinciales_iibb import flows as iibb_flows
+                starts = set(FiscalQueryFlow.START_CALLBACKS) | {'ci:start','ve:start','px:start','bx:start','cx:start'}
+                starts.update(f'{prefix}:{mode}' for prefix in iibb_flows(self) for mode in ('uno','cartera'))
+                key = presentadas._key(cb['chat_id'], cb['thread_id'], str(query.from_user.id))
+                if key in presentadas.states and data in starts:
+                    if await self._callback_authorized(query, cb, '⛔ No estás autorizado para iniciar esta operación.'):
+                        await query.answer(text='Completá o cancelá DDJJ presentadas antes de iniciar otra operación.')
+                    return True
+            return False
+        if not await self._callback_authorized(query, cb, '⛔ No estás autorizado para consultar DDJJ presentadas.'):
+            return True
+        if str(cb['chat_type']).lower() != 'private':
+            await query.answer(text='Esta consulta se realiza por privado.')
+            return True
+        flow = getattr(self, '_comarb_presentadas_flow', None)
+        if flow is None:
+            await query.answer(text='DDJJ presentadas no está disponible en este equipo.')
+            return True
+        if data in ('dj:periodo', 'dj:lote'):
+            fiscal = getattr(self, '_fiscal_query_flow', None)
+            if fiscal is not None and (str(cb['chat_id']), str(query.from_user.id)) in fiscal._workflow_menu_state:
+                await query.answer(text='Completá o cancelá la operación en curso antes de iniciar otra.')
+                return True
+            from plugins.platforms.telegram.provinciales_iibb import flows as iibb_flows
+            others = [getattr(self, name, None) for name in ('_portal_iva_flow', '_agip_ddjj_flow', '_pdf_security_flow')]
+            others.extend(iibb_flows(self).values())
+            if any(other is not None and other._key(cb['chat_id'], cb['thread_id'], str(query.from_user.id)) in other.states for other in others):
+                await query.answer(text='Completá o cancelá la operación en curso antes de iniciar otra.')
+                return True
+        await flow.callback(self, query, data, cb['chat_id'], cb['thread_id'], str(query.from_user.id))
+        return True
+
     async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Dispatch inline keyboard button clicks on the callback_data prefix."""
         query = update.callback_query
@@ -5344,6 +5409,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._accept_update()
         data = query.data
         cb = self._callback_ctx(query)
+        if await self._handle_comarb_presentadas_callback(query, data, cb):
+            return
+        presentadas = getattr(self, '_comarb_presentadas_flow', None)
+        if presentadas is not None and data.startswith('om:'):
+            presentadas.cancel_pending(cb['chat_id'], cb['thread_id'], str(query.from_user.id))
         fiscal_flow = getattr(self, "_fiscal_query_flow", None)
         if fiscal_flow is not None and data in fiscal_flow.START_CALLBACKS:
             if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para iniciar esta operación."):
@@ -7358,10 +7428,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             self._log_blocked_user(msg)
             return
         if msg.text in {"☰ Menú", menu_label("☰", "Menú")}:
+            presentadas = getattr(self, '_comarb_presentadas_flow', None)
+            if presentadas is not None:
+                presentadas.cancel_pending(msg.chat_id, getattr(msg, 'message_thread_id', None), str(msg.from_user.id))
             await self._reply_operational_menu(msg, context.bot)
             return
         bridge = getattr(self, '_panel_captcha_bridge', None)
         if bridge is not None and await bridge.text(context.bot, msg):
+            return
+        presentadas = getattr(self, '_comarb_presentadas_flow', None)
+        if presentadas is not None and await presentadas.text(self, msg):
             return
         if await self._pdf_security_flow.text(self, msg):
             return
