@@ -366,6 +366,36 @@ def test_period_prompt_is_month_year_only():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("multiple", [False, True])
+def test_presented_period_prompt_echoes_selected_contributor(multiple):
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        flow._query = _scope_query
+        chosen = _scope_item(nombre="Empresa elegida")
+        candidates = [chosen]
+        if multiple:
+            candidates.append(_scope_item(id=2, nombre="Otra empresa", slug="otra"))
+        flow._search = lambda _term, _uid: candidates
+        flow._by_id = lambda _id, _uid: [chosen]
+        await flow.start(adapter, _query("pi:descargar"), "10", None, "7", "descargar-presentados")
+        assert await flow.text(adapter, _message("empresa"))
+        state = flow.states[flow._key("10", None, "7")]
+        if multiple:
+            assert state.stage == "client"
+            query = _query(f"pi:select:{state.nonce}:1")
+            assert await flow.callback(adapter, query, query.data, "10", None, "7")
+        assert state.stage == "period"
+        assert state.contributor_id == chosen["id"]
+        assert adapter._bot.send_message.await_args.kwargs["text"] == (
+            "Contribuyente: Empresa elegida.\n"
+            "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
+        )
+        assert not flow.tasks
+
+    asyncio.run(scenario())
+
+
 def test_flow_never_exposes_executor_period_format_to_telegram():
     source = Path("plugins/platforms/telegram/portal_iva_flow.py").read_text(encoding="utf-8")
     assert "AAAA-MM" not in source

@@ -630,7 +630,10 @@ class PortalIvaFlow:
         state.nombre = str(item["nombre"])
         state.scope_item = dict(item)
         state.stage = "period"
-        await self._send(adapter, chat_id, "Ingresá el período como MM/AAAA. Ejemplo: 08/2026.", thread_id)
+        prompt = "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
+        if state.operation == "descargar-presentados":
+            prompt = f"Contribuyente: {state.nombre}.\n{prompt}"
+        await self._send(adapter, chat_id, prompt, thread_id)
 
     @staticmethod
     def _excluded_summary(state: FlowState) -> str:
