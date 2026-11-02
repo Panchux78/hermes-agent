@@ -74,6 +74,8 @@ _FALLOS_NO_INTERNOS = {"PORTAL_IVA_BATCH_QUOTA", "PORTAL_IVA_STATE_INVALID", "PO
 _ERROR_INTERNO_AVISADO = "Error interno de ContaBot; ya fue avisado."
 _ERROR_INTERNO_SIN_AVISO = "Error interno de ContaBot; no se pudo avisar al equipo técnico."
 _PIPE_STREAM_LIMIT = 256 * 1024
+_LIBROS = ('ventas', 'compras', 'importaciones_bienes')
+_LIBRO_UI = {'ventas': 'Ventas', 'compras': 'Compras', 'importaciones_bienes': 'Importaciones de bienes'}
 _PIPE_CAPTURE_LIMIT = 4 * 1024 * 1024
 _TELEGRAM_ZIP_LIMIT = 45_000_000
 _TELEGRAM_FILE_LIMIT = 50_000_000
@@ -770,7 +772,7 @@ class PortalIvaFlow:
         files = state.batch_files.setdefault(contributor_id, {})
         if kind == "file":
             book, status = payload.get("tipo"), payload.get("estado")
-            if book not in {"ventas", "compras"} or status not in {"descargado", "sin_libro", "error"}:
+            if book not in _LIBROS or status not in {"descargado", "sin_libro", "error", "no_consultada"}:
                 return
             key = (period, book)
             if key in files:
@@ -779,7 +781,7 @@ class PortalIvaFlow:
         elif kind != "case_start":
             return
         downloaded = sum(value == "descargado" for value in files.values())
-        total = state.batch_months * 2 - sum(value == "sin_libro" for value in files.values())
+        total = state.batch_months * len(_LIBROS) - sum(value == "sin_libro" for value in files.values())
         no_books = sorted({period for (period, _), status in files.items() if status == "sin_libro"})
         errors = sorted((period, book) for (period, book), status in files.items() if status == "error")
 
@@ -800,12 +802,12 @@ class PortalIvaFlow:
             notes.append(f"{compact_periods(no_books)} sin libro presentado")
         elif no_books:
             notes.append(f"sin libro presentado: {compact_periods(no_books)}")
-        for book in ("ventas", "compras"):
+        for book in _LIBROS:
             periods = [item for item, item_book in errors if item_book == book]
             if len(periods) == 1:
-                notes.append(f"{book.capitalize()} {compact_periods(periods)}: error")
+                notes.append(f"{_LIBRO_UI[book]} {compact_periods(periods)}: error")
             elif periods:
-                notes.append(f"error en {book.capitalize()}: {compact_periods(periods)}")
+                notes.append(f"error en {_LIBRO_UI[book]}: {compact_periods(periods)}")
         detail = f" ({'; '.join(notes)})" if notes else ""
         display_name = " ".join(str(client.get("nombre") or client["slug"]).split())
         state.progress_label = (
@@ -1005,8 +1007,9 @@ class PortalIvaFlow:
                 else "PORTAL_IVA_DELIVERY_PATH_INVALID"
             raise RuntimeError(code) from exc
 
-    def _deliverables(self, slug: str, cuit: str, period: str, result: dict[str, Any]) -> list[tuple[Path, int, str]]:
-        """CSV entregables de Ventas y Compras, tal como los guardó portal_iva.py.
+    def _deliverables(self, slug: str, cuit: str, period: str, result: dict[str, Any],
+                      operation: str = 'descargar-presentados') -> list[tuple[Path, int, str]]:
+        """CSV oficiales: tres fuentes presentadas o dos del flujo de generación.
 
         La ruta la decide el módulo de documentos: se usan ``entregable_path`` y
         ``entregable_ruta_clientes``; nunca se reconstruye la carpeta.
@@ -1017,10 +1020,12 @@ class PortalIvaFlow:
         if not isinstance(files, list):
             raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
         output: list[tuple[Path, int, str]] = []
-        expected = {"ventas", "compras"}
+        expected = set(_LIBROS if operation == 'descargar-presentados' else ('ventas', 'compras'))
         for item in files:
             if not isinstance(item, dict) or str(item.get("libro", "")) not in expected:
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
+            if item.get('libro') == 'importaciones_bienes' and item.get('estado') not in {'valida_sin_filas', 'valida_con_filas'}:
+                raise RuntimeError('PORTAL_IVA_OUTPUT_INCOMPLETE')
             name = str(item.get("entregable_name", ""))
             if not name or Path(name).name != name or Path(name).suffix.lower() != ".csv":
                 raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
@@ -1029,9 +1034,9 @@ class PortalIvaFlow:
             if path.name != name:
                 raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
             output.append((path, int(item.get("filas", 0) or 0), str(item["libro"])))
-        if {label for _, _, label in output} != expected or len(output) != 2:
+        if {label for _, _, label in output} != expected or len(output) != len(expected):
             raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
-        return sorted(output, key=lambda item: {"ventas": 0, "compras": 1}[item[2]])
+        return sorted(output, key=lambda item: _LIBROS.index(item[2]))
 
     def _f2083_deliverable(self, record: Any) -> tuple[Path, int, str] | None:
         """F.2083 guardado (registro con estado, ruta, ruta_clientes, sha256), si existe."""
@@ -1100,9 +1105,12 @@ class PortalIvaFlow:
     def _completion_message(deliverables: list[tuple[Path, int, str]]) -> str:
         lines = ["Portal IVA completado."]
         for _, rows, label in deliverables:
-            title = label.title()
+            title = _LIBRO_UI.get(label, label)
             if label == "F.2083":
                 lines.append("F.2083: archivo enviado.")
+            elif label == 'importaciones_bienes':
+                lines.append(f'{title}: {rows} despachos; archivo enviado.' if rows
+                             else f'{title}: sin despachos para el período; archivo enviado.')
             elif rows == 0:
                 lines.append(f"{title}: sin comprobantes para el período.")
             elif rows == 1:
@@ -1119,6 +1127,8 @@ class PortalIvaFlow:
             return cuota
         prefix = "Generar CSV de período nuevo" if operation == "generar" else "Descargar CSV presentados"
         reason = str((result or {}).get("motivo", ""))
+        if reason.startswith(('IMPORTACIONES_BIENES_', 'COMPRAS_IMPO_BIENES_', 'TOTAL_FILAS_NO_COINCIDE_IMPORTACIONES_BIENES')):
+            return f'{prefix}: no se pudieron obtener las Importaciones de bienes. Los archivos ya obtenidos quedaron guardados. Reintentá este período.'
         if reason.startswith("CREDENCIAL_") or "CREDENTIAL" in reason:
             return f"{prefix}: ARCA rechazó la credencial."
         if reason == "CAPTCHA_REINTENTOS_AGOTADOS":
@@ -1195,6 +1205,23 @@ class PortalIvaFlow:
                 raise RuntimeError("PORTAL_IVA_DELIVERY_PATH_INVALID")
             output.append((path, 0, f"{workbook['cliente']} · consolidado"))
         return output
+
+    @staticmethod
+    def _importaciones_summary(result: dict[str, Any]) -> list[str]:
+        lines = []
+        for case in result.get('casos', []):
+            if case.get('importaciones_bienes_estado') not in {'valida_sin_filas', 'valida_con_filas'}:
+                continue
+            record = next((r for r in case.get('archivos', []) if r.get('libro') == 'importaciones_bienes'), None)
+            if record is None or not isinstance(record.get('filas'), int):
+                continue
+            count = record['filas']
+            text = f'{count} despachos' if count else 'sin despachos para el período'
+            period = str(case.get('periodo', ''))
+            if re.fullmatch(r'\d{4}-\d{2}', period):
+                period = f'{period[5:]}/{period[:4]}'
+            lines.append(f"• {case.get('cliente')} · {period} · Importaciones de bienes: {text}.")
+        return lines[:8] + ([f'Los otros {len(lines) - 8} períodos están detallados en el consolidado.'] if len(lines) > 8 else [])
 
     @staticmethod
     def _batch_xlsx_errors(result: dict[str, Any]) -> list[str]:
@@ -1508,11 +1535,12 @@ class PortalIvaFlow:
                 for case in pending[:8]
             )
             xlsx_errors = self._batch_xlsx_errors(result)
+            detail = '\n'.join(filter(None, (detail, *self._importaciones_summary(result))))
             if xlsx_errors:
                 detail = "\n".join(filter(None, (detail, *xlsx_errors)))
             suffix = f"\n{detail}" if detail else ""
             delivered = sum(value == "descargado" for files in state.batch_files.values() for value in files.values())
-            expected = (len(verified_clients) * len(periods) * 2
+            expected = (len(verified_clients) * len(periods) * len(_LIBROS)
                         - sum(value == "sin_libro" for files in state.batch_files.values()
                               for value in files.values()))
             errors = sum(value == "error" for files in state.batch_files.values()
@@ -1533,7 +1561,7 @@ class PortalIvaFlow:
             else:
                 await self._edit_progress(state,
                     f"Lote completado: {summary.get('completados', 0)} de {summary.get('total', 0)} casos; "
-                    f"{delivered}/{expected} libros descargados, {errors} con error. "
+                    f"{delivered}/{expected} archivos descargados, {errors} con error. "
                     f"{delivery_text}{omitted}{suffix}{self._excluded_summary(state)}")
         except asyncio.CancelledError:
             if proc and proc.returncode is None: await self._terminate_process(proc)
@@ -1631,11 +1659,11 @@ class PortalIvaFlow:
                     reference=f"{slug}-{period}", lease_seconds=_RUN_TIMEOUT_SECONDS + 120,
                 )
                 prepared_items = await self.history.prepare_items(
-                    history_run, ["Libro IVA Ventas", "Libro IVA Compras"],
+                    history_run, ["Libro IVA Ventas", "Libro IVA Compras", *(["Importaciones de bienes"] if state.operation == "descargar-presentados" else [])],
                 )
                 history_items = {
                     label: int(item["id_item"])
-                    for label, item in zip(("ventas", "compras"), prepared_items, strict=True)
+                    for label, item in zip((_LIBROS if state.operation == "descargar-presentados" else ("ventas", "compras")), prepared_items, strict=True)
                 }
             verified = await asyncio.to_thread(self._by_id, state.contributor_id, state.user_id)
             if state.cancelled:
@@ -1706,7 +1734,7 @@ class PortalIvaFlow:
             )
             state.progress_label = "Validando archivos…"
             await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
-            source_deliverables = self._deliverables(slug, cuit, period, result)
+            source_deliverables = self._deliverables(slug, cuit, period, result, state.operation)
             f2083 = self._f2083_deliverable(result.get("f2083"))
             deliverables = source_deliverables + ([f2083] if f2083 else [])
             if state.cancelled:
@@ -1715,11 +1743,11 @@ class PortalIvaFlow:
             if state.cancelled:
                 return
             state.stage = "delivering"
-            await self._edit_progress(state, "Portal IVA completado. Entregando Ventas y Compras…")
+            await self._edit_progress(state, ("Portal IVA completado. Entregando Ventas, Compras e Importaciones de bienes…" if state.operation == "descargar-presentados" else "Portal IVA completado. Entregando Ventas y Compras…"))
             for path, rows, label in deliverables:
                 delivery = await adapter.send_document(
                     chat_id=str(chat_id), file_path=str(path), file_name=path.name,
-                    caption=("Portal IVA F.2083." if label == "F.2083" else f"Portal IVA {label.title()}: {rows} fila(s)."),
+                    caption=("Portal IVA F.2083." if label == "F.2083" else f"Portal IVA {_LIBRO_UI.get(label, label)}: {rows} fila(s)."),
                     metadata={"thread_id": thread_id} if thread_id is not None else None,
                 )
                 if not delivery.success:
@@ -1744,7 +1772,7 @@ class PortalIvaFlow:
                 )
             if self.history is not None and history_run is not None:
                 source_by_label = {label: (path, rows) for path, rows, label in source_deliverables}
-                for label in ("ventas", "compras"):
+                for label in (_LIBROS if state.operation == "descargar-presentados" else ("ventas", "compras")):
                     path, rows = source_by_label[label]
                     item_state, reason_code, reason_text = self._history_outcome(label, safe_warnings)
                     await self.history.finish_item(
@@ -1835,7 +1863,7 @@ class PortalIvaFlow:
             )
         return (
             "completado", "archivo_entregado",
-            f"El Libro IVA {label.title()} fue entregado correctamente.",
+            f"El Libro IVA {_LIBRO_UI.get(label, label)} fue entregado correctamente.",
         )
 
     def _release(self, key: str, task: asyncio.Task) -> None:

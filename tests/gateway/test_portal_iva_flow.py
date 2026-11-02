@@ -274,8 +274,8 @@ def _result(root: Path, state: FlowState, *, complete=True):
     year, month = state.period.split("-")
     folder = f"estudios/1/{state.cuit}/{year}/{month}/arca"
     files = []
-    for label in ("ventas", "compras"):
-        record = {"libro": label, "filas": 0, "conciliacion": "no_verificable"}
+    for label in (("ventas", "compras", "importaciones_bienes") if state.operation == "descargar-presentados" else ("ventas", "compras")):
+        record = {"libro": label, "filas": 0, "conciliacion": "no_verificable", "estado": "valida_sin_filas"}
         record.update(_saved_fields(root, "zip", f"{folder}/{state.slug}-portal-iva-{label}-{state.period}.zip", b"PK"))
         record.update(_saved_fields(root, "csv", f"{folder}/{state.slug}-portal-iva-{label}-{state.period}.csv", b"cabecera\n"))
         record.update({key.replace("csv_", "entregable_", 1): value
@@ -458,18 +458,18 @@ def test_delivery_rejects_traversal_symlink_and_paths_outside_estudios(tmp_path)
     result = _result(tmp_path, state)
     result["archivos"][0]["entregable_name"] = "../ventas.csv"
     with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
-        flow._deliverables(state.slug, state.cuit, state.period, result)
+        flow._deliverables(state.slug, state.cuit, state.period, result, operation=state.operation)
     result = _result(tmp_path, state)
     result["archivos"][0]["entregable_ruta_clientes"] = "estudios/../../ventas.csv"
     with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
-        flow._deliverables(state.slug, state.cuit, state.period, result)
+        flow._deliverables(state.slug, state.cuit, state.period, result, operation=state.operation)
     result = _result(tmp_path, state)
     ventas = Path(result["archivos"][0]["entregable_path"])
     ventas.unlink()
     ventas.symlink_to(tmp_path / "elsewhere.csv")
     (tmp_path / "elsewhere.csv").write_text("x")
     with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
-        flow._deliverables(state.slug, state.cuit, state.period, result)
+        flow._deliverables(state.slug, state.cuit, state.period, result, operation=state.operation)
     # La estructura vieja <slug>/<cuit>/arca/AAAA/MM/consultas ya no se acepta.
     result = _result(tmp_path, state)
     old = tmp_path / "cliente/20123456789/arca/2026/08/consultas/cliente-portal-iva-ventas-2026-08.csv"
@@ -477,13 +477,13 @@ def test_delivery_rejects_traversal_symlink_and_paths_outside_estudios(tmp_path)
     old.write_text("cabecera\n")
     result["archivos"][0].update(entregable_path=str(old), entregable_ruta_clientes=None)
     with pytest.raises(RuntimeError, match="DELIVERY_PATH"):
-        flow._deliverables(state.slug, state.cuit, state.period, result)
+        flow._deliverables(state.slug, state.cuit, state.period, result, operation=state.operation)
     fresh = tmp_path / "otra-raiz"
     fresh.mkdir()
     result = _result(fresh, state)
     result["archivos"][1]["entregable_sha256"] = "0" * 64
     with pytest.raises(RuntimeError, match="DELIVERY_HASH"):
-        PortalIvaFlow(clients_root=fresh)._deliverables(state.slug, state.cuit, state.period, result)
+        PortalIvaFlow(clients_root=fresh)._deliverables(state.slug, state.cuit, state.period, result, operation=state.operation)
 
 
 def test_delivery_uses_saved_deliverable_and_relative_route(tmp_path):
@@ -491,7 +491,7 @@ def test_delivery_uses_saved_deliverable_and_relative_route(tmp_path):
     state = FlowState(user_id="7", nonce="a" * 10, stage="running", slug="cliente",
                       cuit="20123456789", period="2026-08")
     result = _result(tmp_path, state)
-    deliverables = flow._deliverables(state.slug, state.cuit, state.period, result)
+    deliverables = flow._deliverables(state.slug, state.cuit, state.period, result, operation=state.operation)
     assert [path.name for path, _, _ in deliverables] == [
         "cliente-portal-iva-ventas-2026-08.csv",
         "cliente-portal-iva-compras-2026-08.csv",
@@ -504,6 +504,40 @@ def test_delivery_uses_saved_deliverable_and_relative_route(tmp_path):
 
 def test_stdout_requires_one_json_object():
     assert PortalIvaFlow._parse_result(b'{"ok":true}\n') == {"ok": True}
+
+
+def test_presented_unitary_requires_three_sources_but_generar_keeps_two(tmp_path):
+    flow = PortalIvaFlow(clients_root=tmp_path)
+    state = FlowState(user_id='7', nonce='a' * 10, stage='running', slug='cliente',
+                      cuit='20123456789', period='2026-08', operation='descargar-presentados')
+    result = _result(tmp_path, state)
+    delivered = flow._deliverables(state.slug, state.cuit, state.period, result)
+    assert [x[2] for x in delivered] == ['ventas', 'compras', 'importaciones_bienes']
+    assert 'Importaciones de bienes: sin despachos para el período; archivo enviado.' in flow._completion_message(delivered)
+    result['archivos'].pop()
+    with pytest.raises(RuntimeError, match='OUTPUT_INCOMPLETE'):
+        flow._deliverables(state.slug, state.cuit, state.period, result)
+    assert len(flow._deliverables(state.slug, state.cuit, state.period, result, 'generar')) == 2
+
+
+def test_importaciones_summary_never_infers_empty_on_failure():
+    base = {'cliente':'sintetico', 'periodo':'2026-08', 'archivos':[{'libro':'importaciones_bienes', 'filas':0}]}
+    for state in ('no_obtenida', 'no_consultada', None):
+        assert PortalIvaFlow._importaciones_summary({'casos':[{**base, 'importaciones_bienes_estado':state}]}) == []
+    assert PortalIvaFlow._importaciones_summary({'casos':[{**base, 'importaciones_bienes_estado':'valida_sin_filas'}]}) == [
+        '• sintetico · 08/2026 · Importaciones de bienes: sin despachos para el período.']
+
+
+def test_no_consultada_progress_is_not_a_download_or_an_error():
+    async def scenario():
+        flow = PortalIvaFlow()
+        state = FlowState(user_id='7', nonce='a'*10, stage='running', operation='descargar-lote',
+                          progress_message=FakeMessage(), selected_clients=[_scope_item(nombre='Sintético')],
+                          period_from='2026-01', period_to='2026-01', batch_months=1)
+        await flow._batch_progress_event(state, 'file', {'id_contribuyente':1, 'periodo':'2026-01',
+            'tipo':'importaciones_bienes', 'estado':'no_consultada'})
+        assert state.progress_message.edits[-1][0] == 'Se descargaron 0/3 archivos de Sintético'
+    asyncio.run(scenario())
     with pytest.raises(RuntimeError, match="STDOUT_INVALID"):
         PortalIvaFlow._parse_result(b'{"ok":true}\nnoise\n')
     with pytest.raises(RuntimeError, match="STDOUT_INVALID"):
@@ -601,13 +635,13 @@ def test_batch_events_update_case_counts_without_leaking_event_json():
         assert raw == b'{"ok":true}\n'
         assert captured == b""
         assert [edit[0] for edit in state.progress_message.edits] == [
-            "Se descargaron 0/4 archivos de Empresa Uno SA",
-            "Se descargaron 1/4 archivos de Empresa Uno SA",
-            "Se descargaron 2/4 archivos de Empresa Uno SA",
-            "Se descargaron 2/3 archivos de Empresa Uno SA (02/2026 sin libro presentado)",
-            "Se descargaron 2/2 archivos de Empresa Uno SA (02/2026 sin libro presentado)",
-            "Se descargaron 0/4 archivos de Empresa Dos SRL (Ventas 01/2026: error)",
-            "Se descargaron 1/4 archivos de Empresa Dos SRL (Ventas 01/2026: error)",
+            "Se descargaron 0/6 archivos de Empresa Uno SA",
+            "Se descargaron 1/6 archivos de Empresa Uno SA",
+            "Se descargaron 2/6 archivos de Empresa Uno SA",
+            "Se descargaron 2/5 archivos de Empresa Uno SA (02/2026 sin libro presentado)",
+            "Se descargaron 2/4 archivos de Empresa Uno SA (02/2026 sin libro presentado)",
+            "Se descargaron 0/6 archivos de Empresa Dos SRL (Ventas 01/2026: error)",
+            "Se descargaron 1/6 archivos de Empresa Dos SRL (Ventas 01/2026: error)",
         ]
         assert len(events) == 7
         assert all(edit[1] is not None for edit in state.progress_message.edits)
@@ -623,14 +657,15 @@ def test_batch_file_progress_only_edits_existing_message():
                           operation="descargar-lote", progress_message=FakeMessage(),
                           selected_clients=[_scope_item(nombre="Empresa Uno SA")], period_from="2026-01",
                           period_to="2026-01", batch_months=1)
-        for book in ("ventas", "compras"):
+        for book in ("ventas", "compras", "importaciones_bienes"):
             await flow._batch_progress_event(state, "file", {
                 "id_contribuyente": 1, "periodo": "2026-01", "tipo": book,
                 "estado": "descargado",
             })
         assert [edit[0] for edit in state.progress_message.edits] == [
-            "Se descargaron 1/2 archivos de Empresa Uno SA",
-            "Se descargaron 2/2 archivos de Empresa Uno SA",
+            "Se descargaron 1/3 archivos de Empresa Uno SA",
+            "Se descargaron 2/3 archivos de Empresa Uno SA",
+            "Se descargaron 3/3 archivos de Empresa Uno SA",
         ]
         adapter._bot.send_message.assert_not_awaited()
 
@@ -645,7 +680,7 @@ def test_batch_progress_groups_months_without_book_and_keeps_error_visible():
                           selected_clients=[_scope_item(nombre="Empresa Uno SA")],
                           period_from="2026-01", period_to="2026-05", batch_months=5)
         for month in ("01", "02", "03"):
-            for book in ("ventas", "compras"):
+            for book in ("ventas", "compras", "importaciones_bienes"):
                 await flow._batch_progress_event(state, "file", {
                     "id_contribuyente": 1, "periodo": f"2026-{month}",
                     "tipo": book, "estado": "sin_libro",
@@ -659,7 +694,7 @@ def test_batch_progress_groups_months_without_book_and_keeps_error_visible():
             "tipo": "compras", "estado": "descargado",
         })
         assert state.progress_message.edits[-1][0] == (
-            "Se descargaron 1/4 archivos de Empresa Uno SA "
+            "Se descargaron 1/6 archivos de Empresa Uno SA "
             "(sin libro presentado: 01, 02 y 03/2026; Ventas 04/2026: error)"
         )
 
@@ -1544,10 +1579,12 @@ def _single_flow(tmp_path, history=None):
     return flow, state
 
 
-def test_single_history_registers_the_documents_route(monkeypatch, tmp_path, verify_representation_mock):
+@pytest.mark.parametrize('operation', ['generar', 'descargar-presentados'])
+def test_single_history_registers_the_documents_route(monkeypatch, tmp_path, verify_representation_mock, operation):
     async def scenario():
         history = FakeHistory()
         flow, state = _single_flow(tmp_path, history)
+        state.operation = operation
         result = _result(tmp_path, state)
         monkeypatch.setattr(asyncio, "create_subprocess_exec",
                             AsyncMock(return_value=FakeProcess(json.dumps(result).encode())))
@@ -1555,6 +1592,7 @@ def test_single_history_registers_the_documents_route(monkeypatch, tmp_path, ver
         relatives = [kwargs["output_relative"] for _, kwargs in history.finished]
         assert relatives == [record["entregable_ruta_clientes"] for record in result["archivos"]]
         assert all(kwargs["state"] == "completado" for _, kwargs in history.finished)
+        assert len(history.finished) == (3 if operation == 'descargar-presentados' else 2)
     asyncio.run(scenario())
 
 
