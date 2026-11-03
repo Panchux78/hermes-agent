@@ -461,6 +461,21 @@ class PortalIvaFlow:
         await self._select(adapter, chat_id, thread_id, state, found[0])
         return True
 
+    async def _captcha_text(self, adapter, message, state, chat_id, thread_id):
+        solution = (message.text or "").strip()
+        if not _CAPTCHA_SOLUTION.fullmatch(solution):
+            await self._send(adapter, chat_id,
+                "La solución debe tener entre 4 y 20 letras o números. Mirá la imagen y respondé sólo con esos caracteres.", thread_id)
+            return True
+        pending = state.captcha_response
+        if pending is None or pending.done():
+            await self._send(adapter, chat_id, "Ese captcha ya no está activo.", thread_id)
+            return True
+        state.progress_label = "Validando captcha…"
+        await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
+        pending.set_result(solution)
+        return True
+
     async def text(self, adapter, message) -> bool:
         chat_id, user_id = message.chat_id, str(message.from_user.id)
         thread_id = getattr(message, "message_thread_id", None)
@@ -474,22 +489,7 @@ class PortalIvaFlow:
             await self._send(adapter, chat_id, "La solicitud venció. Iniciá Portal IVA nuevamente.", thread_id)
             return True
         if state.stage == "captcha":
-            solution = (message.text or "").strip()
-            if not _CAPTCHA_SOLUTION.fullmatch(solution):
-                await self._send(
-                    adapter, chat_id,
-                    "La solución debe tener entre 4 y 20 letras o números. Mirá la imagen y respondé sólo con esos caracteres.",
-                    thread_id,
-                )
-                return True
-            pending = state.captcha_response
-            if pending is None or pending.done():
-                await self._send(adapter, chat_id, "Ese captcha ya no está activo.", thread_id)
-                return True
-            state.progress_label = "Validando captcha…"
-            await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
-            pending.set_result(solution)
-            return True
+            return await self._captcha_text(adapter, message, state, chat_id, thread_id)
         if state.stage in {"running", "delivering"}:
             await self._send(adapter, chat_id, "Portal IVA ya está en ejecución para esta solicitud.", thread_id)
             return True

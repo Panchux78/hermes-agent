@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from zipfile import ZipFile, BadZipFile
 from xml.etree import ElementTree
+from telegram.error import TelegramError
 
 from plugins.platforms.telegram.fiscal_credentials import verify_representation
 
@@ -204,7 +205,7 @@ async def run(flow, adapter, chat, thread, key, state):
             await flow._terminate_process(proc)
         await asyncio.shield(remaining('cancelado', 'cancelado_por_usuario', 'Consulta cancelada por el usuario.'))
         raise
-    except Exception as exc:
+    except (RuntimeError, ValueError, TypeError, OSError, TelegramError) as exc:
         if proc is not None and proc.returncode is None:
             await flow._terminate_process(proc)
         code = str(exc) if re.fullmatch('[A-Z0-9_]{1,100}', str(exc)) else 'DDJJ_ERROR_TECNICO'
