@@ -123,6 +123,7 @@ class FlowState:
     period_to: str | None = None
     batch_months: int = 0
     batch_files: dict[int, dict[tuple[str, str], str]] = field(default_factory=dict)
+    ddjj_periods: list[str] = field(default_factory=list)
 
 
 class PortalIvaFlow:
@@ -165,6 +166,9 @@ class PortalIvaFlow:
 
     @staticmethod
     def _progress_text(stage: str) -> str | None:
+        if stage.startswith('ddjj:'):
+            from plugins.platforms.telegram.portal_iva_ddjj_flow import progress
+            return progress(stage)
         return {
             "generar": "Generando CSV de período nuevo…",
             "buscar_presentado": "Buscando presentación…",
@@ -191,6 +195,7 @@ class PortalIvaFlow:
         if self.history is None:
             return
         operation_code = (
+            "portal_iva_ddjj_iva_excel" if operation == "ddjj-iva" else
             "portal_iva_generar_csv" if operation == "generar"
             else "portal_iva_lote_presentados" if operation == "descargar-lote"
             else "portal_iva_descargar_presentados"
@@ -320,7 +325,7 @@ class PortalIvaFlow:
         )
 
     async def start(self, adapter, query, chat_id: Any, thread_id: Any, user_id: str, operation: str) -> None:
-        if operation not in {"generar", "descargar-presentados", "descargar-lote"}:
+        if operation not in {"generar", "descargar-presentados", "descargar-lote", "ddjj-iva"}:
             await query.answer("Operación Portal IVA inválida.")
             return
         key = self._key(chat_id, thread_id, user_id)
@@ -361,10 +366,10 @@ class PortalIvaFlow:
                 code="base_fiscal_no_disponible", text=text,
             )
             return
-        if operation == "descargar-lote" and not self.batch_executor.is_file():
-            await query.answer("El lote de Portal IVA requiere mantenimiento local.")
+        if (operation == "descargar-lote" and not self.batch_executor.is_file()) or (operation == "ddjj-iva" and not self.executor.with_name('portal_iva_ddjj.py').is_file()):
+            await query.answer("Esta operación Portal IVA requiere mantenimiento local." if operation == 'ddjj-iva' else "El lote de Portal IVA requiere mantenimiento local.")
             text = (
-                "El lote de Libros IVA no pudo iniciarse porque falta su ejecutor local. "
+                ("DDJJ de IVA no pudo iniciarse porque falta su ejecutor local. " if operation == 'ddjj-iva' else "El lote de Libros IVA no pudo iniciarse porque falta su ejecutor local. ") +
                 "No se consultó ARCA y no se creó ningún borrador."
             )
             await self._send(adapter, chat_id, text, thread_id)
@@ -392,7 +397,7 @@ class PortalIvaFlow:
 
     async def callback(self, adapter, query, data: str, chat_id: Any, thread_id: Any, user_id: str) -> bool:
         key = self._key(chat_id, thread_id, user_id)
-        operation = {"pi:generar": "generar", "pi:descargar": "descargar-presentados", "pi:lote": "descargar-lote"}.get(data)
+        operation = {"pi:generar": "generar", "pi:descargar": "descargar-presentados", "pi:lote": "descargar-lote", "pi:ddjj": "ddjj-iva"}.get(data)
         if operation:
             await self.start(adapter, query, chat_id, thread_id, user_id, operation)
             return True
@@ -523,6 +528,9 @@ class PortalIvaFlow:
             self.tasks[key] = task
             task.add_done_callback(lambda done: self._release(key, done))
             return True
+        if state.stage == 'ddjj_period':
+            from plugins.platforms.telegram.portal_iva_ddjj_flow import receive_period
+            return await receive_period(self, adapter, message, state, key)
         if state.stage == "period":
             visible_period = (message.text or "").strip()
             if not _PERIOD.fullmatch(visible_period):
@@ -631,6 +639,10 @@ class PortalIvaFlow:
         state.scope_item = dict(item)
         state.stage = "period"
         prompt = "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
+        if state.operation == 'ddjj-iva':
+            from plugins.platforms.telegram.portal_iva_ddjj_flow import PROMPT
+            state.stage = 'ddjj_period'
+            prompt = f'Contribuyente: {state.nombre}.\n{PROMPT}'
         if state.operation == "descargar-presentados":
             prompt = f"Contribuyente: {state.nombre}.\n{prompt}"
         await self._send(adapter, chat_id, prompt, thread_id)

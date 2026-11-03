@@ -98,7 +98,7 @@ class _WorkflowMenuState:
 
 
 class FiscalQueryFlow:
-    START_CALLBACKS = frozenset(('fq:ccma', 'fq:sct', 'pi:generar', 'pi:descargar', 'pi:lote',
+    START_CALLBACKS = frozenset(('fq:ccma', 'fq:sct', 'pi:generar', 'pi:descargar', 'pi:lote', 'pi:ddjj',
                                 'ad:start', 'ps:protect:start', 'ps:unlock:start'))
 
     def __init__(self, catalog=None):

@@ -251,6 +251,9 @@ def test_implemented_tax_actions_reuse_existing_flows(monkeypatch):
         {"text": aligned_menu_label("arca_consultar", "📚", "Lote de Libros IVA"), "callback_data": "pi:lote"}
     ]
     assert TelegramAdapter._menu_panel_keyboard("arca_consultar")[3] == [
+        {"text": aligned_menu_label("arca_consultar", "🧾", "DDJJ de IVA a Excel"), "callback_data": "pi:ddjj"}
+    ]
+    assert TelegramAdapter._menu_panel_keyboard("arca_consultar")[4] == [
         {"text": aligned_menu_label("arca_consultar", "🪪", "Constancias"), "callback_data": "ci:start"}
     ]
     assert TelegramAdapter._menu_panel_keyboard("arca_preparar")[0] == [
@@ -280,6 +283,7 @@ def test_arca_query_fixed_buttons_have_explicit_visual_compensation():
         "Vencimientos": (12, 0),
         "CSV de períodos presentados": (1, 0),
         "Lote de Libros IVA": (7, 3),
+        "DDJJ de IVA a Excel": (7, 3),
         "CCMA Obligaciones y pagos": (1, 3),
         "SCT Estado de cumplimiento": (1, 2),
     }

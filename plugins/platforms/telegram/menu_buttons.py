@@ -4,6 +4,16 @@ MENU_SEPARATOR = "  "
 HAIR_SPACE = "\u200a"
 BRAILLE_PATTERN_BLANK = "\u2800"
 
+ARCA_CONSULTAS = (
+    ('📅', 'Vencimientos', 've:start'),
+    ('📥', 'CSV de períodos presentados', 'pi:descargar'),
+    ('📚', 'Lote de Libros IVA', 'pi:lote'),
+    ('🧾', 'DDJJ de IVA a Excel', 'pi:ddjj'),
+    ('🪪', 'Constancias', 'ci:start'),
+    ('📊', 'CCMA Obligaciones y pagos', 'fq:ccma'),
+    ('📋', 'SCT Estado de cumplimiento', 'fq:sct'),
+)
+
 # (page, visible text) -> (braille blanks, hair spaces).
 # Telegram centers every label independently. These suffixes compensate fixed
 # labels from the captured client evidence and remain subject to visual QA.
@@ -27,6 +37,8 @@ MENU_ALIGNMENT_PADDING = {
     ("arca_consultar", "Vencimientos"): (12, 0),
     ("arca_consultar", "CSV de períodos presentados"): (1, 0),
     ("arca_consultar", "Lote de Libros IVA"): (7, 3),
+    # Mismo ancho aproximado que Lote; pendiente comparación visual en cliente real.
+    ("arca_consultar", "DDJJ de IVA a Excel"): (7, 3),
     ("arca_consultar", "Constancias"): (13, 0),
     ("arca_consultar", "CCMA Obligaciones y pagos"): (1, 3),
     ("arca_consultar", "SCT Estado de cumplimiento"): (1, 2),

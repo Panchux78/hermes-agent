@@ -20,7 +20,7 @@ from datetime import datetime, timezone, UTC
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
 from hermes_cli import setup_platforms
 
-from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
+from plugins.platforms.telegram.menu_buttons import ARCA_CONSULTAS, aligned_menu_label, menu_label
 from plugins.platforms.telegram.contabot_access import telegram_user_enabled
 
 logger = logging.getLogger(__name__)
@@ -1151,18 +1151,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             back_label = menu_label("‹", "Organismos")
             back_page = "organismos"
         elif page == "arca_consultar":
-            rows = [
-                [InlineKeyboardButton(aligned_menu_label(page, "📅", "Vencimientos"), callback_data="ve:start")],
-                [
-                    InlineKeyboardButton(
-                        aligned_menu_label(page, "📥", "CSV de períodos presentados"), callback_data="pi:descargar"
-                    )
-                ],
-                [InlineKeyboardButton(aligned_menu_label(page, "📚", "Lote de Libros IVA"), callback_data="pi:lote")],
-                [InlineKeyboardButton(aligned_menu_label(page, "🪪", "Constancias"), callback_data="ci:start")],
-                [InlineKeyboardButton(aligned_menu_label(page, "📊", "CCMA Obligaciones y pagos"), callback_data="fq:ccma")],
-                [InlineKeyboardButton(aligned_menu_label(page, "📋", "SCT Estado de cumplimiento"), callback_data="fq:sct")],
-            ]
+            rows = [[InlineKeyboardButton(aligned_menu_label(page, icon, label), callback_data=callback)]
+                    for icon, label, callback in ARCA_CONSULTAS]
             back_label = menu_label("‹", "ARCA")
             back_page = "arca"
         elif page == "arca_preparar":
@@ -5606,12 +5596,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 user_name=cb["user_name"],
             ):
                 await query.answer(text="⛔ No estás autorizado para consultar Portal IVA.")
-                operation = {"pi:generar": "portal_iva_generar_csv", "pi:lote": "portal_iva_lote_presentados"}.get(data, "portal_iva_descargar_presentados")
+                operation = {"pi:generar": "portal_iva_generar_csv", "pi:lote": "portal_iva_lote_presentados", "pi:ddjj": "portal_iva_ddjj_iva_excel"}.get(data, "portal_iva_descargar_presentados")
                 await self._record_bot_rejection(query, operation=operation, code="usuario_no_autorizado", text="El usuario no estaba autorizado para operar Portal IVA.")
                 return
             if not self._portal_iva_flow.available():
                 await query.answer(text="Portal IVA no está disponible en este servidor.")
-                operation = {"pi:generar": "portal_iva_generar_csv", "pi:lote": "portal_iva_lote_presentados"}.get(data, "portal_iva_descargar_presentados")
+                operation = {"pi:generar": "portal_iva_generar_csv", "pi:lote": "portal_iva_lote_presentados", "pi:ddjj": "portal_iva_ddjj_iva_excel"}.get(data, "portal_iva_descargar_presentados")
                 await self._record_bot_rejection(query, operation=operation, code="runtime_no_disponible", text="Portal IVA no estaba disponible en el servidor.")
                 return
             if await self._portal_iva_flow.callback(
