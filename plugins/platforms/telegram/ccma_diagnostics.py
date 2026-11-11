@@ -14,7 +14,7 @@ CODES.update({'service_catalog_wait', 'service_entry_ready', 'service_catalog_lo
 CODES.update({'captcha_answer_received', 'captcha_image_changed', 'captcha_input_verified',
               'captcha_input_not_retained', 'login_fields_verified', 'login_fields_not_retained',
               'captcha_rejected', 'stage_evidence_unavailable'})
-CODES.update({'runner_exception', 'evidence_metadata_unavailable'})
+CODES.update({'runner_exception', 'evidence_metadata_unavailable', 'arca_certificado_no_verificable'})
 # Ágora #115: el guardado en Documentos puede fallar por cuota o por el módulo.
 CODES.update({'cuota_insuficiente', 'documento_no_guardado'})
 KINDS = {'TimeoutError', 'TimeoutException', 'Error', 'TypeError', 'ReferenceError', 'ValueError', 'OSError',
@@ -74,6 +74,7 @@ class Diagnostics:
         labels = {'preflight': 'controles previos', 'access': 'verificación del acceso', 'browser': 'apertura del navegador', 'login': 'ingreso a ARCA', 'service': 'apertura de CCMA', 'subject': 'selección del contribuyente', 'period': 'consulta del período', 'table': 'lectura de movimientos', 'source': 'validación de la fuente', 'workbook': 'generación del Excel', 'delivery': 'entrega del Excel'}
         reason = {'login_credentials_rejected': 'ARCA respondió «Clave o usuario incorrecto» para el acceso guardado', 'login_not_verified': 'el ingreso no confirmó la transición esperada', 'source_result_unchanged': 'la página sigue mostrando el resultado anterior', 'source_table_schema_unverified': 'no se encontró el encabezado esperado', 'source_table_header_ambiguous': 'hay encabezados repetidos', 'source_table_ambiguous': 'hay más de una tabla candidata', 'source_table_evaluation_failed': 'falló la lectura técnica de la tabla', 'source_frame_ambiguous': 'hay más de un marco de CCMA', 'subject_not_verified': 'no se pudo identificar de forma única el contribuyente', 'period_query_controls_missing': 'no se encontraron los controles del período', 'ccma_not_found': 'no se encontró la entrada a CCMA'}.get(safe, 'el paso no pudo completarse')
         reason = {
+            'arca_certificado_no_verificable': 'ARCA presentó un certificado que no se pudo verificar; no se ingresó y no se reintentó',
             'service_catalog_load_timeout': 'ARCA no terminó de cargar el catálogo de servicios',
             'service_open_timeout': 'el ingreso a ARCA se completó, pero CCMA no terminó de abrir después de seleccionarlo',
             'ccma_account_load_timeout': 'CCMA no terminó de cargar la cuenta y el período con identidad verificable',

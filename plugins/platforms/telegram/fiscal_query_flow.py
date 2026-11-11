@@ -49,6 +49,7 @@ def _fecha_consulta():
 
 def sct_failure_message(status: str, reference: str) -> str:
     reason = {
+        'arca_certificado_no_verificable': 'ARCA presentó un certificado que no se pudo verificar; no se ingresó y no se reintentó',
         'sct_subject_mismatch': 'el CUIT de la cuenta abierta en ARCA no coincide con el contribuyente solicitado',
         'sct_subject_identity_missing': 'ARCA no mostró un CUIT verificable en Información del usuario',
         'sct_subject_identity_ambiguous': 'ARCA mostró más de una identidad y no se pudo confirmar el contribuyente',
