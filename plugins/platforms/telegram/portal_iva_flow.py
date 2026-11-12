@@ -1227,12 +1227,14 @@ class PortalIvaFlow:
     @staticmethod
     def _importaciones_summary(result: dict[str, Any]) -> list[str]:
         lines = []
+        absent_lines = []
         for case in result.get('casos', []):
-            if case.get('importaciones_bienes_estado') == 'sin_solapa':
+            if (case.get('importaciones_bienes_estado') == 'sin_solapa'
+                    and case.get('importaciones_ausencia_verificada') is True and case.get('ok', True)):
                 period = str(case.get('periodo', ''))
                 if re.fullmatch(r'\d{4}-\d{2}', period):
                     period = f'{period[5:]}/{period[:4]}'
-                lines.append(f"• {case.get('cliente')} · {period} · ARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar.")
+                absent_lines.append(f"• {case.get('cliente')} · {period} · ARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar.")
                 continue
             if case.get('importaciones_bienes_estado') not in {'valida_sin_filas', 'valida_con_filas'}:
                 continue
@@ -1245,6 +1247,7 @@ class PortalIvaFlow:
             if re.fullmatch(r'\d{4}-\d{2}', period):
                 period = f'{period[5:]}/{period[:4]}'
             lines.append(f"• {case.get('cliente')} · {period} · Importaciones de bienes: {text}.")
+        lines = absent_lines + lines
         return lines[:8] + ([f'Los otros {len(lines) - 8} períodos están detallados en el consolidado.'] if len(lines) > 8 else [])
 
     @staticmethod
