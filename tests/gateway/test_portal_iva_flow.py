@@ -15,6 +15,39 @@ from plugins.platforms.telegram.fiscal_credentials import sanitized_psql_failure
 VALID_CUIT = "20123456786"
 
 
+def test_161_absence_is_explicit_and_not_empty_download():
+    case = {'cliente':'sintetico','periodo':'2026-05','archivos':[],
+            'importaciones_bienes_estado':'sin_solapa','importaciones_ausencia_verificada':True}
+    lines=PortalIvaFlow._importaciones_summary({'casos':[case]})
+    assert len(lines)==1
+    assert 'ARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar' in lines[0]
+    assert 'Reintent' not in lines[0] and 'sin despachos para el período' not in lines[0]
+
+
+def test_161_two_files_need_positive_absence(tmp_path):
+    flow=PortalIvaFlow(clients_root=tmp_path)
+    state=FlowState(user_id='7',nonce='a'*10,stage='running',slug='cliente',cuit='20123456789',period='2026-08')
+    result=_result(tmp_path,state)
+    result.update(importaciones_bienes_estado='sin_solapa',importaciones_ausencia_verificada=True)
+    assert len(flow._deliverables(state.slug,state.cuit,state.period,result,'descargar-presentados'))==2
+    result.pop('importaciones_ausencia_verificada')
+    with pytest.raises(RuntimeError,match='OUTPUT_INCOMPLETE'):
+        flow._deliverables(state.slug,state.cuit,state.period,result,'descargar-presentados')
+
+
+def test_161_absence_progress_removes_expected_file_not_count_as_download():
+    async def scenario():
+        flow=PortalIvaFlow()
+        state=FlowState(user_id='7',nonce='a'*10,stage='running',operation='descargar-lote',
+                        progress_message=FakeMessage(),selected_clients=[_scope_item(nombre='Sintético')],
+                        period_from='2026-01',period_to='2026-01',batch_months=1)
+        for book,status in [('ventas','descargado'),('compras','descargado'),('importaciones_bienes','sin_solapa')]:
+            await flow._batch_progress_event(state,'file',{'id_contribuyente':1,'periodo':'2026-01','tipo':book,'estado':status})
+        assert state.progress_message.edits[-1][0]=='Se descargaron 2/2 archivos de Sintético'
+    asyncio.run(scenario())
+
+
+
 @pytest.fixture(autouse=True)
 def verify_representation_mock(monkeypatch):
     verification = AsyncMock(return_value=None)

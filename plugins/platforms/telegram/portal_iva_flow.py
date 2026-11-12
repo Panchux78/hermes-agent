@@ -787,7 +787,7 @@ class PortalIvaFlow:
         files = state.batch_files.setdefault(contributor_id, {})
         if kind == "file":
             book, status = payload.get("tipo"), payload.get("estado")
-            if book not in _LIBROS or status not in {"descargado", "sin_libro", "error", "no_consultada"}:
+            if book not in _LIBROS or status not in {"descargado", "sin_libro", "sin_solapa", "error", "no_consultada"}:
                 return
             key = (period, book)
             if key in files:
@@ -796,7 +796,7 @@ class PortalIvaFlow:
         elif kind != "case_start":
             return
         downloaded = sum(value == "descargado" for value in files.values())
-        total = state.batch_months * len(_LIBROS) - sum(value == "sin_libro" for value in files.values())
+        total = state.batch_months * len(_LIBROS) - sum(value in {"sin_libro", "sin_solapa"} for value in files.values())
         no_books = sorted({period for (period, _), status in files.items() if status == "sin_libro"})
         errors = sorted((period, book) for (period, book), status in files.items() if status == "error")
 
@@ -1036,6 +1036,9 @@ class PortalIvaFlow:
             raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
         output: list[tuple[Path, int, str]] = []
         expected = set(_LIBROS if operation == 'descargar-presentados' else ('ventas', 'compras'))
+        if (operation == 'descargar-presentados' and result.get('importaciones_bienes_estado') == 'sin_solapa'
+                and result.get('importaciones_ausencia_verificada') is True):
+            expected = {'ventas', 'compras'}
         for item in files:
             if not isinstance(item, dict) or str(item.get("libro", "")) not in expected:
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
@@ -1225,6 +1228,12 @@ class PortalIvaFlow:
     def _importaciones_summary(result: dict[str, Any]) -> list[str]:
         lines = []
         for case in result.get('casos', []):
+            if case.get('importaciones_bienes_estado') == 'sin_solapa':
+                period = str(case.get('periodo', ''))
+                if re.fullmatch(r'\d{4}-\d{2}', period):
+                    period = f'{period[5:]}/{period[:4]}'
+                lines.append(f"• {case.get('cliente')} · {period} · ARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar.")
+                continue
             if case.get('importaciones_bienes_estado') not in {'valida_sin_filas', 'valida_con_filas'}:
                 continue
             record = next((r for r in case.get('archivos', []) if r.get('libro') == 'importaciones_bienes'), None)
@@ -1556,7 +1565,7 @@ class PortalIvaFlow:
             suffix = f"\n{detail}" if detail else ""
             delivered = sum(value == "descargado" for files in state.batch_files.values() for value in files.values())
             expected = (len(verified_clients) * len(periods) * len(_LIBROS)
-                        - sum(value == "sin_libro" for files in state.batch_files.values()
+                        - sum(value in {"sin_libro", "sin_solapa"} for files in state.batch_files.values()
                               for value in files.values()))
             errors = sum(value == "error" for files in state.batch_files.values()
                          for value in files.values())
@@ -1788,6 +1797,14 @@ class PortalIvaFlow:
             if self.history is not None and history_run is not None:
                 source_by_label = {label: (path, rows) for path, rows, label in source_deliverables}
                 for label in (_LIBROS if state.operation == "descargar-presentados" else ("ventas", "compras")):
+                    if label == 'importaciones_bienes' and result.get('importaciones_bienes_estado') == 'sin_solapa':
+                        await self.history.finish_item(
+                            history_run, history_items[label], state='completado', reason_code='sin_solapa',
+                            reason_text='ARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar.',
+                            effects=self._history_effects(state.operation, prepared=False),
+                            contributor_id=contributor_id, period=period)
+                        history_finished.add(history_items[label])
+                        continue
                     path, rows = source_by_label[label]
                     item_state, reason_code, reason_text = self._history_outcome(label, safe_warnings)
                     await self.history.finish_item(
@@ -1799,7 +1816,10 @@ class PortalIvaFlow:
                     )
                     history_finished.add(history_items[label])
                 await self.history.close(history_run)
-            await self._edit_progress(state, self._completion_message(deliverables))
+            completion = self._completion_message(deliverables)
+            if result.get('importaciones_bienes_estado') == 'sin_solapa':
+                completion += '\nARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar.'
+            await self._edit_progress(state, completion)
         except asyncio.CancelledError:
             state.cancelled = True
             if proc is not None and proc.returncode is None:
