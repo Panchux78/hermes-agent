@@ -22,6 +22,10 @@ def test_161_absence_is_explicit_and_not_empty_download():
     assert len(lines)==1
     assert 'ARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar' in lines[0]
     assert 'Reintent' not in lines[0] and 'sin despachos para el período' not in lines[0]
+    normal={**case,'importaciones_bienes_estado':'valida_sin_filas',
+            'archivos':[{'libro':'importaciones_bienes','filas':0}]}
+    summary=PortalIvaFlow._importaciones_summary({'casos':[normal]*10+[case]*4})
+    assert all('ARCA no ofrece la solapa' in text for text in summary[:4])
 
 
 def test_161_two_files_need_positive_absence(tmp_path):
