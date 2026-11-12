@@ -1767,7 +1767,8 @@ class PortalIvaFlow:
             if state.cancelled:
                 return
             state.stage = "delivering"
-            await self._edit_progress(state, ("Portal IVA completado. Entregando Ventas, Compras e Importaciones de bienes…" if state.operation == "descargar-presentados" else "Portal IVA completado. Entregando Ventas y Compras…"))
+            has_imports = any(label == 'importaciones_bienes' for _, _, label in source_deliverables)
+            await self._edit_progress(state, ("Portal IVA completado. Entregando Ventas, Compras e Importaciones de bienes…" if has_imports else "Portal IVA completado. Entregando Ventas y Compras…"))
             for path, rows, label in deliverables:
                 delivery = await adapter.send_document(
                     chat_id=str(chat_id), file_path=str(path), file_name=path.name,
