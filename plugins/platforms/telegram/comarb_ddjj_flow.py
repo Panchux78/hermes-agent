@@ -42,8 +42,10 @@ class ComarbPresentadasFlow(ComarbDeduccionesFlow):
         state.offer = None
         instruction = ('Ingresá un período MM/AAAA, por ejemplo 09/2026.'
                        if state.modo == 'periodo' else HELP)
+        workbook = ('Un único Excel; sólo hojas de período.' if state.modo == 'periodo'
+                    else 'Un único Excel con Resumen y hojas de período.')
         await adapter._bot.send_message(chat_id=chat_id,
-            text=f"{item['nombre']}.\n{instruction}\nUn único Excel; sólo hojas de período.",
+            text=f"{item['nombre']}.\n{instruction}\n{workbook}",
             reply_markup=self._cancel_keyboard(state))
 
     async def callback(self, adapter, query, data, chat_id, thread_id, user_id):
@@ -145,8 +147,9 @@ class ComarbPresentadasFlow(ComarbDeduccionesFlow):
             return True
         jid = int(answer['id_lectura'])
         head = TITLE+' · '+state.contributor['nombre']
+        summary = '\nIncluye la hoja Resumen con los meses del lote.' if len(periods) >= 2 else ''
         status = await msg.reply_text(head+'\nPeríodos: '+', '.join(periods)+
-            '\nEn espera de la consulta. Recibirás un único Excel con las hojas MM-AAAA.',
+            '\nEn espera de la consulta. Recibirás un único Excel con las hojas MM-AAAA.'+summary,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(menu_label('❌','Cancelar'),callback_data=f'dj:stop:{jid}')]]))
         self.watchers[jid] = asyncio.create_task(self._watch(status, actor, jid, head, len(periods)))
         return True
@@ -200,6 +203,8 @@ def resumen_presentadas(row):
         lines.append('• '+item['periodo']+(': sin DDJJ presentada, verificado en SIFERE.'
             if item['estado'] == 'sin_ddjj_verificada' else ': F'+str(item['formulario'])+' · secuencia '+str(item['secuencia'])))
     lines.append(f"Un único Excel, {len(periods)} hoja(s) de período; también en Documentos.")
+    if len(periods) >= 2:
+        lines.append('Incluye la hoja Resumen con los meses del lote.')
     return '\n'.join(lines)
 
 
@@ -265,8 +270,9 @@ class ComarbPresentadasEntregas:
                         continue
                     with path.open('rb') as stream:
                         await transition('enviando_archivo')
+                        sheets = 'Resumen y hojas de período' if len(row['periodos']) >= 2 else 'sólo hojas de período'
                         sent = await bot.send_document(chat_id=chat,document=stream,filename=path.name,
-                            caption='DDJJ presentadas · sólo hojas de período · también en Documentos')
+                            caption='DDJJ presentadas · '+sheets+' · también en Documentos')
                     await transition('entregada', sent)
                 else:
                     await transition('entregada')

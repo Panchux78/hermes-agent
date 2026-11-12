@@ -41,6 +41,25 @@ class DeliveryTests(IsolatedAsyncioTestCase):
         await asyncio.gather(self.deliver.poll(self.bot),self.deliver.poll(self.bot))
         self.bot.send_message.assert_awaited_once();self.bot.send_document.assert_awaited_once()
         self.assertEqual(self.transitions,['enviando_aviso','aviso_enviado','enviando_archivo','entregada'])
+        self.assertNotIn('Resumen',self.bot.send_message.await_args.kwargs['text'])
+        self.assertEqual(self.bot.send_document.await_args.kwargs['caption'],
+            'DDJJ presentadas · sólo hojas de período · también en Documentos')
+
+    async def test_lote_entrega_mismo_archivo_y_anuncia_hoja_resumen(self):
+        periods=['01/2026','02/2026']
+        self.row['periodos']=periods
+        self.row['resultado']={'periodos_solicitados':periods,'mensuales':[
+            dict(periodo='01/2026',estado='presentada',formulario='5862',secuencia=1),
+            dict(periodo='02/2026',estado='sin_ddjj_verificada')]}
+        await self.deliver.poll(self.bot)
+        self.bot.send_message.assert_awaited_once();self.bot.send_document.assert_awaited_once()
+        self.assertIn('Incluye la hoja Resumen con los meses del lote.',
+            self.bot.send_message.await_args.kwargs['text'])
+        sent=self.bot.send_document.await_args.kwargs
+        self.assertEqual(sent['filename'],self.path.name)
+        self.assertEqual(sent['caption'],
+            'DDJJ presentadas · Resumen y hojas de período · también en Documentos')
+        self.assertEqual(self.transitions,['enviando_aviso','aviso_enviado','enviando_archivo','entregada'])
 
     async def test_reinicio_despues_del_aviso_no_lo_repite(self):
         self.phase='aviso_enviado'

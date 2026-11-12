@@ -62,6 +62,22 @@ class StateRegression(unittest.IsolatedAsyncioTestCase):
         await self.start('periodo');await self.flow.text(self.adapter,message('sintética'))
         await self.flow.text(self.adapter,message('09/2026'))
         self.assertEqual(len(self.flow.sql),1);self.assertIn('["09/2026"]',self.flow.sql[0])
+    async def test_anuncia_resumen_solo_para_lote(self):
+        for mode,periods in (('lote','01/2025 hasta 02/2025'),('periodo','01/2025')):
+            with self.subTest(mode=mode):
+                await self.start(mode)
+                await self.flow.text(self.adapter,message('sintética'))
+                prompt=self.adapter._bot.send_message.await_args.kwargs['text']
+                msg=message(periods)
+                await self.flow.text(self.adapter,msg)
+                notice=msg.reply_text.await_args.args[0]
+                if mode=='lote':
+                    self.assertIn('Resumen',prompt)
+                    self.assertIn('Resumen',notice)
+                    self.assertNotIn('sólo hojas',prompt)
+                else:
+                    self.assertNotIn('Resumen',prompt)
+                    self.assertNotIn('Resumen',notice)
     async def test_rango_encola_un_trabajo_con_lista_completa(self):
         await self.start();await self.flow.text(self.adapter,message('sintética'))
         await self.flow.text(self.adapter,message('01/2025 hasta 04/2025'))
@@ -129,6 +145,18 @@ class StateRegression(unittest.IsolatedAsyncioTestCase):
         flow.callback.assert_not_called()
 
 class DeliverySummaryRegression(unittest.TestCase):
+    def test_resumen_se_anuncia_en_lote_aun_con_meses_sin_ddjj(self):
+        periods=['01/2025','02/2025']
+        for states in (('presentada','sin_ddjj_verificada'),('sin_ddjj_verificada','sin_ddjj_verificada')):
+            with self.subTest(states=states):
+                monthly=[{'periodo':period,'estado':state,'formulario':'5862','secuencia':0}
+                         for period,state in zip(periods,states)]
+                text=resumen_presentadas({'estado':'terminada','nombre_legal':'Sintética','periodos':periods,
+                    'resultado':{'periodos_solicitados':periods,'mensuales':monthly}})
+                self.assertEqual(text.count('Incluye la hoja Resumen con los meses del lote.'),1)
+                self.assertIn('2 hoja(s) de período',text)
+                self.assertNotIn('$',text)
+
     def test_faltantes_no_se_anuncian_como_completo(self):
         with self.assertRaises(ValueError):
             resumen_presentadas({'estado':'terminada','nombre_legal':'Sintética','periodos':['01/2025','08/2025'],
@@ -137,6 +165,7 @@ class DeliverySummaryRegression(unittest.TestCase):
         text=resumen_presentadas({'estado':'terminada','nombre_legal':'Sintética','periodos':['01/2025'],
             'resultado':{'periodos_solicitados':['01/2025'],'mensuales':[{'periodo':'01/2025','estado':'sin_ddjj_verificada'}]}})
         self.assertIn('sin DDJJ presentada, verificado',text);self.assertNotIn('$',text)
+        self.assertNotIn('Resumen',text)
         self.assertIn('No se entregó un lote completo',resumen_presentadas({'estado':'error','motivo':'Fallo sintético'}))
 
 if __name__=='__main__':unittest.main()
