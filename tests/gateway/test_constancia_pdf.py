@@ -2,11 +2,83 @@
 
 import asyncio
 import base64
+import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from plugins.platforms.telegram.constancias_flow import ConstanciasFlow, State
 from plugins.platforms.telegram.constancia_pdf import ConstanciaPdfSession, FORM
+from plugins.platforms.telegram.constancia_pdf import _arca_browser
+
+
+def test_public_pdf_uses_shared_arca_browser_and_closes_profile():
+    driver = MagicMock()
+    driver.find_element.return_value.get_attribute.side_effect = lambda key: (
+        "token" if key == "value" else "data:image/png;base64,AA==")
+    driver.find_element.return_value.screenshot_as_png = b"current-captcha"
+    browser = MagicMock()
+    browser.__enter__.return_value = driver
+    with patch("plugins.platforms.telegram.constancia_pdf._arca_browser", create=True,
+               return_value=browser) as shared, \
+         patch("selenium.webdriver.Firefox", return_value=driver) as legacy:
+        session = ConstanciaPdfSession()
+        assert session.start() == b"current-captcha"
+        shared.assert_called_once_with()
+        legacy.assert_not_called()
+        driver.set_page_load_timeout.assert_called_once_with(30)
+        driver.get.assert_called_once_with(FORM)
+        session.close()
+        session.close()
+        browser.__exit__.assert_called_once_with(None, None, None)
+        assert session.driver is None
+
+
+def test_public_pdf_failed_start_closes_shared_profile():
+    driver = MagicMock()
+    driver.get.side_effect = RuntimeError("synthetic loading failure")
+    browser = MagicMock()
+    browser.__enter__.return_value = driver
+    with patch("plugins.platforms.telegram.constancia_pdf._arca_browser", create=True,
+               return_value=browser), \
+         patch("selenium.webdriver.Firefox", return_value=driver):
+        session = ConstanciaPdfSession()
+        with pytest.raises(RuntimeError, match="synthetic loading failure"):
+            session.start()
+        browser.__exit__.assert_called_once_with(None, None, None)
+        assert session.driver is None
+
+
+def test_public_pdf_provider_is_loaded_from_configured_installed_shared(tmp_path, monkeypatch):
+    root = tmp_path / "skills/shared/arca"
+    root.mkdir(parents=True)
+    factory = MagicMock()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch.dict(sys.modules, {"arca_browser": SimpleNamespace(firefox=factory)}), \
+         patch.object(sys, "path", list(sys.path)):
+        assert _arca_browser() is factory.return_value
+        assert sys.path[0] == str(root)
+        factory.assert_called_once_with()
+
+
+def test_public_pdf_missing_shared_does_not_fallback_to_unconfigured_firefox(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("selenium.webdriver.Firefox") as legacy:
+        with pytest.raises(RuntimeError, match="constancia_navegador_compartido_no_disponible"):
+            _arca_browser()
+        legacy.assert_not_called()
+
+
+def test_public_pdf_failed_browser_creation_leaves_no_session():
+    browser = MagicMock()
+    browser.__enter__.side_effect = RuntimeError("synthetic profile failure")
+    with patch("plugins.platforms.telegram.constancia_pdf._arca_browser", return_value=browser):
+        session = ConstanciaPdfSession()
+        with pytest.raises(RuntimeError, match="synthetic profile failure"):
+            session.start()
+        browser.__exit__.assert_called_once_with(None, None, None)
+        assert session.driver is None
 
 
 def test_public_form_rejects_wrong_identity_before_submission():
