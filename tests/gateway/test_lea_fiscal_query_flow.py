@@ -85,6 +85,7 @@ async def test_selection_period_and_private_dispatch(flow, action):
     flow._resolve_sct_credential_line.assert_not_awaited()
     assert kwargs['period_from'] == ('01/2026' if action == 'ccma' else '20260000')
     if action == 'sct':
+        assert kwargs['period_label'] == '2026'
         assert kwargs['client_slug'] == 'cliente-prueba'
         assert kwargs['client_cuit'] == '20123456786'
 

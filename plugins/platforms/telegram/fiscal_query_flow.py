@@ -720,7 +720,9 @@ class FiscalQueryFlow:
     async def _submit_period(self, chat_id, state_key, state, selection):
         period = ((selection.visible[0], selection.visible[-1])
                   if state.skill_command == 'ccma_obligaciones_pagos' else selection.sct())
-        text = selection.summary
+        text = (selection.year or ('-' if selection.form == 'all' else
+                '-'.join((selection.visible[0], selection.visible[-1]))
+                if selection.form == 'range' else selection.visible[0]))
         try:
             if not await self._select(chat_id, state_key, state, state.contributor_id):
                 if self._workflow_menu_state.get(state_key) is state:
