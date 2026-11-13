@@ -24,13 +24,17 @@ def sanitized_psql_failure(stderr: str | bytes) -> tuple[str, str]:
 def lookup_connection():
     """Same portable profile, without privileged lookup fallback."""
     from contabot_pg import psql_invocation
-    return psql_invocation('lookup')
+    from plugins.platforms.telegram.execution_origin import environment
+    command, env = psql_invocation('lookup')
+    return command, environment(env)
 
 
 def verification_connection():
     """Constrained write capability for verified fiscal state transitions."""
     from contabot_pg import psql_invocation
-    return psql_invocation('verification')
+    from plugins.platforms.telegram.execution_origin import environment
+    command, env = psql_invocation('verification')
+    return command, environment(env)
 
 
 class FiscalDatabaseError(RuntimeError):
@@ -72,7 +76,9 @@ async def _query(sql, *, capability='fiscal'):
     process = None
     try:
         from contabot_pg import psql_invocation
+        from plugins.platforms.telegram.execution_origin import environment as with_origin
         command, environment = psql_invocation(capability)  # mandatory profile; NO sudo fallback
+        environment = with_origin(environment)
         process = await asyncio.create_subprocess_exec(
             *command, '-qAt', '-v', 'VERBOSITY=sqlstate', '-c', sql, env=environment,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

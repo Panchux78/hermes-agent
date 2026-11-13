@@ -3448,19 +3448,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
         table = getattr(app, "handlers", None)
         core_before = {g: len(hs) for g, hs in table.items()} if isinstance(table, dict) else {}
-        app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text_message))
-        app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
+        from plugins.platforms.telegram.execution_origin import incoming
+        app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, incoming(self._handle_text_message)))
+        app.add_handler(TelegramMessageHandler(filters.COMMAND, incoming(self._handle_command)))
         app.add_handler(TelegramMessageHandler(
-            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
+            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), incoming(self._handle_location_message)))
         app.add_handler(TelegramMessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-            self._handle_media_message))
+            incoming(self._handle_media_message)))
         # Topic-creation service messages carry the new topic id and no text, so no other handler sees
         # them. They are a routing signal only (never an agent turn): see _handle_forum_topic_created.
         created_filter = getattr(getattr(filters, "StatusUpdate", None), "FORUM_TOPIC_CREATED", None)
         if created_filter is not None:
             app.add_handler(TelegramMessageHandler(created_filter, self._handle_forum_topic_created))
-        app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        app.add_handler(CallbackQueryHandler(incoming(self._handle_callback_query)))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
         # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
@@ -3829,16 +3830,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             self._start_post_connect_housekeeping()
             bridge = getattr(self, '_panel_captcha_bridge', None)
             if bridge is not None:
-                self._restart_task_attr('_panel_captcha_task', bridge.run(self))
+                from plugins.platforms.telegram.execution_origin import programmed
+                self._restart_task_attr('_panel_captcha_task', programmed(bridge.run(self),'captcha_puente'))
             deliveries = getattr(self, '_comarb_deducciones_entregas', None)
             if deliveries is not None:
-                self._restart_task_attr('_comarb_deducciones_task', deliveries.run(self))
+                from plugins.platforms.telegram.execution_origin import programmed
+                self._restart_task_attr('_comarb_deducciones_task', programmed(deliveries.run(self),'comarb_entregas'))
             presentadas = getattr(self, '_comarb_presentadas_entregas', None)
             if presentadas is not None:
-                self._restart_task_attr('_comarb_presentadas_task', presentadas.run(self))
+                from plugins.platforms.telegram.execution_origin import programmed
+                self._restart_task_attr('_comarb_presentadas_task', programmed(presentadas.run(self),'comarb_presentadas_entregas'))
             notices=getattr(self,'_vencimientos_avisos',None)
             if notices is not None:
-                self._restart_task_attr('_vencimientos_avisos_task',notices.run(self))
+                from plugins.platforms.telegram.execution_origin import programmed
+                self._restart_task_attr('_vencimientos_avisos_task',programmed(notices.run(self),'avisos_telegram'))
             return True
         except Exception as e:
             self._release_platform_lock()

@@ -40,7 +40,8 @@ def browser_environment(home, *, python=None):
         if value != '0' and (not Path(value).is_absolute() or '..' in Path(value).parts):
             raise RuntimeError('fiscal_browser_missing')
         environment['PLAYWRIGHT_BROWSERS_PATH'] = value
-    return environment
+    from plugins.platforms.telegram.execution_origin import environment as origin_environment
+    return origin_environment(environment)
 
 
 async def _read_bounded(stream):

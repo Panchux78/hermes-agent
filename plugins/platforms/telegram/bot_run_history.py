@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from plugins.platforms.telegram.execution_origin import environment
 
 
 _DEFAULT_PROJECT = Path("/home/pancho/hermes-workspace/Contabot")
@@ -47,7 +48,7 @@ class BotRunHistory:
         proc = await asyncio.create_subprocess_exec(
             sys.executable, str(self.script), *arguments,
             cwd=str(self.project_dir), stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE, env=environment(),
         )
         try:
             raw, _ = await asyncio.wait_for(proc.communicate(), timeout=20)

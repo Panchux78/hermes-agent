@@ -87,7 +87,8 @@ class VencimientosFlow:
         args = ["psql", "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-h", values["host"],
                 "-p", values["port"], "-U", values["user"], "-d", values["database"]]
         env = os.environ.copy(); env["PGPASSFILE"] = values["pgpass"]
-        return args, env
+        from plugins.platforms.telegram.execution_origin import environment
+        return args, environment(env)
 
     @classmethod
     def _query(cls, sql: str) -> list[dict[str, Any]]:

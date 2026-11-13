@@ -212,6 +212,8 @@ class PortalIvaFlow:
     @staticmethod
     def _run_query(sql: str, connection) -> list[dict[str, Any]]:
         command, environment = connection()
+        from plugins.platforms.telegram.execution_origin import environment as origin_environment
+        environment = origin_environment(environment)
         run = subprocess.run(
             [*command, "-At", "-v", "VERBOSITY=sqlstate", "-c", sql], env=environment,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False,
