@@ -5601,12 +5601,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 user_name=cb["user_name"],
             ):
                 await query.answer(text="⛔ No estás autorizado para consultar Portal IVA.")
-                operation = {"pi:generar": "portal_iva_generar_csv", "pi:lote": "portal_iva_lote_presentados", "pi:ddjj": "portal_iva_ddjj_iva_excel"}.get(data, "portal_iva_descargar_presentados")
+                operation = {"pi:generar": "portal_iva_generar_csv", "pi:lote": "portal_iva_lote_presentados", "pi:ddjj": "portal_iva_ddjj_iva_excel", "pi:mr": "arca_mis_retenciones"}.get(data, "portal_iva_descargar_presentados")
                 await self._record_bot_rejection(query, operation=operation, code="usuario_no_autorizado", text="El usuario no estaba autorizado para operar Portal IVA.")
                 return
             if not self._portal_iva_flow.available():
                 await query.answer(text="Portal IVA no está disponible en este servidor.")
-                operation = {"pi:generar": "portal_iva_generar_csv", "pi:lote": "portal_iva_lote_presentados", "pi:ddjj": "portal_iva_ddjj_iva_excel"}.get(data, "portal_iva_descargar_presentados")
+                operation = {"pi:generar": "portal_iva_generar_csv", "pi:lote": "portal_iva_lote_presentados", "pi:ddjj": "portal_iva_ddjj_iva_excel", "pi:mr": "arca_mis_retenciones"}.get(data, "portal_iva_descargar_presentados")
                 await self._record_bot_rejection(query, operation=operation, code="runtime_no_disponible", text="Portal IVA no estaba disponible en el servidor.")
                 return
             if await self._portal_iva_flow.callback(

@@ -173,11 +173,13 @@ def test_arca_query_alignment_preserves_actions_labels_and_navigation(monkeypatc
         ("ve:start", "📅", "Vencimientos"),
         ("pi:descargar", "📥", "CSV de períodos presentados"),
         ("pi:lote", "📚", "Lote de Libros IVA"),
+        ("pi:ddjj", "🧾", "DDJJ de IVA a Excel"),
         ("ci:start", "🪪", "Constancias"),
         ("fq:ccma", "📊", "CCMA Obligaciones y pagos"),
         ("fq:sct", "📋", "SCT Estado de cumplimiento"),
+        ("pi:mr", "🧮", "Mis Retenciones"),
     ]
-    assert [len(row) for row in rows] == [1, 1, 1, 1, 1, 1, 2]
+    assert [len(row) for row in rows] == [1] * len(actions) + [2]
     for row, (callback, icon, text) in zip(rows[:-1], actions):
         button = row[0]
         assert button["callback_data"] == callback

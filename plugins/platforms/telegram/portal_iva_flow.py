@@ -124,6 +124,10 @@ class FlowState:
     batch_months: int = 0
     batch_files: dict[int, dict[tuple[str, str], str]] = field(default_factory=dict)
     ddjj_periods: list[str] = field(default_factory=list)
+    mr_impuesto: str | None = None
+    mr_tipo: str | None = None
+    mr_desde: str | None = None
+    mr_hasta: str | None = None
 
 
 class PortalIvaFlow:
@@ -169,6 +173,9 @@ class PortalIvaFlow:
         if stage.startswith('ddjj:'):
             from plugins.platforms.telegram.portal_iva_ddjj_flow import progress
             return progress(stage)
+        if stage.startswith('mr:'):
+            from plugins.platforms.telegram.mis_retenciones_flow import progress
+            return progress(stage)
         return {
             "generar": "Generando CSV de período nuevo…",
             "buscar_presentado": "Buscando presentación…",
@@ -196,6 +203,7 @@ class PortalIvaFlow:
             return
         operation_code = (
             "portal_iva_ddjj_iva_excel" if operation == "ddjj-iva" else
+            "arca_mis_retenciones" if operation == "mis-retenciones" else
             "portal_iva_generar_csv" if operation == "generar"
             else "portal_iva_lote_presentados" if operation == "descargar-lote"
             else "portal_iva_descargar_presentados"
@@ -327,7 +335,7 @@ class PortalIvaFlow:
         )
 
     async def start(self, adapter, query, chat_id: Any, thread_id: Any, user_id: str, operation: str) -> None:
-        if operation not in {"generar", "descargar-presentados", "descargar-lote", "ddjj-iva"}:
+        if operation not in {"generar", "descargar-presentados", "descargar-lote", "ddjj-iva", "mis-retenciones"}:
             await query.answer("Operación Portal IVA inválida.")
             return
         key = self._key(chat_id, thread_id, user_id)
@@ -368,6 +376,14 @@ class PortalIvaFlow:
                 code="base_fiscal_no_disponible", text=text,
             )
             return
+        if operation == "mis-retenciones" and not self.executor.with_name('mis_retenciones.py').is_file():
+            await query.answer("Mis Retenciones requiere mantenimiento local.")
+            text = "Mis Retenciones no pudo iniciarse porque falta su ejecutor local. No se consultó ARCA."
+            await self._send(adapter, chat_id, text, thread_id)
+            await self._reject(user_id=user_id, operation=operation,
+                key_material=f"runtime:{getattr(getattr(query, 'message', None), 'message_id', 0)}:{operation}",
+                code="ejecutor_no_disponible", text=text)
+            return
         if (operation == "descargar-lote" and not self.batch_executor.is_file()) or (operation == "ddjj-iva" and not self.executor.with_name('portal_iva_ddjj.py').is_file()):
             await query.answer("Esta operación Portal IVA requiere mantenimiento local." if operation == 'ddjj-iva' else "El lote de Portal IVA requiere mantenimiento local.")
             text = (
@@ -388,7 +404,7 @@ class PortalIvaFlow:
             progress_label=("Generando CSV de período nuevo…" if operation == "generar" else "Buscando presentación…"),
             created_at=time.monotonic(),
         )
-        await query.answer("Portal IVA")
+        await query.answer("Mis Retenciones" if operation == "mis-retenciones" else "Portal IVA")
         prompt = CONTRIBUTOR_PROMPT
         if operation == "descargar-lote":
             prompt += "\n\n" + _UNVERIFIED_KEY_HELP
@@ -399,10 +415,13 @@ class PortalIvaFlow:
 
     async def callback(self, adapter, query, data: str, chat_id: Any, thread_id: Any, user_id: str) -> bool:
         key = self._key(chat_id, thread_id, user_id)
-        operation = {"pi:generar": "generar", "pi:descargar": "descargar-presentados", "pi:lote": "descargar-lote", "pi:ddjj": "ddjj-iva"}.get(data)
+        operation = {"pi:generar": "generar", "pi:descargar": "descargar-presentados", "pi:lote": "descargar-lote", "pi:ddjj": "ddjj-iva", "pi:mr": "mis-retenciones"}.get(data)
         if operation:
             await self.start(adapter, query, chat_id, thread_id, user_id, operation)
             return True
+        if data.startswith(("pi:mri:", "pi:mrt:")):
+            from plugins.platforms.telegram.mis_retenciones_flow import callback as mis_retenciones_callback
+            return await mis_retenciones_callback(self, adapter, query, data, chat_id, thread_id, key)
         if data == "pi:start":
             await query.answer("Elegí una operación desde Portal IVA.")
             return True
@@ -533,6 +552,9 @@ class PortalIvaFlow:
         if state.stage == 'ddjj_period':
             from plugins.platforms.telegram.portal_iva_ddjj_flow import receive_period
             return await receive_period(self, adapter, message, state, key)
+        if state.stage == 'mr_period':
+            from plugins.platforms.telegram.mis_retenciones_flow import receive_period as mis_retenciones_period
+            return await mis_retenciones_period(self, adapter, message, state, key)
         if state.stage == "period":
             visible_period = (message.text or "").strip()
             if not _PERIOD.fullmatch(visible_period):
@@ -641,6 +663,10 @@ class PortalIvaFlow:
         state.scope_item = dict(item)
         state.stage = "period"
         prompt = "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
+        if state.operation == 'mis-retenciones':
+            from plugins.platforms.telegram.mis_retenciones_flow import after_contributor
+            await after_contributor(self, adapter, chat_id, thread_id, state)
+            return
         if state.operation == 'ddjj-iva':
             from plugins.platforms.telegram.portal_iva_ddjj_flow import PROMPT
             state.stage = 'ddjj_period'
