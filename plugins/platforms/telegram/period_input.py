@@ -163,7 +163,7 @@ def _validate_months(indexes, form, spec, today):
         raise ValueError(f'El máximo es {spec.max_months} meses. Acortá el rango.')
     months = tuple(f'{n // 12:04d}-{n % 12 + 1:02d}' for n in indexes)
     if any(not spec.min_year <= int(m[:4]) <= spec.max_year for m in months):
-        raise ValueError(f'Hay datos desde {spec.min_year} hasta {spec.max_year}. Revisá el período.')
+        raise ValueError(f'Esta consulta admite períodos desde {spec.min_year} hasta {spec.max_year}. Revisá el período.')
     today = today or datetime.now(ZoneInfo('America/Argentina/Buenos_Aires')).date()
     if spec.closed and any(date(int(m[:4]), int(m[5:]), 1) >= today.replace(day=1) for m in months):
         raise ValueError('Ingresá sólo meses ya cerrados.')

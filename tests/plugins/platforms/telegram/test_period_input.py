@@ -62,6 +62,8 @@ def test_policy_limits_and_calendar_boundaries():
     assert len(parse_period('01/2027', 'ddjj-iva').months) == 1  # No nueva regla fiscal.
     with pytest.raises(ValueError, match='4096'):
         parse_period('1' * 4097, 'comarb-lote')
+    with pytest.raises(ValueError, match='admite períodos desde 2010'):
+        parse_period('12/2009', 'comarb-periodo')
 
 
 def test_candidate_second_text_edit_duplicate_cancel_expiry_and_new_request():
