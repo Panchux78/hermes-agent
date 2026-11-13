@@ -12,7 +12,7 @@ from telegram.error import TelegramError
 from plugins.platforms.telegram.fiscal_credentials import verify_representation
 
 OPERATION = 'portal_iva_ddjj_iva_excel'
-PROMPT = 'Ingresá MM/AAAA o MM/AAAA a MM/AAAA (máximo 12 meses). Ejemplo: 09/2026.'
+PROMPT = 'Ingresá MM/AAAA o MM/AAAA a MM/AAAA (máximo 36 meses). Ejemplo: 09/2026.'
 _MONTH = r'(0[1-9]|1[0-2])/[0-9]{4}'
 
 
@@ -23,7 +23,7 @@ def periods(text):
     start, end = parts[0], parts[-1]
     first = int(start[3:]) * 12 + int(start[:2]) - 1
     last = int(end[3:]) * 12 + int(end[:2]) - 1
-    if not 0 <= last - first < 12:
+    if not 0 <= last - first < 36:
         raise ValueError('DDJJ_RANGO_INVALIDO')
     return [f'{n//12:04d}-{n%12+1:02d}' for n in range(first, last+1)]
 
@@ -68,6 +68,17 @@ async def receive_period(flow, adapter, message, state, key):
     return True
 
 
+def validate_case(case):
+    if case.get('estado') not in ('completado', 'no_presentado', 'no_consultada', 'fallido', 'no_soportado'):
+        raise RuntimeError('DDJJ_ESTADO_INVALIDO')
+    if case['estado'] != 'completado' and not case.get('motivo_texto'):
+        raise RuntimeError('DDJJ_MOTIVO_FALTANTE')
+    if case['estado'] == 'no_soportado':
+        form = (case.get('presentacion') or {}).get('formulario')
+        if not isinstance(form, str) or not re.fullmatch(r'[0-9]{3,5}', form) or form == '2051':
+            raise RuntimeError('DDJJ_FORMULARIO_NO_VERIFICADO')
+
+
 def validate_result(flow, state, result):
     if (result.get('operacion') != OPERATION or result.get('slug') != state.slug
             or result.get('cuit') != state.cuit or result.get('id_contribuyente') != state.contributor_id
@@ -77,10 +88,7 @@ def validate_result(flow, state, result):
     if not isinstance(cases, list) or [c.get('periodo') for c in cases] != state.ddjj_periods:
         raise RuntimeError('DDJJ_PERIODOS_NO_COINCIDEN')
     for case in cases:
-        if case.get('estado') not in ('completado', 'no_presentado', 'no_consultada', 'fallido'):
-            raise RuntimeError('DDJJ_ESTADO_INVALIDO')
-        if case['estado'] != 'completado' and not case.get('motivo_texto'):
-            raise RuntimeError('DDJJ_MOTIVO_FALTANTE')
+        validate_case(case)
     expected = any(c['estado'] == 'completado' for c in cases)
     record = result.get('xlsx')
     if not expected:
@@ -140,18 +148,30 @@ async def deliver(flow, adapter, chat, thread, state, staged):
         raise RuntimeError('DDJJ_ENTREGA_NO_CONFIRMADA')
 
 
+def summary_cases(cases):
+    completed = sum(c['estado'] == 'completado' for c in cases)
+    if all(c['estado'] == 'no_soportado' for c in cases):
+        forms = ', '.join(sorted({f"F.{c['presentacion']['formulario']}" for c in cases}))
+        return (f'Los {len(cases)} períodos solicitados están presentados con {forms}; '
+                'esta consulta sólo transcribe F.2051. No se generó un Excel.')
+    lines = [f'Se transcribieron {completed} de {len(cases)} períodos en el Excel.' if completed
+             else 'No se pudo transcribir ningún período. No se generó un Excel.']
+    lines += [f"{c['periodo'][5:]}/{c['periodo'][:4]}: {c['motivo_texto']}"
+              for c in cases if c['estado'] != 'completado']
+    return '\n'.join(lines)
+
+
 async def finish_cases(flow, state, cases, run_handle, items, finished, effects):
-    lines = [f'{state.nombre} · DDJJ de IVA presentadas']
     for case in cases:
         period = case['periodo']; ok = case['estado'] == 'completado'
         text = 'Transcripta en el Excel.' if ok else case['motivo_texto']
-        status = 'completado' if ok else 'rechazado' if case['estado'] == 'no_presentado' else 'fallido'
+        status = 'completado' if ok else 'rechazado' if case['estado'] in ('no_presentado', 'no_soportado') else 'fallido'
         await flow.history.finish_item(run_handle, items[period], state=status,
             reason_code='ddjj_transcripta' if ok else flow._history_reason_code(case.get('motivo')),
             reason_text=text, effects=effects, contributor_id=state.contributor_id, period=period, delivered_count=1 if ok else 0)
-        finished.add(items[period]); lines.append(f'{period[5:]}/{period[:4]}: {text}')
+        finished.add(items[period])
     await flow.history.close(run_handle)
-    return '\n'.join(lines)
+    return summary_cases(cases) if all(c['estado'] == 'no_soportado' for c in cases) else f'{state.nombre} · DDJJ de IVA presentadas\n' + summary_cases(cases)
 
 
 async def run(flow, adapter, chat, thread, key, state):

@@ -35,10 +35,10 @@ def workbook(tmp_path):
     return path
 
 
-def test_periodo_argentino_y_doce_meses():
+def test_periodo_argentino_y_rango_acotado():
     assert ddjj.periods('09/2026')==['2026-09']
     assert len(ddjj.periods('01/2026 a 12/2026'))==12
-    for bad in ('2026-09','202609','9/2026','2026','13/2026','09/2026 a 08/2026','01/2026 a 01/2027'):
+    for bad in ('2026-09','202609','9/2026','2026','13/2026','09/2026 a 08/2026','01/2023 a 01/2026'):
         with pytest.raises(ValueError):ddjj.periods(bad)
 
 
