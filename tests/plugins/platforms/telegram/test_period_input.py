@@ -54,6 +54,7 @@ def test_rejection_explains_the_reason(operation, text, reason):
 
 
 def test_policy_limits_and_calendar_boundaries():
+    assert parse_period('2025', 'agip-ddjj').summary == '2025, año completo'
     assert len(parse_period('01/2023-12/2025', 'ddjj-iva').months) == 36
     assert len(parse_period('12/2024-01/2026', 'ccma_obligaciones_pagos').months) == 14
     assert parse_period('02/2024', 'sct_estado_cumplimiento').sct() == ('range', '20240200', '20240229')

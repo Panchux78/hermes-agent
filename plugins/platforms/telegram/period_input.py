@@ -99,8 +99,10 @@ class PeriodSelection:
     def summary(self):
         if self.form == 'all':
             return 'todos los períodos disponibles'
+        if self.form == 'year':
+            return f'{self.year}, año completo'
         count = len(self.months)
-        label = (f'{self.visible[0]} a {self.visible[-1]}' if self.form in ('range', 'year')
+        label = (f'{self.visible[0]} a {self.visible[-1]}' if self.form == 'range'
                  else ', '.join(self.visible))
         return f'{label}, {count} {"mes" if count == 1 else "meses"}'
 
