@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from tests.gateway.period_helpers import confirm_period
+from plugins.platforms.telegram.period_input import SPECS
 
 from plugins.platforms.telegram.portal_iva_flow import FlowState, PortalIvaFlow
 from plugins.platforms.telegram.fiscal_credentials import sanitized_psql_failure
@@ -371,6 +373,8 @@ def test_period_accepts_only_month_year_and_stores_executor_period(monkeypatch):
 
         monkeypatch.setattr(asyncio, "create_task", fake_task)
         assert await flow.text(adapter, _message("08/2026")) is True
+        assert state.period is None
+        await confirm_period(flow, adapter)
         assert state.period == "2026-08"
         assert state.stage == "running"
 
@@ -379,7 +383,7 @@ def test_period_accepts_only_month_year_and_stores_executor_period(monkeypatch):
 
 def test_period_rejects_every_non_month_year_format():
     async def scenario():
-        for value in ("2026-08", "13/2026", "8/2026", "08/26", "2026"):
+        for value in ("2026-08", "13/2026", "08/26", "2026"):
             flow = PortalIvaFlow()
             adapter = FakeAdapter()
             state = FlowState(user_id="7", nonce="a" * 10, stage="period", slug="cliente", cuit=VALID_CUIT)
@@ -387,7 +391,7 @@ def test_period_rejects_every_non_month_year_format():
             assert await flow.text(adapter, _message(value)) is True
             assert state.stage == "period"
             assert state.period is None
-            assert adapter._bot.send_message.await_args.kwargs["text"] == "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
+            assert "MM/AAAA" in adapter._bot.send_message.await_args.kwargs["text"]
 
     asyncio.run(scenario())
 
@@ -398,7 +402,7 @@ def test_period_prompt_is_month_year_only():
         adapter = FakeAdapter()
         state = FlowState(user_id="7", nonce="a" * 10, stage="client")
         await flow._select(adapter, "10", None, state, _scope_item())
-        assert adapter._bot.send_message.await_args.kwargs["text"] == "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
+        assert adapter._bot.send_message.await_args.kwargs["text"] == SPECS['generar'].prompt
 
     asyncio.run(scenario())
 
@@ -426,7 +430,7 @@ def test_presented_period_prompt_echoes_selected_contributor(multiple):
         assert state.contributor_id == chosen["id"]
         assert adapter._bot.send_message.await_args.kwargs["text"] == (
             "Contribuyente: Empresa elegida.\n"
-            "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
+            + SPECS['descargar-presentados'].prompt
         )
         assert not flow.tasks
 
@@ -1162,7 +1166,7 @@ def test_batch_selects_multiple_contributors_then_asks_for_month_range(monkeypat
         assert [item["id"] for item in state.selected_clients] == [1, 2]
         assert state.stage == "batch_clients"
         assert await flow.text(adapter, _message("LISTO"))
-        assert state.stage == "batch_from"
+        assert state.stage == "batch_period"
 
         def fake_task(coro):
             coro.close()
@@ -1170,10 +1174,13 @@ def test_batch_selects_multiple_contributors_then_asks_for_month_range(monkeypat
 
         monkeypatch.setattr(asyncio, "create_task", fake_task)
         assert await flow.text(adapter, _message("2026-05"))
-        assert state.stage == "batch_from"
+        assert state.stage == "batch_period"
         assert await flow.text(adapter, _message("05/2026"))
-        assert state.stage == "batch_to"
-        assert await flow.text(adapter, _message("06/2026"))
+        assert state.stage == "batch_period"
+        assert not getattr(state, 'period_candidate', None)
+        assert await flow.text(adapter, _message("05/2026-06/2026"))
+        assert state.stage == "batch_period"
+        await confirm_period(flow, adapter)
         assert state.stage == "running"
         assert state.period_from == "2026-05" and state.period_to == "2026-06"
 

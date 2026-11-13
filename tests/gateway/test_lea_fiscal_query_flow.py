@@ -73,6 +73,9 @@ async def test_selection_period_and_private_dispatch(flow, action):
     flow._adapter.handle_message.assert_not_awaited()
     flow._start_sct_dispatch.assert_not_awaited()
     assert await flow.text(flow._adapter, message('2026'))
+    flow._start_ccma_dispatch.assert_not_awaited()
+    from tests.gateway.period_helpers import confirm_period
+    await confirm_period(flow, flow._adapter, '7', '7')
     flow._adapter.handle_message.assert_not_awaited()
     dispatch = flow._start_ccma_dispatch if action == 'ccma' else flow._start_sct_dispatch
     kwargs = dispatch.await_args.kwargs
@@ -235,6 +238,9 @@ async def test_sct_dispatcher_uses_only_opaque_runner_environment(flow, monkeypa
     assert environment["SCT_PERIOD_FROM"] == "20260000"
     assert environment["SCT_PERIOD_UNTIL"] == "20261231"
     assert set(environment) == {
+        # #162: metadatos de auditoría, no secretos ni identidades fiscales.
+        'CONTABOT_ORIGEN_ACTOR', 'CONTABOT_ORIGEN_ENTRADA',
+        'CONTABOT_ORIGEN_CANAL', 'CONTABOT_ORIGEN_PROCESO', 'PGOPTIONS',
         "HOME",
         "HERMES_HOME",
         "ARCA_CSV_FILE",

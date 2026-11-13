@@ -109,6 +109,9 @@ def test_un_cliente_no_cm_informa_organismo_sin_encolar(monkeypatch):
         await flow.text(adapter, _msg("sintetica"))
         msg = _msg("9/2026")
         assert await flow.text(adapter, msg)
+        assert not flow.sql
+        from tests.gateway.period_helpers import confirm_period
+        await confirm_period(flow,adapter,42,'42')
         text = msg.reply_text.await_args.args[0]
         assert "no es de Convenio Multilateral en 09/2026" in text and "AGIP" in text
         assert flow.sql == ["SELECT console.fn_comarb_deducciones_pedir_telegram(42,7,'09/2026')::text;"]
@@ -126,6 +129,8 @@ def test_rechazos_de_la_base_no_consultan(monkeypatch, estado, texto):
         await flow.text(adapter, _msg("sintetica"))
         msg = _msg("09/2026")
         await flow.text(adapter, msg)
+        from tests.gateway.period_helpers import confirm_period
+        await confirm_period(flow,adapter,42,'42')
         assert texto in msg.reply_text.await_args.args[0]
         assert not flow.watchers
     asyncio.run(scenario())
@@ -153,6 +158,8 @@ def test_cartera_encola_y_avisa_sin_clave(monkeypatch):
         await flow.callback(adapter, _query("cd:cartera"), "cd:cartera", 42, None, "42")
         msg = _msg("08/2026")
         await flow.text(adapter, msg)
+        from tests.gateway.period_helpers import confirm_period
+        await confirm_period(flow,adapter,42,'42')
         assert flow.sql == ["SELECT console.fn_comarb_deducciones_cartera_telegram(42,'08/2026')::text;"]
         text = msg.reply_text.await_args.args[0]
         assert "Cartera de IIBB (3)" in text and "1 quedan afuera" in text

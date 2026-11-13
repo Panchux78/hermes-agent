@@ -72,7 +72,10 @@ class PresentadasFlowTests(unittest.IsolatedAsyncioTestCase):
         await flow.text(adapter,msg('01/20125 hasta 04/2025'))
         self.assertEqual(sql,[])
         self.assertTrue(flow.states)
-        await flow.text(adapter,msg('01/2025 - 08/2025'))
+        await flow.text(adapter,msg('01/2025, 08/2025'))
+        self.assertEqual(sql,[])
+        from tests.gateway.period_helpers import confirm_period
+        await confirm_period(flow,adapter,42,'42')
         self.assertEqual(len(sql),1)
         self.assertIn('fn_comarb_ddjj_pedir_telegram(42,7,',sql[0])
         self.assertIn(json.dumps(['01/2025','08/2025'],separators=(',',':')),sql[0])

@@ -58,7 +58,8 @@ _EXECUTOR = Path(os.environ.get(
 _BATCH_EXECUTOR_RAW = os.environ.get("CONTABOT_PORTAL_IVA_BATCH_EXECUTOR")
 _BATCH_EXECUTOR = Path(_BATCH_EXECUTOR_RAW) if _BATCH_EXECUTOR_RAW else None
 _UV = get_hermes_home() / "bin/uv"
-_PERIOD = re.compile(r"(0[1-9]|1[0-2])/[0-9]{4}")
+from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, route_period_callback, sender
+
 _STATE_ROOT = Path(os.environ.get(
     "CONTABOT_STATE_ROOT", Path.home() / ".local/state/contabot"
 ))
@@ -415,6 +416,8 @@ class PortalIvaFlow:
 
     async def callback(self, adapter, query, data: str, chat_id: Any, thread_id: Any, user_id: str) -> bool:
         key = self._key(chat_id, thread_id, user_id)
+        if await route_period_callback(self.states, key, query, data, 'pi'):
+            return True
         operation = {"pi:generar": "generar", "pi:descargar": "descargar-presentados", "pi:lote": "descargar-lote", "pi:ddjj": "ddjj-iva", "pi:mr": "mis-retenciones"}.get(data)
         if operation:
             await self.start(adapter, query, chat_id, thread_id, user_id, operation)
@@ -514,40 +517,10 @@ class PortalIvaFlow:
         if state.stage in {"running", "delivering"}:
             await self._send(adapter, chat_id, "Portal IVA ya está en ejecución para esta solicitud.", thread_id)
             return True
-        if state.stage in {"batch_from", "batch_to"}:
-            visible_period = (message.text or "").strip()
-            if not _PERIOD.fullmatch(visible_period):
-                await self._send(adapter, chat_id, "Ingresá el período como MM/AAAA. Ejemplo: 08/2026.", thread_id)
-                return True
-            period = f"{visible_period[3:]}-{visible_period[:2]}"
-            if state.stage == "batch_from":
-                state.period_from = period
-                state.stage = "batch_to"
-                await self._send(adapter, chat_id, "Ingresá el último período como MM/AAAA.", thread_id)
-                return True
-            state.period_to = period
-            if state.period_from is None or state.period_from > state.period_to:
-                state.stage = "batch_from"
-                await self._send(adapter, chat_id, "El rango no es válido. Ingresá nuevamente el primer período como MM/AAAA.", thread_id)
-                return True
-            for client in state.selected_clients:
-                try:
-                    checked = await asyncio.to_thread(self._by_id, int(client["id"]), state.user_id)
-                except Exception:
-                    self.states.pop(key, None)
-                    await self._send(adapter, chat_id, "No inicié el lote: no pude verificar la condición IVA en la base. Probá más tarde.", thread_id)
-                    return True
-                if len(checked) != 1 or not checked[0].get("access_id"):
-                    reason = await self._ineligible_text(int(client["id"]), state.user_id)
-                    self.states.pop(key, None)
-                    await self._send(adapter, chat_id, f"No inicié el lote. No incluido: {client['nombre']}: {reason}", thread_id)
-                    return True
-            state.stage = "running"
-            state.progress_label = "Preparando lote de Libros IVA…"
-            state.progress_message = await self._send(adapter, chat_id, state.progress_label, thread_id, self._cancel_keyboard(state.nonce))
-            task = asyncio.create_task(self._run_batch(adapter, chat_id, thread_id, key, state))
-            self.tasks[key] = task
-            task.add_done_callback(lambda done: self._release(key, done))
+        if state.stage == "batch_period":
+            await propose_period(state, 'descargar-lote', message.text, prefix='pi',
+                send=sender(adapter, chat_id, thread_id),
+                submit=lambda selection: self._submit_batch_period(adapter, message, state, key, selection))
             return True
         if state.stage == 'ddjj_period':
             from plugins.platforms.telegram.portal_iva_ddjj_flow import receive_period
@@ -556,47 +529,19 @@ class PortalIvaFlow:
             from plugins.platforms.telegram.mis_retenciones_flow import receive_period as mis_retenciones_period
             return await mis_retenciones_period(self, adapter, message, state, key)
         if state.stage == "period":
-            visible_period = (message.text or "").strip()
-            if not _PERIOD.fullmatch(visible_period):
-                await self._send(adapter, chat_id, "Ingresá el período como MM/AAAA. Ejemplo: 08/2026.", thread_id)
-                return True
-            period = f"{visible_period[3:]}-{visible_period[:2]}"
-            if key in self.tasks:
-                await self._send(adapter, chat_id, "Ya hay una descarga Portal IVA en curso.", thread_id)
-                return True
-            try:
-                checked = await asyncio.to_thread(self._by_id, int(state.contributor_id), state.user_id)
-            except Exception:
-                self.states.pop(key, None)
-                await self._send(adapter, chat_id, "No inicié la consulta: no pude verificar la condición IVA en la base. Probá más tarde.", thread_id)
-                return True
-            if len(checked) != 1 or not checked[0].get("access_id"):
-                reason = await self._ineligible_text(int(state.contributor_id), state.user_id)
-                self.states.pop(key, None)
-                await self._send(adapter, chat_id, f"No inicié la consulta: {reason}", thread_id)
-                return True
-            state.period = period
-            state.stage = "running"
-            state.progress_label = (
-                "Generando CSV de período nuevo…"
-                if state.operation == "generar" else "Buscando presentación…"
-            )
-            state.progress_message = await self._send(
-                adapter, chat_id, state.progress_label, thread_id, self._cancel_keyboard(state.nonce),
-            )
-            task = asyncio.create_task(self._run(adapter, chat_id, thread_id, key, state))
-            self.tasks[key] = task
-            task.add_done_callback(lambda done: self._release(key, done))
+            await propose_period(state, state.operation, message.text, prefix='pi',
+                send=sender(adapter, chat_id, thread_id),
+                submit=lambda selection: self._submit_single_period(adapter, message, state, key, selection))
             return True
         if state.operation == "descargar-lote" and state.stage == "batch_clients" and (message.text or "").strip().casefold() == "listo":
             if not state.selected_clients:
                 await self._send(adapter, chat_id, "Elegí al menos un contribuyente.", thread_id)
                 return True
-            state.stage = "batch_from"
+            state.stage = "batch_period"
             await self._send(adapter, chat_id, "Contribuyentes incluidos: "
                              + ", ".join(item['nombre'] for item in state.selected_clients)
                              + self._excluded_summary(state)
-                             + "\nIngresá el primer período como MM/AAAA.", thread_id)
+                             + "\n" + SPECS["descargar-lote"].prompt, thread_id)
             return True
         try:
             raw_candidates = await asyncio.to_thread(self._search, message.text or "", state.user_id)
@@ -640,6 +585,64 @@ class PortalIvaFlow:
         )
         return True
 
+    async def _submit_batch_period(self, adapter, message, state, key, selection):
+        chat_id, thread_id = message.chat_id, getattr(message, "message_thread_id", None)
+        state.period_from, state.period_to = selection.months[0], selection.months[-1]
+        for client in state.selected_clients:
+            try:
+                checked = await asyncio.to_thread(self._by_id, int(client["id"]), state.user_id)
+            except Exception:
+                self.states.pop(key, None)
+                await self._send(adapter, chat_id, "No inicié el lote: no pude verificar la condición IVA en la base. Probá más tarde.", thread_id)
+                return True
+            if len(checked) != 1 or not checked[0].get("access_id"):
+                reason = await self._ineligible_text(int(client["id"]), state.user_id)
+                self.states.pop(key, None)
+                await self._send(adapter, chat_id, f"No inicié el lote. No incluido: {client['nombre']}: {reason}", thread_id)
+                return True
+        if self.states.get(key) is not state:
+            return True
+        state.stage = "running"
+        state.progress_label = "Preparando lote de Libros IVA…"
+        state.progress_message = await self._send(adapter, chat_id, state.progress_label, thread_id, self._cancel_keyboard(state.nonce))
+        task = asyncio.create_task(self._run_batch(adapter, chat_id, thread_id, key, state))
+        self.tasks[key] = task
+        task.add_done_callback(lambda done: self._release(key, done))
+        return True
+
+    async def _submit_single_period(self, adapter, message, state, key, selection):
+        chat_id, thread_id = message.chat_id, getattr(message, "message_thread_id", None)
+        period = selection.months[0]
+        if key in self.tasks:
+            await self._send(adapter, chat_id, "Ya hay una descarga Portal IVA en curso.", thread_id)
+            return True
+        try:
+            checked = await asyncio.to_thread(self._by_id, int(state.contributor_id), state.user_id)
+        except Exception:
+            self.states.pop(key, None)
+            await self._send(adapter, chat_id, "No inicié la consulta: no pude verificar la condición IVA en la base. Probá más tarde.", thread_id)
+            return True
+        if len(checked) != 1 or not checked[0].get("access_id"):
+            reason = await self._ineligible_text(int(state.contributor_id), state.user_id)
+            self.states.pop(key, None)
+            await self._send(adapter, chat_id, f"No inicié la consulta: {reason}", thread_id)
+            return True
+        if self.states.get(key) is not state:
+            return True
+        state.period = period
+        state.stage = "running"
+        state.progress_label = (
+            "Generando CSV de período nuevo…"
+            if state.operation == "generar" else "Buscando presentación…"
+        )
+        state.progress_message = await self._send(
+            adapter, chat_id, state.progress_label, thread_id, self._cancel_keyboard(state.nonce),
+        )
+        task = asyncio.create_task(self._run(adapter, chat_id, thread_id, key, state))
+        self.tasks[key] = task
+        task.add_done_callback(lambda done: self._release(key, done))
+        return True
+
     async def _select(self, adapter, chat_id: Any, thread_id: Any, state: FlowState, item: dict[str, Any]) -> None:
         if state.operation == "descargar-lote":
             if state.selected_clients and int(state.selected_clients[0]["study_id"]) != int(item["study_id"]):
@@ -662,11 +665,11 @@ class PortalIvaFlow:
         state.nombre = str(item["nombre"])
         state.scope_item = dict(item)
         state.stage = "period"
-        prompt = "Ingresá el período como MM/AAAA. Ejemplo: 08/2026."
         if state.operation == 'mis-retenciones':
             from plugins.platforms.telegram.mis_retenciones_flow import after_contributor
             await after_contributor(self, adapter, chat_id, thread_id, state)
             return
+        prompt = SPECS[state.operation].prompt
         if state.operation == 'ddjj-iva':
             from plugins.platforms.telegram.portal_iva_ddjj_flow import PROMPT
             state.stage = 'ddjj_period'

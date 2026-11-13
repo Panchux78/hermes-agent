@@ -81,14 +81,11 @@ def visible_cuit(cuit: str) -> str:
     return f"{cuit[:2]}-******-{cuit[-1:]}" if re.fullmatch(r"\d{11}", cuit or "") else "CUIT oculto"
 
 
+from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, route_period_callback, sender
+
 def normalize_period(value: str) -> str:
-    value = (value or "").strip()
-    if re.fullmatch(r"\d{4}", value):
-        return value
-    m = re.fullmatch(r"(0[1-9]|1[0-2])/(\d{4})", value)
-    if m:
-        return f"{m.group(2)}-{m.group(1)}"
-    raise ValueError("Ingresá el mes en MM/AAAA (ejemplo: 09/2025) o el año en AAAA (ejemplo: 2025).")
+    selection = parse_period(value, 'agip-ddjj')
+    return selection.year or selection.months[0]
 
 
 def display_period(value: str) -> str:
@@ -411,27 +408,9 @@ class AgipDdjjFlow:
             await self._send(adapter, chat_id, "La consulta AGIP ya está en ejecución.", thread_id=thread_id)
             return True
         if state.stage == "period":
-            try:
-                period = normalize_period(message.text)
-            except ValueError as exc:
-                await self._send(adapter, chat_id, str(exc), thread_id=thread_id)
-                return True
-            if key in self.tasks:
-                await self._send(adapter, chat_id, "Ya hay una consulta AGIP en curso.", thread_id=thread_id)
-                return True
-            state.stage = "running"
-            state.progress_message = await self._send(
-                adapter,
-                chat_id,
-                f"Consulta AGIP iniciada para {display_period(period)}.",
-                self._cancel_keyboard(state.nonce),
-                thread_id,
-            )
-            task = asyncio.create_task(
-                self._run_query(adapter, chat_id, thread_id, key, state, period)
-            )
-            self.tasks[key] = task
-            task.add_done_callback(lambda done: self._release(key, done))
+            await propose_period(state, 'agip-ddjj', message.text, prefix='ad',
+                send=sender(adapter, chat_id, thread_id),
+                submit=lambda selection: self._submit_period(adapter, message, state, key, selection))
             return True
         try:
             candidates = self._search(message.text, user_id)
@@ -460,8 +439,31 @@ class AgipDdjjFlow:
     def _by_id(self, item_id: int, telegram_id: Any) -> list[dict[str, Any]]:
         return self._scope().by_id(telegram_id, item_id)
 
+    async def _submit_period(self, adapter, message, state, key, selection):
+        chat_id, thread_id = message.chat_id, getattr(message, "message_thread_id", None)
+        period = selection.year or selection.months[0]
+        if key in self.tasks:
+            await self._send(adapter, chat_id, "Ya hay una consulta AGIP en curso.", thread_id=thread_id)
+            return True
+        state.stage = "running"
+        state.progress_message = await self._send(
+            adapter,
+            chat_id,
+            f"Consulta AGIP iniciada para {display_period(period)}.",
+            self._cancel_keyboard(state.nonce),
+            thread_id,
+        )
+        task = asyncio.create_task(
+            self._run_query(adapter, chat_id, thread_id, key, state, period)
+        )
+        self.tasks[key] = task
+        task.add_done_callback(lambda done: self._release(key, done))
+        return True
+
     async def callback(self, adapter, query, data: str, chat_id, thread_id, user_id) -> bool:
         key = self._key(chat_id, thread_id, user_id)
+        if await route_period_callback(self.states, key, query, data, 'ad'):
+            return True
         if data == "ad:start":
             await self.start(adapter, query, chat_id, thread_id, user_id)
             return True
@@ -515,7 +517,7 @@ class AgipDdjjFlow:
             state.stage = "period"
             await self._send(
                 adapter, chat_id,
-                "Ingresá el período: mensual MM/AAAA (ejemplo: 09/2025) o anual AAAA (ejemplo: 2025).",
+                SPECS['agip-ddjj'].prompt,
                 thread_id=thread_id,
             )
             return

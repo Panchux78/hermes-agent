@@ -14,7 +14,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from plugins.platforms.telegram.comarb_deducciones_flow import (
     ComarbDeduccionesFlow, State, _STATE_TTL_SECONDS,
 )
-from plugins.platforms.telegram.comarb_ddjj_periodos import HELP, parse_periodos
+from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, route_period_callback, sender
+
 from plugins.platforms.telegram.documentos_contabot import archivo_guardado
 from plugins.platforms.telegram.fiscal_scope import ACCOUNT_NOT_LINKED_MESSAGE, AccountNotLinked, FiscalScope
 from plugins.platforms.telegram.menu_buttons import menu_label
@@ -40,8 +41,7 @@ class ComarbPresentadasFlow(ComarbDeduccionesFlow):
         state.contributor = item
         state.stage = 'periodo'
         state.offer = None
-        instruction = ('Ingresá un período MM/AAAA, por ejemplo 09/2026.'
-                       if state.modo == 'periodo' else HELP)
+        instruction = SPECS['comarb-' + state.modo].prompt
         workbook = ('Un único Excel; sólo hojas de período.' if state.modo == 'periodo'
                     else 'Un único Excel con Resumen y hojas de período.')
         await adapter._bot.send_message(chat_id=chat_id,
@@ -49,6 +49,9 @@ class ComarbPresentadasFlow(ComarbDeduccionesFlow):
             reply_markup=self._cancel_keyboard(state))
 
     async def callback(self, adapter, query, data, chat_id, thread_id, user_id):
+        key = self._key(chat_id, thread_id, user_id)
+        if await route_period_callback(self.states, key, query, data, 'dj'):
+            return True
         if not data.startswith('dj:'):
             return False
         if str(chat_id) != str(user_id):
@@ -122,11 +125,14 @@ class ComarbPresentadasFlow(ComarbDeduccionesFlow):
             return True
         if state.stage == 'buscar':
             return await super().text(adapter, msg)
-        try:
-            periods = parse_periodos(msg.text, state.modo)
-        except ValueError as exc:
-            await msg.reply_text(str(exc))
-            return True
+        await propose_period(state, 'comarb-' + state.modo, msg.text, prefix='dj',
+            send=msg.reply_text,
+            submit=lambda selection: self._submit_period(adapter, msg, state, key, selection))
+        return True
+
+    async def _submit_period(self, adapter, msg, state, key, selection):
+        user_id = state.user_id
+        periods = list(selection.visible)
         self.states.pop(key, None)  # single shot: nunca reencolar por un fallo de transporte
         actor = FiscalScope._telegram_id(user_id)
         payload = json.dumps(periods, separators=(',',':'))  # sólo meses ya validados

@@ -11,21 +11,14 @@ from telegram.error import TelegramError
 
 from plugins.platforms.telegram.fiscal_credentials import verify_representation
 
+from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, route_period_callback, sender
+
 OPERATION = 'portal_iva_ddjj_iva_excel'
-PROMPT = 'Ingresá MM/AAAA o MM/AAAA a MM/AAAA (máximo 36 meses). Ejemplo: 09/2026.'
-_MONTH = r'(0[1-9]|1[0-2])/[0-9]{4}'
+PROMPT = SPECS['ddjj-iva'].prompt
 
 
 def periods(text):
-    if not re.fullmatch(rf'{_MONTH}( a {_MONTH})?', text):
-        raise ValueError('DDJJ_PERIODO_INVALIDO')
-    parts = text.split(' a ')
-    start, end = parts[0], parts[-1]
-    first = int(start[3:]) * 12 + int(start[:2]) - 1
-    last = int(end[3:]) * 12 + int(end[:2]) - 1
-    if not 0 <= last - first < 36:
-        raise ValueError('DDJJ_RANGO_INVALIDO')
-    return [f'{n//12:04d}-{n%12+1:02d}' for n in range(first, last+1)]
+    return list(parse_period(text, 'ddjj-iva').months)
 
 
 def command(flow, state):
@@ -53,11 +46,15 @@ def progress(stage):
 
 async def receive_period(flow, adapter, message, state, key):
     chat, thread = message.chat_id, getattr(message, 'message_thread_id', None)
-    try:
-        state.ddjj_periods = periods((message.text or '').strip())
-    except ValueError:
-        await flow._send(adapter, chat, PROMPT, thread)
-        return True
+    await propose_period(state, 'ddjj-iva', message.text, prefix='pi',
+        send=sender(adapter, chat, thread),
+        submit=lambda selection: submit_period(flow, adapter, message, state, key, selection))
+    return True
+
+
+async def submit_period(flow, adapter, message, state, key, selection):
+    chat, thread = message.chat_id, getattr(message, 'message_thread_id', None)
+    state.ddjj_periods = list(selection.months)
     state.period = state.ddjj_periods[0]
     state.stage = 'running'
     state.progress_label = f'{state.nombre} · Buscando DDJJ de IVA presentadas…'

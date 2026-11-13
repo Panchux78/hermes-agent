@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from tests.gateway.period_helpers import confirm_period
 
 from plugins.platforms.telegram.agip_ddjj_flow import (
     AgipDdjjFlow,
@@ -83,7 +84,8 @@ def test_normalize_period_accepts_argentine_month_or_annual():
 
 
 def test_normalize_period_rejects_invalid_values():
-    for value in ("2025-13","texto","202512","2025-12","31/12/2025","13/2025","9/2025","09/25"):
+    assert normalize_period('9/2025') == '2025-09'
+    for value in ("2025-13","texto","202512","2025-12","31/12/2025","13/2025","09/25"):
         with pytest.raises(ValueError,match="MM/AAAA"):
             normalize_period(value)
 
@@ -126,9 +128,9 @@ def test_searching_represented_contributor_resolves_unique_credential_holder(mon
         assert state.stage == "period"
         assert state.contributor_id == 3
         assert state.represented_id == 102
-        assert "período" in adapter._bot.send_message.await_args.kwargs["text"]
+        assert "DDJJ de IIBB" in adapter._bot.send_message.await_args.kwargs["text"]
         prompt = adapter._bot.send_message.await_args.kwargs["text"]
-        assert "MM/AAAA" in prompt and "09/2025" in prompt
+        assert "MM/AAAA" in prompt and "AAAA" in prompt
         assert "AAAAMM" not in prompt and "AAAA-MM" not in prompt
 
     asyncio.run(scenario())
@@ -335,6 +337,8 @@ def test_period_starts_tracked_task_with_cancel_button_and_cleans_state(monkeypa
         monkeypatch.setattr(flow, "_cancel_keyboard", lambda _nonce: cancel_markup)
 
         assert await flow.text(adapter, _message("08/2026")) is True
+        assert not started.is_set()
+        await confirm_period(flow, adapter)
         await asyncio.wait_for(started.wait(), timeout=1)
 
         assert key in flow.tasks

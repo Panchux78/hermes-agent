@@ -98,6 +98,8 @@ class _WorkflowMenuState:
     scope_item: dict | None = None
 
 
+from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, route_period_callback, sender
+
 class FiscalQueryFlow:
     START_CALLBACKS = frozenset(('fq:ccma', 'fq:sct', 'pi:generar', 'pi:descargar', 'pi:lote', 'pi:ddjj',
                                 'ad:start', 'ps:protect:start', 'ps:unlock:start'))
@@ -164,6 +166,8 @@ class FiscalQueryFlow:
     async def callback(self, adapter, query, data, chat_id, thread_id, user_id):
         self.bind(adapter)
         key = (str(chat_id), str(user_id))
+        if await route_period_callback(self._workflow_menu_state, key, query, data, 'fq'):
+            return
         action = data.partition(':')[2]
         state = self._workflow_menu_state.get(key)
         if state and state.stage not in ('running', 'captcha') and time.monotonic() - state.started_monotonic > _WORKFLOW_MENU_TIMEOUT_SECONDS:
@@ -233,9 +237,7 @@ class FiscalQueryFlow:
             raise
 
     async def _request_period(self, chat_id, state):
-        text = 'Ingresá el período: MM/AAAA, MM/AAAA-MM/AAAA o un año completo (AAAA).'
-        if state.skill_command == 'sct_estado_cumplimiento':
-            text += ' También podés enviar - sin filtro.'
+        text = SPECS[state.skill_command].prompt
         await self._send_panel(chat_id, text, self._cancel_keyboard(state))
 
     async def text(self, adapter, message):
@@ -267,44 +269,18 @@ class FiscalQueryFlow:
     @staticmethod
     def _parse_ccma_period_range(text: str) -> Optional[tuple[str, str]]:
         """Normalize one CCMA month, a month range, or a calendar year."""
-        compact = re.sub(r"\s+", "", text)
-        if re.fullmatch(r"\d{4}", compact):
-            return f"01/{compact}", f"12/{compact}"
-        match = re.fullmatch(
-            r"(0[1-9]|1[0-2])/(\d{4})(?:[-–](0[1-9]|1[0-2])/(\d{4}))?",
-            compact,
-        )
-        if not match:
+        try:
+            selection = parse_period(text, 'ccma_obligaciones_pagos')
+            return selection.visible[0], selection.visible[-1]
+        except ValueError:
             return None
-        from_period = f"{match.group(1)}/{match.group(2)}"
-        to_period = f"{match.group(3) or match.group(1)}/{match.group(4) or match.group(2)}"
-        if (int(match.group(4) or match.group(2)), int(match.group(3) or match.group(1))) < (
-            int(match.group(2)),
-            int(match.group(1)),
-        ):
-            return None
-        return from_period, to_period
-
 
     @classmethod
-    def _parse_sct_period_selection(cls, text: str) -> Optional[tuple[str, str, str]]:
-        """Normalize the menu's CCMA-style period input for the SCT runner."""
-        compact = re.sub(r"\s+", "", text)
-        if compact == "-":
-            return "empty", "", ""
-        if re.fullmatch(r"\d{4}", compact):
-            return "range", f"{compact}0000", f"{compact}1231"
-        period_range = cls._parse_ccma_period_range(compact)
-        if period_range is None:
+    def _parse_sct_period_selection(cls, text):
+        try:
+            return parse_period(text, 'sct_estado_cumplimiento').sct()
+        except ValueError:
             return None
-        from_period, to_period = period_range
-        from_month, from_year = from_period.split("/")
-        to_month, to_year = to_period.split("/")
-        if from_year != to_year:
-            return None
-        # ARCA rechaza fechas inexistentes («El período esta mal formado», 02/2025 → 20250231).
-        last_day = calendar.monthrange(int(to_year), int(to_month))[1]
-        return "range", f"{from_year}{from_month}00", f"{to_year}{to_month}{last_day:02d}"
 
 
     async def _resolve_sct_credential_line(self, usuario: str, represented: str) -> Optional[tuple[int, str]]:
@@ -736,16 +712,26 @@ class FiscalQueryFlow:
             except Exception:
                 await self.send(chat_id, 'No pude consultar la base canónica. Probá nuevamente.')
             return True
-        period = (self._parse_ccma_period_range(text) if state.skill_command == 'ccma_obligaciones_pagos'
-                  else self._parse_sct_period_selection(text))
-        if period is None:
-            await self._request_period(chat_id, state)
-            return True
+        await propose_period(state, state.skill_command, text, prefix='fq',
+            send=sender(self._adapter, chat_id),
+            submit=lambda selection: self._submit_period(chat_id, state_key, state, selection))
+        return True
+
+    async def _submit_period(self, chat_id, state_key, state, selection):
+        period = ((selection.visible[0], selection.visible[-1])
+                  if state.skill_command == 'ccma_obligaciones_pagos' else selection.sct())
+        text = selection.summary
         try:
             if not await self._select(chat_id, state_key, state, state.contributor_id):
+                if self._workflow_menu_state.get(state_key) is state:
+                    self._workflow_menu_state.pop(state_key, None)
                 return True
         except Exception:
-            await self.send(chat_id, 'No pude revalidar el acceso. Probá nuevamente.')
+            if self._workflow_menu_state.get(state_key) is state:
+                self._workflow_menu_state.pop(state_key, None)
+            await self.send(chat_id, 'No pude revalidar el acceso. Iniciá una consulta nueva desde el menú.')
+            return True
+        if self._workflow_menu_state.get(state_key) is not state:
             return True
         if state.skill_command == 'ccma_obligaciones_pagos':
             state.stage = 'running'

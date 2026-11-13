@@ -53,7 +53,7 @@ RECHAZOS = {
     "clave_sin_verificar": ("No hay un acceso utilizable para las fuentes de ese período: ARCA comprobada o Clave Ciudad activa. "
                             "Revisá Accesos del panel. miBA todavía no está soportado. No se inició ningún ingreso."),
     "ocupado": "Ya hay una consulta de COMARB en curso en tu estudio. Esperá que termine y volvé a pedirla.",
-    "periodo_invalido": "Ingresá un mes ya cerrado como MM/AAAA. Ejemplo: 09/2026.",
+    "periodo_invalido": "El organismo no admite ese período. Revisá el mes solicitado.",
     "sin_estudio": "Tu usuario no pertenece a un estudio: pedí la cartera desde el panel.",
     "demasiados": "La cartera supera los 1000 contribuyentes: pedila desde el panel por partes.",
 }
@@ -119,6 +119,8 @@ def resumen(row: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, route_period_callback, sender
+
 @dataclass
 class State:
     user_id: str
@@ -180,9 +182,10 @@ class ComarbDeduccionesFlow:
 
     @staticmethod
     def _period(text: str) -> str | None:
-        value = (text or "").strip()
-        m = re.fullmatch(r"(0?[1-9]|1[0-2])/(\d{4})", value)
-        return f"{int(m[1]):02d}/{m[2]}" if m else None
+        try:
+            return parse_period(text, 'cd').visible[0]
+        except ValueError:
+            return None
 
     @classmethod
     def _back(cls) -> InlineKeyboardMarkup:
@@ -202,6 +205,9 @@ class ComarbDeduccionesFlow:
 
     # --- callbacks ----------------------------------------------------------
     async def callback(self, adapter, query, data: str, chat_id: Any, thread_id: Any, user_id: str) -> bool:
+        key = self._key(chat_id, thread_id, user_id)
+        if await route_period_callback(self.states, key, query, data, self.callback_prefix):
+            return True
         if not data.startswith(self.callback_prefix+":"):
             return False
         parts = data.split(":")
@@ -228,7 +234,7 @@ class ComarbDeduccionesFlow:
                 text = "Escribí nombre, CUIT o slug del contribuyente."
             else:
                 self.states[key] = State(user_id, nonce, "periodo", "cartera")
-                text = self.cartera_text + "\n\nIngresá el período como MM/AAAA. Ejemplo: 09/2026."
+                text = self.cartera_text + "\n\n" + SPECS[self.callback_prefix].prompt
             await query.answer()
             await adapter._bot.send_message(chat_id=chat_id, text=text,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"{self.callback_prefix}:cancel:{nonce}")]]))
@@ -270,7 +276,7 @@ class ComarbDeduccionesFlow:
         state.stage = "periodo"
         state.offer = None
         await adapter._bot.send_message(chat_id=chat_id,
-            text=f"{item['nombre']}.\nIngresá el período como MM/AAAA. Ejemplo: 09/2026.",
+            text=f"{item['nombre']}.\n" + SPECS[self.callback_prefix].prompt,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"{self.callback_prefix}:cancel:{state.nonce}")]]))
 
     # --- texto -------------------------------------------------------------
@@ -305,10 +311,14 @@ class ComarbDeduccionesFlow:
                     reply_markup=offer.keyboard(callback_prefix=self.callback_prefix, nonce=state.nonce,
                                                 cancel_text=menu_label("❌", "Cancelar")))
             return True
-        period = self._period(msg.text)
-        if period is None:
-            await msg.reply_text(self.rechazos["periodo_invalido"])
-            return True
+        await propose_period(state, self.callback_prefix, msg.text, prefix=self.callback_prefix,
+            send=msg.reply_text,
+            submit=lambda selection: self._submit_period(adapter, msg, state, key, selection))
+        return True
+
+    async def _submit_period(self, adapter, msg, state, key, selection):
+        user_id = state.user_id
+        period = selection.visible[0]
         self.states.pop(key, None)
         actor = FiscalScope._telegram_id(user_id)
         try:

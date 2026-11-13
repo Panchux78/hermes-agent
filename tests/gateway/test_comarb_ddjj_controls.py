@@ -10,6 +10,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.comarb_ddjj_flow import ComarbPresentadasFlow, resumen_presentadas
 from plugins.platforms.telegram.comarb_ddjj_periodos import parse_periodos
+from tests.gateway.period_helpers import confirm_period
 
 ROW={'id':7,'nombre':'Empresa sintética SA','cuit':'30000000011'}
 
@@ -39,14 +40,15 @@ def query(data):
 
 class PeriodGrammarRegression(unittest.TestCase):
     def test_formatos_y_limites_no_se_reparan(self):
-        for text,mode in (('1/2025','periodo'),('01/20125','periodo'),('00/2025','periodo'),
-            ('13/2025','periodo'),('01-2025','periodo'),('01/2025 - 01/2025','lote'),
+        for text,mode in (('01/20125','periodo'),('00/2025','periodo'),
+            ('13/2025','periodo'),('01-2025','periodo'),('01/2025, 01/2025','lote'),
             ('08/2025 hasta 01/2025','lote'),('01/2025 hasta 04/2025 - 08/2025','lote'),
             ('01/2025','lote'),('10/2026','periodo'),('11/2026','periodo'),('01/2009','periodo')):
             with self.subTest(text=text):
                 with self.assertRaises(ValueError):parse_periodos(text,mode,today=date(2026,10,28))
     def test_orden_aislado_y_rango_inclusivo(self):
-        self.assertEqual(parse_periodos('08/2025 - 01/2025 - 03/2025','lote',today=date(2026,10,28)),['08/2025','01/2025','03/2025'])
+        self.assertEqual(parse_periodos('08/2025, 01/2025, 03/2025','lote',today=date(2026,10,28)),['08/2025','01/2025','03/2025'])
+        self.assertEqual(parse_periodos('1/2025','periodo',today=date(2026,10,28)),['01/2025'])
         self.assertEqual(parse_periodos('01/2025 hasta 04/2025','lote',today=date(2026,10,28)),['01/2025','02/2025','03/2025','04/2025'])
         self.assertEqual(parse_periodos('01/2025','periodo',today=date(2026,10,28)),['01/2025'])
 
@@ -58,9 +60,11 @@ class StateRegression(unittest.IsolatedAsyncioTestCase):
         q=query('dj:'+mode)
         await self.flow.callback(self.adapter,q,q.data,42,None,'42')
         return self.flow.states['42::42']
-    async def test_periodo_unico_no_agrega_confirmacion(self):
+    async def test_periodo_unico_exige_confirmacion(self):
         await self.start('periodo');await self.flow.text(self.adapter,message('sintética'))
         await self.flow.text(self.adapter,message('09/2026'))
+        self.assertEqual(self.flow.sql,[])
+        await confirm_period(self.flow,self.adapter,42,'42')
         self.assertEqual(len(self.flow.sql),1);self.assertIn('["09/2026"]',self.flow.sql[0])
     async def test_anuncia_resumen_solo_para_lote(self):
         for mode,periods in (('lote','01/2025 hasta 02/2025'),('periodo','01/2025')):
@@ -70,6 +74,7 @@ class StateRegression(unittest.IsolatedAsyncioTestCase):
                 prompt=self.adapter._bot.send_message.await_args.kwargs['text']
                 msg=message(periods)
                 await self.flow.text(self.adapter,msg)
+                await confirm_period(self.flow,self.adapter,42,'42')
                 notice=msg.reply_text.await_args.args[0]
                 if mode=='lote':
                     self.assertIn('Resumen',prompt)
@@ -81,6 +86,8 @@ class StateRegression(unittest.IsolatedAsyncioTestCase):
     async def test_rango_encola_un_trabajo_con_lista_completa(self):
         await self.start();await self.flow.text(self.adapter,message('sintética'))
         await self.flow.text(self.adapter,message('01/2025 hasta 04/2025'))
+        self.assertEqual(self.flow.sql,[])
+        await confirm_period(self.flow,self.adapter,42,'42')
         self.assertEqual(len(self.flow.sql),1)
         self.assertIn('["01/2025","02/2025","03/2025","04/2025"]',self.flow.sql[0])
     async def test_vencimiento_no_despacha(self):
