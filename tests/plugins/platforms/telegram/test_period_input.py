@@ -126,18 +126,21 @@ def test_edit_cancel_foreign_nonce_and_ack_failure_do_not_execute():
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('operation', ['descargar-presentados', 'generar', 'descargar-lote', 'ddjj-iva'])
+@pytest.mark.parametrize('operation', ['descargar-presentados', 'generar', 'descargar-lote', 'ddjj-iva', 'mis-retenciones'])
 def test_portal_real_text_and_callback_require_confirmation(operation):
     from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow, FlowState
     from plugins.platforms.telegram import portal_iva_ddjj_flow
+    from plugins.platforms.telegram import mis_retenciones_flow
     async def scenario():
         flow = PortalIvaFlow(); adapter = NS(_bot=NS(send_message=AsyncMock()))
-        stage = 'batch_period' if operation == 'descargar-lote' else 'ddjj_period' if operation == 'ddjj-iva' else 'period'
+        stage = ('batch_period' if operation == 'descargar-lote' else 'ddjj_period' if operation == 'ddjj-iva'
+                 else 'mr_period' if operation == 'mis-retenciones' else 'period')
         state = FlowState(user_id='42', nonce='a'*10, stage=stage, operation=operation)
         key = flow._key(42, None, '42'); flow.states[key] = state
         submit = AsyncMock()
-        if operation == 'ddjj-iva':
-            original = portal_iva_ddjj_flow.submit_period; portal_iva_ddjj_flow.submit_period = submit
+        module = mis_retenciones_flow if operation == 'mis-retenciones' else portal_iva_ddjj_flow
+        if operation in ('ddjj-iva','mis-retenciones'):
+            original = module.submit_period; module.submit_period = submit
         else:
             setattr(flow, '_submit_batch_period' if operation == 'descargar-lote' else '_submit_single_period', submit)
         def msg(text):return NS(chat_id=42, from_user=NS(id=42), text=text, message_thread_id=None)
@@ -153,7 +156,7 @@ def test_portal_real_text_and_callback_require_confirmation(operation):
             await flow.callback(adapter, NS(answer=AsyncMock()), 'pi:period:yes:'+nonce, 42, None, '42')
             assert submit.await_count == 1
         finally:
-            if operation == 'ddjj-iva':portal_iva_ddjj_flow.submit_period = original
+            if operation in ('ddjj-iva','mis-retenciones'):module.submit_period = original
     asyncio.run(scenario())
 
 
@@ -215,3 +218,16 @@ def test_agip_real_text_and_callback_share_gate():
         await flow.callback(adapter,NS(answer=AsyncMock()),'ad:period:yes:'+state.period_candidate.nonce,42,None,'42')
         flow._submit_period.assert_awaited_once()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('text', ['05/01/2025-17/02/2025','5/1/2025 – 17/2/2025','05/01/2025 a 17/02/2025'])
+def test_mis_retenciones_keeps_exact_days(text):
+    result = parse_period(text,'mis-retenciones',today=date(2026,11,13))
+    assert result.dates()==('05/01/2025','17/02/2025')
+    assert result.summary=='05/01/2025 a 17/02/2025, 44 días'
+    assert parse_period('2/2024','mis-retenciones').dates()==('01/02/2024','29/02/2024')
+    assert parse_period('01/2099','mis-retenciones').dates()==('01/01/2099','31/01/2099')
+    for invalid,reason in [('31/02/2025-01/03/2025','no existe'),('02/01/2025-01/01/2025','anterior'),
+                           ('01/01/2025-14/11/2026','posterior a hoy')]:
+        with pytest.raises(ValueError,match=reason):
+            parse_period(invalid,'mis-retenciones',today=date(2026,11,13))

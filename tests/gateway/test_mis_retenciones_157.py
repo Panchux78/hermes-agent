@@ -13,8 +13,9 @@ def test_mes_y_rango_con_motivo_concreto():
     assert mr.periodo('09/2026') == ('01/09/2026', '30/09/2026')
     assert mr.periodo('2/2024') == ('01/02/2024', '29/02/2024')
     assert mr.periodo(' 01/01/2019  a 30/09/2026 ') == ('01/01/2019', '30/09/2026')
-    for texto, motivo in (('2026-09', 'No entendí'), ('31/02/2026 a 01/03/2026', 'no existe'),
-                          ('01/10/2026 a 01/09/2026', 'anterior'), ('01/09/2026 - 30/09/2026', 'No entendí')):
+    assert mr.periodo('01/09/2026 - 30/09/2026') == ('01/09/2026', '30/09/2026')
+    for texto, motivo in (('2026-09', 'MM/AAAA'), ('31/02/2026 a 01/03/2026', 'no existe'),
+                          ('01/10/2026 a 01/09/2026', 'anterior')):
         with pytest.raises(ValueError, match=motivo):
             mr.periodo(texto)
     manana = (date.today() + timedelta(days=1)).strftime('%d/%m/%Y')

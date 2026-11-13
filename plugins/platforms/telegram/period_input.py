@@ -21,6 +21,8 @@ from plugins.platforms.telegram.menu_buttons import menu_label
 SYNTAX = 'Guion = rango; coma = meses sueltos. Escribí todo en un solo mensaje.'
 MONTH = r'(0?[1-9]|1[0-2])/([0-9]{4})'
 RANGE = rf'({MONTH})\s*(?:-|–|a|hasta)\s*({MONTH})'
+DATE = r'[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}'
+DATE_RANGE = rf'({DATE})\s*(?:-|–|a|hasta)\s*({DATE})'
 
 
 def sender(adapter, chat_id, thread_id=None):
@@ -49,12 +51,14 @@ class PeriodSpec:
     same_year: bool = False
     all_periods: bool = False
     warning_before: str | None = None
+    no_future_dates: bool = False
 
     @property
     def prompt(self):
         options = {'month': 'el mes (MM/AAAA)', 'year': 'el año (AAAA)',
                    'range': 'el rango (MM/AAAA-MM/AAAA)',
-                   'list': 'la lista (MM/AAAA, MM/AAAA)'}
+                   'list': 'la lista (MM/AAAA, MM/AAAA)',
+                   'date_range': 'el rango de fechas (DD/MM/AAAA-DD/MM/AAAA)'}
         forms = ' o '.join(options[f] for f in options if f in self.forms)
         extra = f' Hasta {self.max_months} meses.' if self.max_months else ''
         extra += f' Desde {self.min_year}.' if self.min_year > 1 else ''
@@ -74,6 +78,7 @@ SPECS = {
     'sct_estado_cumplimiento': PeriodSpec('SCT Estado de cumplimiento', frozenset({'month', 'range', 'year'}),
                                         same_year=True, all_periods=True),
     'agip-ddjj': PeriodSpec('DDJJ de IIBB', frozenset({'month', 'year'})),
+    'mis-retenciones': PeriodSpec('Mis Retenciones', frozenset({'month', 'date_range'}), no_future_dates=True),
     'comarb-periodo': PeriodSpec('DDJJ presentadas', min_year=2010, max_year=2099, closed=True),
     'comarb-lote': PeriodSpec('Lote de DDJJ presentadas', frozenset({'range', 'list'}),
                              min_year=2010, max_year=2099, closed=True),
@@ -90,6 +95,8 @@ class PeriodSelection:
     months: tuple[str, ...]  # YYYY-MM, en el orden solicitado
     form: str
     year: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
 
     @property
     def visible(self):
@@ -101,6 +108,9 @@ class PeriodSelection:
             return 'todos los períodos disponibles'
         if self.form == 'year':
             return f'{self.year}, año completo'
+        if self.form == 'date_range':
+            first, last = self.dates()
+            return f'{first} a {last}, {(self.date_to - self.date_from).days + 1} días'
         count = len(self.months)
         label = (f'{self.visible[0]} a {self.visible[-1]}' if self.form == 'range'
                  else ', '.join(self.visible))
@@ -114,6 +124,14 @@ class PeriodSelection:
         first, last = self.months[0], self.months[-1]
         end = calendar.monthrange(int(last[:4]), int(last[5:]))[1]
         return 'range', first.replace('-', '') + '00', last.replace('-', '') + f'{end:02d}'
+
+    def dates(self):
+        if self.form == 'date_range':
+            return self.date_from.strftime('%d/%m/%Y'), self.date_to.strftime('%d/%m/%Y')
+        first, last = self.months[0], self.months[-1]
+        start = date(int(first[:4]), int(first[5:]), 1)
+        end = date(int(last[:4]), int(last[5:]), calendar.monthrange(int(last[:4]), int(last[5:]))[1])
+        return start.strftime('%d/%m/%Y'), end.strftime('%d/%m/%Y')
 
 
 def _month(raw):
@@ -174,13 +192,32 @@ def _validate_months(indexes, form, spec, today):
     return months
 
 
+def _date_range(match, spec, today):
+    if 'date_range' not in spec.forms:
+        raise ValueError('Esta consulta no admite un rango de fechas. ' + spec.prompt)
+    try:
+        first, last = (datetime.strptime(v, '%d/%m/%Y').date() for v in match.groups())
+    except ValueError:
+        raise ValueError('Alguna de las fechas no existe en el calendario. ' + spec.prompt) from None
+    if last < first:
+        raise ValueError('La fecha final es anterior a la inicial. Revisá ambas fechas.')
+    if spec.no_future_dates and last > today:
+        raise ValueError('La fecha final no puede ser posterior a hoy.')
+    months = tuple(f'{n//12:04d}-{n%12+1:02d}' for n in range(first.year*12+first.month-1, last.year*12+last.month))
+    return PeriodSelection(months, 'date_range', date_from=first, date_to=last)
+
+
 def parse_period(text, operation, *, today=None):
     spec = SPECS[operation] if isinstance(operation, str) else operation
     if not isinstance(text, str) or not text.strip() or len(text) > 4096:
         raise ValueError('Ingresá un período de hasta 4096 caracteres. ' + spec.prompt)
     raw = text.strip()
+    today = today or datetime.now(ZoneInfo('America/Argentina/Buenos_Aires')).date()
     if raw == '-' and spec.all_periods:
         return PeriodSelection((), 'all')
+    dates = re.fullmatch(DATE_RANGE, raw, re.I | re.ASCII)
+    if dates:
+        return _date_range(dates, spec, today)
     indexes, form = _parse_indexes(raw, spec)
     months = _validate_months(indexes, form, spec, today)
     return PeriodSelection(months, form, raw if form == 'year' else None)

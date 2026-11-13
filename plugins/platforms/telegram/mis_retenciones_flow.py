@@ -7,10 +7,8 @@ misma bitácora. Sólo lectura.
 from __future__ import annotations
 
 import asyncio
-import calendar
 import re
 import shutil
-from datetime import date, datetime
 from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,12 +16,12 @@ from telegram.error import TelegramError
 
 from plugins.platforms.telegram.fiscal_credentials import verify_representation
 from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, sender
 
 OPERATION = 'arca_mis_retenciones'
 IMPUESTOS = {'iva': ('IVA', ('767', '216')), 'ganancias': ('Ganancias', ('217',)), 'suss': ('Seguridad social', ('353',))}
 TIPOS = {'ambas': 'Retenciones y percepciones', 'retencion': 'Sólo retenciones', 'percepcion': 'Sólo percepciones'}
-PROMPT = ('Escribí el mes como MM/AAAA, o el rango de fechas como DD/MM/AAAA a DD/MM/AAAA.\n'
-          'Ejemplos: 09/2026 · 01/01/2026 a 30/09/2026')
+PROMPT = SPECS['mis-retenciones'].prompt
 ESTADOS = {'completado': 'obtenido', 'cero': 'sin movimientos', 'no_aplica': 'no corresponde', 'fallido': 'no obtenido',
            'formato': 'original guardado, sin Excel', 'control': 'no coincide con la pantalla', 'incompleto': 'incompleto'}
 ETAPAS = {'filtro': 'Completando el filtro', 'consulta': 'Consultando', 'exportacion': 'Esperando el archivo de ARCA',
@@ -44,29 +42,9 @@ def tipo_keyboard(nonce):
     return InlineKeyboardMarkup(rows)
 
 
-def _fecha(texto):
-    return datetime.strptime(texto, '%d/%m/%Y').date()
-
-
 def periodo(texto):
-    """Un mes o un rango de fechas reales; devuelve (desde, hasta) dd/mm/aaaa o un motivo concreto."""
-    t = re.sub(r'\s+', ' ', (texto or '').strip())
-    mes = re.fullmatch(r'(0?[1-9]|1[0-2])/([0-9]{4})', t)
-    if mes:
-        m, y = int(mes[1]), int(mes[2])
-        return f'01/{m:02d}/{y}', f'{calendar.monthrange(y, m)[1]:02d}/{m:02d}/{y}'
-    rango = re.fullmatch(r'([0-9]{1,2}/[0-9]{1,2}/[0-9]{4}) a ([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})', t)
-    if not rango:
-        raise ValueError('No entendí el período. ' + PROMPT)
-    try:
-        inicio, fin = (datetime.strptime(v, '%d/%m/%Y').date() for v in (rango[1], rango[2]))
-    except ValueError:
-        raise ValueError('Alguna de las fechas no existe en el calendario. ' + PROMPT) from None
-    if fin < inicio:
-        raise ValueError('La fecha final es anterior a la inicial. ' + PROMPT)
-    if fin > date.today():
-        raise ValueError('La fecha final no puede ser posterior a hoy.')
-    return inicio.strftime('%d/%m/%Y'), fin.strftime('%d/%m/%Y')
+    """Adaptador al mismo parser que el resto del bot; conserva fechas exactas."""
+    return parse_period(texto, 'mis-retenciones').dates()
 
 
 def progress(stage):
@@ -119,11 +97,15 @@ async def callback(flow, adapter, query, data, chat, thread, key):
 
 async def receive_period(flow, adapter, message, state, key):
     chat, thread = message.chat_id, getattr(message, 'message_thread_id', None)
-    try:
-        state.mr_desde, state.mr_hasta = periodo(message.text)
-    except ValueError as exc:
-        await flow._send(adapter, chat, str(exc), thread)
-        return True
+    await propose_period(state, 'mis-retenciones', message.text, prefix='pi',
+        send=sender(adapter, chat, thread),
+        submit=lambda selection: submit_period(flow, adapter, message, state, key, selection))
+    return True
+
+
+async def submit_period(flow, adapter, message, state, key, selection):
+    chat, thread = message.chat_id, getattr(message, 'message_thread_id', None)
+    state.mr_desde, state.mr_hasta = selection.dates()
     state.period = f'{state.mr_hasta[6:]}-{state.mr_hasta[3:5]}'
     state.stage = 'running'
     nombre = IMPUESTOS[state.mr_impuesto][0]
