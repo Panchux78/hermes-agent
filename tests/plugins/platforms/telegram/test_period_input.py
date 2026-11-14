@@ -77,7 +77,7 @@ def test_candidate_second_text_edit_duplicate_cancel_expiry_and_new_request():
                 'pi:period:' + action + ':' + (nonce or state.period_candidate.nonce), 'pi')
         await offer('05/2025')
         first = state.period_candidate.nonce
-        assert '1 mes' in send.await_args.args[0] and 'anteriores a 06/2025' in send.await_args.args[0]
+        assert '1 mes' in send.await_args.args[0] and 'anteriores a 06/2025' not in send.await_args.args[0]
         submit.assert_not_awaited()
         await offer('06/2026')
         assert state.period_candidate.nonce == first

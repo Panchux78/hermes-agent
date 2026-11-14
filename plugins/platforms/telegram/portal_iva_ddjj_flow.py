@@ -150,7 +150,7 @@ def summary_cases(cases):
     if all(c['estado'] == 'no_soportado' for c in cases):
         forms = ', '.join(sorted({f"F.{c['presentacion']['formulario']}" for c in cases}))
         return (f'Los {len(cases)} períodos solicitados están presentados con {forms}; '
-                'esta consulta sólo transcribe F.2051. No se generó un Excel.')
+                'esta consulta transcribe F.731, F.2002 y F.2051. No se generó un Excel.')
     lines = [f'Se transcribieron {completed} de {len(cases)} períodos en el Excel.' if completed
              else 'No se pudo transcribir ningún período. No se generó un Excel.']
     lines += [f"{c['periodo'][5:]}/{c['periodo'][:4]}: {c['motivo_texto']}"

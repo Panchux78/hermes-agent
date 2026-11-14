@@ -73,7 +73,7 @@ SPECS = {
     'generar': PeriodSpec('Preparar período nuevo'),
     'descargar-lote': PeriodSpec('Lote de Libros IVA', frozenset({'range'})),
     'ddjj-iva': PeriodSpec('DDJJ de IVA a Excel', frozenset({'month', 'range'}),
-                           max_months=36, warning_before='2025-06'),
+                           max_months=36),
     'ccma_obligaciones_pagos': PeriodSpec('CCMA Obligaciones y pagos', frozenset({'month', 'range', 'year'})),
     'sct_estado_cumplimiento': PeriodSpec('SCT Estado de cumplimiento', frozenset({'month', 'range', 'year'}),
                                         same_year=True, all_periods=True),
