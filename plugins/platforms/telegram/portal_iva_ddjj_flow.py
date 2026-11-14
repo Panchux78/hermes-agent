@@ -10,6 +10,7 @@ from xml.etree import ElementTree
 from telegram.error import TelegramError
 
 from plugins.platforms.telegram.fiscal_credentials import verify_representation
+from plugins.platforms.telegram.contabot_deployment import checked_python
 
 from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, route_period_callback, sender
 
@@ -28,8 +29,9 @@ def command(flow, state):
     binding = state.scope_item or {}
     if not binding.get('access_id') or not binding.get('representative_id'):
         raise RuntimeError('DDJJ_ACCESO_NO_DISPONIBLE')
-    args = [str(flow.uv), 'run', '--no-project', '--with', 'selenium', '--with', 'openpyxl',
-            'xvfb-run', '-a', 'python3', str(executor), '--cliente', state.slug,
+    if flow.runtime_python is None:
+        raise RuntimeError('DDJJ_RUNTIME_NO_DISPONIBLE')
+    args = ['xvfb-run', '-a', checked_python(flow.runtime_python), '-B', str(executor), '--cliente', state.slug,
             '--id-acceso', str(int(binding['access_id'])), '--id-titular', str(int(binding['representative_id'])), '--captcha-stdin']
     for period in state.ddjj_periods:
         args += ['--periodo', period]

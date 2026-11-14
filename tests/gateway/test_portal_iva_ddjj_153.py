@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -45,12 +46,27 @@ def test_periodo_argentino_y_rango_acotado():
 
 def test_comando_binding_y_sin_shell(tmp_path):
     for name in ('portal_iva.py','portal_iva_ddjj.py','uv'): (tmp_path/name).touch()
-    flow=PortalIvaFlow(executor=tmp_path/'portal_iva.py',uv=tmp_path/'uv',clients_root=tmp_path)
+    flow=PortalIvaFlow(executor=tmp_path/'portal_iva.py',uv=tmp_path/'uv',clients_root=tmp_path,runtime_python=Path(sys.executable))
     cmd=ddjj.command(flow,state())
     assert cmd.count('--periodo')==3
     assert cmd[cmd.index('--id-acceso')+1]=='3'
     assert cmd[cmd.index('--id-titular')+1]=='4'
     assert '--operacion' not in cmd and '--captcha-stdin' in cmd
+
+
+def test_comando_usa_el_python_fiscal_como_panel_sin_entorno_uv(tmp_path):
+    for name in ('portal_iva.py','portal_iva_ddjj.py','uv'): (tmp_path/name).touch()
+    flow=PortalIvaFlow(executor=tmp_path/'portal_iva.py',uv=tmp_path/'uv',clients_root=tmp_path,runtime_python=Path(sys.executable))
+    cmd=ddjj.command(flow,state())
+    assert cmd[:5]==['xvfb-run','-a',sys.executable,'-B',str(tmp_path/'portal_iva_ddjj.py')]
+    assert str(tmp_path/'uv') not in cmd and '--with' not in cmd and 'python3' not in cmd
+
+
+def test_sin_python_fiscal_no_abre_arca_ni_crea_entorno_alternativo(tmp_path):
+    for name in ('portal_iva.py','portal_iva_ddjj.py','uv'): (tmp_path/name).touch()
+    flow=PortalIvaFlow(executor=tmp_path/'portal_iva.py',uv=tmp_path/'uv',clients_root=tmp_path)
+    with pytest.raises(RuntimeError,match='DDJJ_RUNTIME_NO_DISPONIBLE'):
+        ddjj.command(flow,state())
 
 
 def test_ejecutor_ausente_registra_rechazo(tmp_path):
