@@ -47,9 +47,14 @@ def _literal(value: str) -> str:
 class FiscalScope:
     """Resolve only contributors visible to one Telegram actor."""
 
-    def __init__(self, query: Callable[[str], list[Any]], entity: str) -> None:
+    def __init__(self, query: Callable[[str], list[Any]], entity: str, binding: str = "portal_iva") -> None:
+        if binding not in ("portal_iva", "mis_retenciones"):
+            raise ValueError("fiscal_scope_binding_invalid")
         self.query = query
         self.entity = entity
+        # Mis Retenciones (#157) no exige Responsable Inscripto: Ganancias, Bienes Personales
+        # y seguridad social también se consultan para quien no está inscripto en IVA.
+        self.binding = binding
 
     @staticmethod
     def _telegram_id(value: Any) -> int:
@@ -97,12 +102,12 @@ class FiscalScope:
             'relation_revision',s.revision_representacion,
             'verified',s.fecha_verificacion IS NOT NULL,
             'representative_id',s.id_representante,'holder_cuit',s.cuit_representante,
-            'access_id',b.id_acceso
+            'access_id',b.id_acceso{",'iva',b.iva" if self.binding == "mis_retenciones" else ""}
           )::text
           FROM console.fn_buscar_contribuyente_fiscal(
             {actor},{_literal(self.entity)},{term_sql},{contributor_sql}
           ) s
-          LEFT JOIN LATERAL console.fn_portal_iva_lote_binding_telegram(
+          LEFT JOIN LATERAL console.{"fn_mis_retenciones_binding_telegram" if self.binding == "mis_retenciones" else "fn_portal_iva_lote_binding_telegram"}(
             {actor},s.id_contribuyente
           ) b ON {"TRUE" if self.entity == "ARCA" else "FALSE"};
         """)

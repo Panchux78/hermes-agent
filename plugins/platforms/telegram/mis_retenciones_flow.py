@@ -7,6 +7,7 @@ misma bitácora. Sólo lectura.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -19,7 +20,16 @@ from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, sender
 
 OPERATION = 'arca_mis_retenciones'
-IMPUESTOS = {'iva': ('IVA', ('767', '216')), 'ganancias': ('Ganancias', ('217',)), 'suss': ('Seguridad social', ('353',))}
+logger = logging.getLogger(__name__)
+# Mismo orden que el panel. Ganancias son dos códigos de ARCA (217 y 787) desde el 14/11/2026.
+IMPUESTOS = {'iva': ('IVA', ('767', '216')), 'ganancias': ('Ganancias', ('217', '787')),
+             'bienes_personales': ('Bienes Personales', ('219',)), 'suss': ('Seguridad social', ('353',))}
+# No estar inscripto en IVA no impide consultar lo demás: sólo la opción IVA responde «no corresponde».
+IVA_NO_CORRESPONDE = {
+    'monotributo': 'IVA: no corresponde. ARCA lo registra como monotributista, sin inscripción en IVA.',
+    'sin_inscripcion_verificada': 'IVA: no corresponde. La ficha fiscal no tiene una inscripción en IVA verificada en ARCA.',
+}
+OTROS_IMPUESTOS = 'Podés consultar Ganancias, Bienes Personales o Seguridad social.'
 TIPOS = {'ambas': 'Retenciones y percepciones', 'retencion': 'Sólo retenciones', 'percepcion': 'Sólo percepciones'}
 PROMPT = SPECS['mis-retenciones'].prompt
 ESTADOS = {'completado': 'obtenido', 'cero': 'sin movimientos', 'no_aplica': 'no corresponde', 'fallido': 'no obtenido',
@@ -62,7 +72,7 @@ async def after_contributor(flow, adapter, chat, thread, state):
 
 
 async def callback(flow, adapter, query, data, chat, thread, key):
-    m = re.fullmatch(r'pi:(mri|mrt):([0-9a-f]{10}):([a-z]+)', data)
+    m = re.fullmatch(r'pi:(mri|mrt):([0-9a-f]{10}):([a-z_]+)', data)
     if not m:
         return False
     state = flow.states.get(key)
@@ -73,6 +83,12 @@ async def callback(flow, adapter, query, data, chat, thread, key):
     if m[1] == 'mri':
         if m[3] not in IMPUESTOS:
             await query.answer('Impuesto inválido.')
+            return True
+        motivo = IVA_NO_CORRESPONDE.get((getattr(state, 'scope_item', None) or {}).get('iva')) if m[3] == 'iva' else None
+        if motivo:
+            # No se abre ARCA ni se registra una consulta: la persona elige otro impuesto.
+            await query.answer('IVA: no corresponde.')
+            await flow._send(adapter, chat, f'{motivo}\n{OTROS_IMPUESTOS}', thread, impuesto_keyboard(state.nonce))
             return True
         state.mr_impuesto = m[3]
         await query.answer(IMPUESTOS[m[3]][0])
@@ -168,11 +184,13 @@ def validate_result(flow, state, result):
 
 async def checked_subject(flow, state):
     await asyncio.to_thread(flow._scope().require_permission, state.user_id, 'operaciones.ejecutar')
-    verified = await asyncio.to_thread(flow._by_id, state.contributor_id, state.user_id)
+    verified = await asyncio.to_thread(flow._by_id, state.contributor_id, state.user_id, 'mis-retenciones')
     binding = state.scope_item or {}
     fields = ('id', 'slug', 'cuit', 'study_id', 'relation_id', 'relation_revision', 'access_id', 'representative_id')
     if len(verified) != 1 or not verified[0].get('access_id') or any(verified[0].get(k) != binding.get(k) for k in fields):
         raise RuntimeError('MR_SELECCION_VENCIDA')
+    if state.mr_impuesto == 'iva' and verified[0].get('iva') in IVA_NO_CORRESPONDE:
+        raise RuntimeError('MR_IVA_NO_CORRESPONDE')
     return verified[0]
 
 
@@ -246,6 +264,11 @@ async def run(flow, adapter, chat, thread, key, state):
                     caption=caption, metadata={'thread_id': thread} if thread is not None else None)
                 if not delivery.success or not getattr(delivery, 'message_id', None):
                     raise RuntimeError('MR_ENTREGA_NO_CONFIRMADA')
+                entregado = getattr(delivery, 'delivered_filename', None)
+                if entregado is not None and entregado != path.name:
+                    # El nombre tiene que ser el mismo que en el panel; si Telegram lo cambia, queda a la vista.
+                    logger.warning('[MIS-RETENCIONES] Telegram cambió el nombre del archivo (%d → %d caracteres)',
+                                   len(path.name), len(entregado))
         for c in consultas:
             ok = c['estado'] in ('completado', 'cero')
             await flow.history.finish_item(run_handle, items[c['codigo']],
@@ -258,7 +281,9 @@ async def run(flow, adapter, chat, thread, key, state):
                         'No se consultó: la identidad del contribuyente quedó en duda en el impuesto anterior.')
         text = '\n'.join([f'{state.nombre} · Mis Retenciones {IMPUESTOS[state.mr_impuesto][0]} · {state.mr_desde} a {state.mr_hasta}',
                           *(linea(c) for c in consultas)] + ([] if envios else ['No se descargó ningún archivo.']))
-        await flow._edit_progress(state, text)
+        # El resumen va una sola vez (14/11/2026): el mensaje de avance se cierra con una línea
+        # corta y el detalle llega en un único mensaje, después de los archivos.
+        await flow._edit_progress(state, f'{state.nombre} · Mis Retenciones {IMPUESTOS[state.mr_impuesto][0]}: consulta terminada.')
         await flow._send(adapter, chat, text, thread)
     except asyncio.CancelledError:
         if proc is not None and proc.returncode is None:
@@ -271,11 +296,12 @@ async def run(flow, adapter, chat, thread, key, state):
         code = str(exc) if re.fullmatch('[A-Z0-9_]{1,100}', str(exc)) else 'MR_ERROR_TECNICO'
         en_curso = code in ('MR_CONSULTA_EN_CURSO', 'PORTAL_IVA_EXECUTION_ALREADY_RUNNING')
         detalle = ('Ya hay una consulta de Mis Retenciones en curso para este contribuyente. No se inició otra en ARCA.' if en_curso
+                   else f"{IVA_NO_CORRESPONDE['sin_inscripcion_verificada']} No se consultó ARCA. {OTROS_IMPUESTOS}" if code == 'MR_IVA_NO_CORRESPONDE'
                    else f'No se pudo completar Mis Retenciones. {mensaje} No se modificó ARCA.' if mensaje
                    else 'No se pudo completar Mis Retenciones. No se modificó ARCA. '
                         'Revisá el resultado en Operaciones; el diagnóstico quedó preservado.')
         await remaining('rechazado' if en_curso else 'fallido', code.lower(), detalle)
-        await flow._edit_progress(state, detalle)
+        await flow._edit_progress(state, 'Mis Retenciones: la consulta no se completó.')
         await flow._send(adapter, chat, detalle, thread)
     finally:
         if proc is not None and proc.returncode is None:

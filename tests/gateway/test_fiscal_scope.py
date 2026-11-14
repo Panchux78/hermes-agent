@@ -63,3 +63,21 @@ def test_verification_requires_exact_cuit_and_expected_database_ack():
     assert_marked([{"verified": True}])
     with pytest.raises(RuntimeError, match="REPRESENTATION_VERIFICATION_FAILED"):
         assert_marked([{"verified": False}])
+
+
+def test_mis_retenciones_no_exige_responsable_inscripto():
+    """#157 (14/11/2026): el selector de Mis Retenciones usa su propio binding, sin filtro de IVA."""
+    seen = []
+
+    def query(sql):
+        seen.append(sql)
+        return []
+    FiscalScope(query, "ARCA", "mis_retenciones").by_id("7", 12)
+    assert "fn_mis_retenciones_binding_telegram" in seen[0] and "'iva',b.iva" in seen[0]
+    assert "fn_portal_iva_lote_binding_telegram" not in seen[0]
+    FiscalScope(query, "ARCA").by_id("7", 12)
+    assert "fn_portal_iva_lote_binding_telegram" in seen[1] and "b.iva" not in seen[1]
+    import pytest
+    with pytest.raises(ValueError):
+        FiscalScope(query, "ARCA", "otra")
+

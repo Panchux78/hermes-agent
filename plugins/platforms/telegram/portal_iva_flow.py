@@ -247,14 +247,19 @@ class PortalIvaFlow:
     def _write_query(self, sql: str) -> list[dict[str, Any]]:
         return self._run_query(sql, self.write_connection)
 
-    def _scope(self) -> FiscalScope:
-        return FiscalScope(self._query, "ARCA")
+    def _scope(self, operation: str | None = None) -> FiscalScope:
+        return FiscalScope(self._query, "ARCA", "mis_retenciones" if operation == "mis-retenciones" else "portal_iva")
 
-    def _search(self, term: str, telegram_id: Any) -> list[dict[str, Any]]:
-        return self._scope().search(telegram_id, term)
+    @staticmethod
+    def _alcance(state: Any) -> tuple[str, ...]:
+        """Sólo Mis Retenciones pide su propio alcance; los flujos de Libros IVA no cambian."""
+        return ("mis-retenciones",) if getattr(state, "operation", None) == "mis-retenciones" else ()
 
-    def _by_id(self, item_id: int, telegram_id: Any) -> list[dict[str, Any]]:
-        return self._scope().by_id(telegram_id, item_id)
+    def _search(self, term: str, telegram_id: Any, operation: str | None = None) -> list[dict[str, Any]]:
+        return self._scope(operation).search(telegram_id, term)
+
+    def _by_id(self, item_id: int, telegram_id: Any, operation: str | None = None) -> list[dict[str, Any]]:
+        return self._scope(operation).by_id(telegram_id, item_id)
 
     def _iva_reason(self, item_id: int, telegram_id: Any) -> str:
         actor = FiscalScope._telegram_id(telegram_id)
@@ -267,7 +272,11 @@ class PortalIvaFlow:
         reason = rows[0].get("reason")
         return reason if reason in _IVA_INELIGIBLE or reason == "habilitado" else "no_autorizado"
 
-    async def _ineligible_text(self, item_id: int, telegram_id: Any) -> str:
+    async def _ineligible_text(self, item_id: int, telegram_id: Any, operation: str | None = None) -> str:
+        if operation == "mis-retenciones":
+            # Para Mis Retenciones no cuenta la condición frente al IVA: sólo el acceso a ARCA.
+            return ("No tiene un acceso ARCA verificado y único para consultar. "
+                    "Verificá la clave en Accesos de la ficha y volvé a intentar.")
         try:
             reason = await asyncio.to_thread(self._iva_reason, item_id, telegram_id)
         except Exception:
@@ -469,14 +478,14 @@ class PortalIvaFlow:
                 await query.answer("La opción ya no está disponible.")
                 await self._reject(user_id=user_id, operation=state.operation, key_material=f"stale:{state.nonce}:{selected_id}", code="contribuyente_no_disponible", text="El contribuyente elegido ya no estaba autorizado.")
                 return True
-            found = await asyncio.to_thread(self._by_id, selected_id, state.user_id)
+            found = await asyncio.to_thread(self._by_id, selected_id, state.user_id, *self._alcance(state))
             found = [item for item in found if item.get("access_id")]
         except Exception:
             await query.answer("No pude validar la opción en la base. Probá nuevamente.")
             await self._reject(user_id=user_id, operation=state.operation, key_material=f"database:{state.nonce}:{select.group(2)}", code="base_no_disponible", text="La base canónica no permitió validar el contribuyente antes de ejecutar.")
             return True
         if not found:
-            reason = await self._ineligible_text(selected_id, state.user_id)
+            reason = await self._ineligible_text(selected_id, state.user_id, *self._alcance(state))
             await query.answer("No se puede iniciar la consulta.")
             await self._send(adapter, chat_id, reason, thread_id)
             await self._reject(user_id=user_id, operation=state.operation, key_material=f"revalidate:{state.nonce}:{selected_id}", code="contribuyente_no_autorizado", text=reason)
@@ -544,7 +553,7 @@ class PortalIvaFlow:
                              + "\n" + SPECS["descargar-lote"].prompt, thread_id)
             return True
         try:
-            raw_candidates = await asyncio.to_thread(self._search, message.text or "", state.user_id)
+            raw_candidates = await asyncio.to_thread(self._search, message.text or "", state.user_id, *self._alcance(state))
             candidates = [item for item in raw_candidates if item.get("access_id")]
         except InvalidCuit:
             await self._send(adapter, chat_id, "El CUIT ingresado no es válido.", thread_id)
@@ -555,17 +564,20 @@ class PortalIvaFlow:
         offer = ContributorOffer.from_rows(candidates)
         state.candidates = offer.candidates
         blocked = [item for item in raw_candidates if not item.get("access_id")]
-        blocked_texts = [f"{item['nombre']}: {await self._ineligible_text(int(item['id']), state.user_id)}"
+        blocked_texts = [f"{item['nombre']}: {await self._ineligible_text(int(item['id']), state.user_id, *self._alcance(state))}"
                          for item in blocked]
         if len(raw_candidates) == 1 and blocked and state.operation == "descargar-lote":
             state.excluded_clients[int(blocked[0]['id'])] = blocked_texts[0]
         if blocked_texts and offer.status != "empty":
-            await self._send(adapter, chat_id, "No habilitados para Libros IVA:\n"
+            await self._send(adapter, chat_id, ("No habilitados para Mis Retenciones:\n" if state.operation == "mis-retenciones"
+                                                else "No habilitados para Libros IVA:\n")
                              + "\n".join(blocked_texts), thread_id)
         if offer.status == "empty":
             empty_text = (
                 "No incluidos:\n" + "\n".join(blocked_texts)
                 if blocked_texts else
+                "No hay un contribuyente con acceso ARCA verificado que coincida. Probá con nombre, CUIT o slug."
+                if state.operation == "mis-retenciones" else
                 "No hay un responsable inscripto habilitado que coincida. Probá con nombre, CUIT o slug. "
                 + _UNVERIFIED_KEY_HELP
             )
