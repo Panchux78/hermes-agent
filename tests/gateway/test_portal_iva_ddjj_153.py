@@ -71,6 +71,8 @@ def test_menu_orden_y_progreso():
     assert aligned_menu_label('arca_consultar','🧾','DDJJ de IVA a Excel').endswith('\u2800')
     assert 'percepciones aduaneras' in PortalIvaFlow._progress_text('ddjj:09/2026:aduaneras')
     assert ddjj.progress('ddjj:99/2026:aduaneras') is None
+    assert 'Esperando para volver a ingresar' in ddjj.progress('ddjj:09/2026:reconexion')
+    assert 'períodos pendientes' in PortalIvaFlow._progress_text('ddjj:09/2026:reconexion')
 
 
 def test_valida_sujeto_periodos_y_unico_excel(tmp_path):

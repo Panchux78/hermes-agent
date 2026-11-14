@@ -37,7 +37,8 @@ def command(flow, state):
 
 
 def progress(stage):
-    labels = {'debito_credito': 'Leyendo débito y crédito fiscal', 'retenciones': 'Leyendo retenciones',
+    labels = {'reconexion':'ARCA perdió la sesión. Esperando para volver a ingresar y continuar con los períodos pendientes',
+              'debito_credito': 'Leyendo débito y crédito fiscal', 'retenciones': 'Leyendo retenciones',
               'impositivas': 'Leyendo percepciones impositivas', 'aduaneras': 'Leyendo percepciones aduaneras',
               'saldos': 'Leyendo administración de saldos', 'determinacion': 'Leyendo determinación del impuesto'}
     match = re.fullmatch(r'ddjj:((?:0[1-9]|1[0-2])/[0-9]{4}):([a-z_]+)', stage)
