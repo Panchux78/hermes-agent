@@ -175,7 +175,8 @@ class _FlowCompleto(Flow):
 
     def _query(self, sql):
         self.consultas_sql.append(sql)
-        return ['[["2026-07", "No está en Documentos; Recibidos queda como respaldo"]]']
+        # Igual que _run_query: cada línea de psql ya llega decodificada.
+        return [[["2026-07", "No está en Documentos; Recibidos queda como respaldo"]]]
 
     def _acquire_execution_lock(self, lock):
         pass
@@ -280,3 +281,11 @@ def test_clave_rechazada_se_detiene_sin_reintentar(monkeypatch, tmp_path):
     assert len(comandos) == 1 and enviados == []
     assert 'ARCA rechazó la clave del acceso. No se reintentó.' in flow.sent[-1][0]
     assert [e for _, e, _ in flow.history.items] == ['fallido']
+
+
+def test_libros_iva_sin_respuesta_no_abre_arca(monkeypatch, tmp_path):
+    flow = _FlowCompleto(tmp_path, resultado())
+    flow._query = lambda sql: []
+    s = state(mc_sentido='recibidos', mc_desde='01/07/2026', mc_hasta='31/07/2026', user_id='99')
+    with pytest.raises(RuntimeError, match='MC_LIBROS_IVA_NO_DISPONIBLE'):
+        mc.libros_iva(flow, s)

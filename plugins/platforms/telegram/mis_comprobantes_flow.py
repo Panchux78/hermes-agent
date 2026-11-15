@@ -127,7 +127,8 @@ def libros_iva(flow, state):
     iso = lambda v: f'{v[6:]}-{v[3:5]}-{v[:2]}'
     rows = flow._query('SELECT console.fn_mis_comprobantes_libros_iva_telegram('
                        f"{int(state.user_id)},{int(state.contributor_id)},'{iso(state.mc_desde)}'::date,'{iso(state.mc_hasta)}'::date)::text;")
-    value = json.loads(rows[0]) if rows and rows[0] else None
+    # _query ya decodifica cada fila (json.loads por línea): la fila es la lista misma.
+    value = rows[0] if len(rows) == 1 else None
     if not (isinstance(value, list) and all(isinstance(x, list) and len(x) == 2 and re.fullmatch(r'\d{4}-\d{2}', str(x[0]))
                                             and isinstance(x[1], str) and len(x[1]) <= 120 for x in value)):
         raise RuntimeError('MC_LIBROS_IVA_NO_DISPONIBLE')
