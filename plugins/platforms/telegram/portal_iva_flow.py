@@ -129,6 +129,9 @@ class FlowState:
     mr_tipo: str | None = None
     mr_desde: str | None = None
     mr_hasta: str | None = None
+    mc_sentido: str | None = None
+    mc_desde: str | None = None
+    mc_hasta: str | None = None
 
 
 class PortalIvaFlow:
@@ -177,6 +180,9 @@ class PortalIvaFlow:
         if stage.startswith('mr:'):
             from plugins.platforms.telegram.mis_retenciones_flow import progress
             return progress(stage)
+        if stage.startswith('mc:'):
+            from plugins.platforms.telegram.mis_comprobantes_flow import progress
+            return progress(stage)
         return {
             "generar": "Generando CSV de período nuevo…",
             "buscar_presentado": "Buscando presentación…",
@@ -205,6 +211,7 @@ class PortalIvaFlow:
         operation_code = (
             "portal_iva_ddjj_iva_excel" if operation == "ddjj-iva" else
             "arca_mis_retenciones" if operation == "mis-retenciones" else
+            "arca_mis_comprobantes" if operation == "mis-comprobantes" else
             "portal_iva_generar_csv" if operation == "generar"
             else "portal_iva_lote_presentados" if operation == "descargar-lote"
             else "portal_iva_descargar_presentados"
@@ -248,12 +255,14 @@ class PortalIvaFlow:
         return self._run_query(sql, self.write_connection)
 
     def _scope(self, operation: str | None = None) -> FiscalScope:
-        return FiscalScope(self._query, "ARCA", "mis_retenciones" if operation == "mis-retenciones" else "portal_iva")
+        # Mis Comprobantes (#158) usa la misma elegibilidad que Mis Retenciones: acceso ARCA, sin exigir RI.
+        return FiscalScope(self._query, "ARCA", "mis_retenciones" if operation in ("mis-retenciones", "mis-comprobantes") else "portal_iva")
 
     @staticmethod
     def _alcance(state: Any) -> tuple[str, ...]:
-        """Sólo Mis Retenciones pide su propio alcance; los flujos de Libros IVA no cambian."""
-        return ("mis-retenciones",) if getattr(state, "operation", None) == "mis-retenciones" else ()
+        """Sólo Mis Retenciones y Mis Comprobantes piden su propio alcance; los flujos de Libros IVA no cambian."""
+        operation = getattr(state, "operation", None)
+        return (operation,) if operation in ("mis-retenciones", "mis-comprobantes") else ()
 
     def _search(self, term: str, telegram_id: Any, operation: str | None = None) -> list[dict[str, Any]]:
         return self._scope(operation).search(telegram_id, term)
@@ -273,8 +282,8 @@ class PortalIvaFlow:
         return reason if reason in _IVA_INELIGIBLE or reason == "habilitado" else "no_autorizado"
 
     async def _ineligible_text(self, item_id: int, telegram_id: Any, operation: str | None = None) -> str:
-        if operation == "mis-retenciones":
-            # Para Mis Retenciones no cuenta la condición frente al IVA: sólo el acceso a ARCA.
+        if operation in ("mis-retenciones", "mis-comprobantes"):
+            # Para Mis Retenciones y Mis Comprobantes no cuenta la condición frente al IVA: sólo el acceso a ARCA.
             return ("No tiene un acceso ARCA verificado y único para consultar. "
                     "Verificá la clave en Accesos de la ficha y volvé a intentar.")
         try:
@@ -345,7 +354,7 @@ class PortalIvaFlow:
         )
 
     async def start(self, adapter, query, chat_id: Any, thread_id: Any, user_id: str, operation: str) -> None:
-        if operation not in {"generar", "descargar-presentados", "descargar-lote", "ddjj-iva", "mis-retenciones"}:
+        if operation not in {"generar", "descargar-presentados", "descargar-lote", "ddjj-iva", "mis-retenciones", "mis-comprobantes"}:
             await query.answer("Operación Portal IVA inválida.")
             return
         key = self._key(chat_id, thread_id, user_id)
@@ -394,6 +403,14 @@ class PortalIvaFlow:
                 key_material=f"runtime:{getattr(getattr(query, 'message', None), 'message_id', 0)}:{operation}",
                 code="ejecutor_no_disponible", text=text)
             return
+        if operation == "mis-comprobantes" and not self.executor.with_name('mis_comprobantes.py').is_file():
+            await query.answer("Mis Comprobantes requiere mantenimiento local.")
+            text = "Mis Comprobantes no pudo iniciarse porque falta su ejecutor local. No se consultó ARCA."
+            await self._send(adapter, chat_id, text, thread_id)
+            await self._reject(user_id=user_id, operation=operation,
+                key_material=f"runtime:{getattr(getattr(query, 'message', None), 'message_id', 0)}:{operation}",
+                code="ejecutor_no_disponible", text=text)
+            return
         if (operation == "descargar-lote" and not self.batch_executor.is_file()) or (operation == "ddjj-iva" and not self.executor.with_name('portal_iva_ddjj.py').is_file()):
             await query.answer("Esta operación Portal IVA requiere mantenimiento local." if operation == 'ddjj-iva' else "El lote de Portal IVA requiere mantenimiento local.")
             text = (
@@ -414,7 +431,7 @@ class PortalIvaFlow:
             progress_label=("Generando CSV de período nuevo…" if operation == "generar" else "Buscando presentación…"),
             created_at=time.monotonic(),
         )
-        await query.answer("Mis Retenciones" if operation == "mis-retenciones" else "Portal IVA")
+        await query.answer({"mis-retenciones": "Mis Retenciones", "mis-comprobantes": "Mis Comprobantes"}.get(operation, "Portal IVA"))
         prompt = CONTRIBUTOR_PROMPT
         if operation == "descargar-lote":
             prompt += "\n\n" + _UNVERIFIED_KEY_HELP
@@ -427,10 +444,13 @@ class PortalIvaFlow:
         key = self._key(chat_id, thread_id, user_id)
         if await route_period_callback(self.states, key, query, data, 'pi'):
             return True
-        operation = {"pi:generar": "generar", "pi:descargar": "descargar-presentados", "pi:lote": "descargar-lote", "pi:ddjj": "ddjj-iva", "pi:mr": "mis-retenciones"}.get(data)
+        operation = {"pi:generar": "generar", "pi:descargar": "descargar-presentados", "pi:lote": "descargar-lote", "pi:ddjj": "ddjj-iva", "pi:mr": "mis-retenciones", "pi:mc": "mis-comprobantes"}.get(data)
         if operation:
             await self.start(adapter, query, chat_id, thread_id, user_id, operation)
             return True
+        if data.startswith("pi:mcs:"):
+            from plugins.platforms.telegram.mis_comprobantes_flow import callback as mis_comprobantes_callback
+            return await mis_comprobantes_callback(self, adapter, query, data, chat_id, thread_id, key)
         if data.startswith(("pi:mri:", "pi:mrt:")):
             from plugins.platforms.telegram.mis_retenciones_flow import callback as mis_retenciones_callback
             return await mis_retenciones_callback(self, adapter, query, data, chat_id, thread_id, key)
@@ -534,6 +554,9 @@ class PortalIvaFlow:
         if state.stage == 'ddjj_period':
             from plugins.platforms.telegram.portal_iva_ddjj_flow import receive_period
             return await receive_period(self, adapter, message, state, key)
+        if state.stage == 'mc_period':
+            from plugins.platforms.telegram.mis_comprobantes_flow import receive_period as mis_comprobantes_period
+            return await mis_comprobantes_period(self, adapter, message, state, key)
         if state.stage == 'mr_period':
             from plugins.platforms.telegram.mis_retenciones_flow import receive_period as mis_retenciones_period
             return await mis_retenciones_period(self, adapter, message, state, key)
@@ -570,6 +593,7 @@ class PortalIvaFlow:
             state.excluded_clients[int(blocked[0]['id'])] = blocked_texts[0]
         if blocked_texts and offer.status != "empty":
             await self._send(adapter, chat_id, ("No habilitados para Mis Retenciones:\n" if state.operation == "mis-retenciones"
+                                                else "No habilitados para Mis Comprobantes:\n" if state.operation == "mis-comprobantes"
                                                 else "No habilitados para Libros IVA:\n")
                              + "\n".join(blocked_texts), thread_id)
         if offer.status == "empty":
@@ -577,7 +601,7 @@ class PortalIvaFlow:
                 "No incluidos:\n" + "\n".join(blocked_texts)
                 if blocked_texts else
                 "No hay un contribuyente con acceso ARCA verificado que coincida. Probá con nombre, CUIT o slug."
-                if state.operation == "mis-retenciones" else
+                if state.operation in ("mis-retenciones", "mis-comprobantes") else
                 "No hay un responsable inscripto habilitado que coincida. Probá con nombre, CUIT o slug. "
                 + _UNVERIFIED_KEY_HELP
             )
@@ -677,6 +701,10 @@ class PortalIvaFlow:
         state.nombre = str(item["nombre"])
         state.scope_item = dict(item)
         state.stage = "period"
+        if state.operation == 'mis-comprobantes':
+            from plugins.platforms.telegram.mis_comprobantes_flow import after_contributor as mis_comprobantes_after
+            await mis_comprobantes_after(self, adapter, chat_id, thread_id, state)
+            return
         if state.operation == 'mis-retenciones':
             from plugins.platforms.telegram.mis_retenciones_flow import after_contributor
             await after_contributor(self, adapter, chat_id, thread_id, state)

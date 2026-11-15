@@ -13,6 +13,7 @@ ARCA_CONSULTAS = (
     ('📊', 'CCMA Obligaciones y pagos', 'fq:ccma'),
     ('📋', 'SCT Estado de cumplimiento', 'fq:sct'),
     ('🧮', 'Mis Retenciones', 'pi:mr'),
+    ('📑', 'Mis Comprobantes', 'pi:mc'),
 )
 
 # (page, visible text) -> (braille blanks, hair spaces).
@@ -45,6 +46,8 @@ MENU_ALIGNMENT_PADDING = {
     ("arca_consultar", "SCT Estado de cumplimiento"): (1, 2),
     # #157: provisorio; se calibra con la captura real del cliente Telegram en la prueba de producción.
     ("arca_consultar", "Mis Retenciones"): (9, 2),
+    # #158: mismo largo que Mis Retenciones; se calibra con la captura real del cliente Telegram.
+    ("arca_consultar", "Mis Comprobantes"): (8, 2),
     ("vencimientos_formato", "Excel"): (14, 0),
     ("vencimientos_formato", "ICS para Google Calendar"): (0, 0),
     ("bancos", "Resumen bancario → Excel"): (7, 2),

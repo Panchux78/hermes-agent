@@ -12,4 +12,4 @@ exec bash scripts/run_tests.sh \
   tests/gateway/test_comarb_ddjj_delivery.py tests/gateway/test_comarb_deducciones_flow.py \
   tests/gateway/test_provinciales_iibb_139.py tests/gateway/test_sct_status_sol.py \
   tests/gateway/test_ccma_deterministic_dispatch.py tests/gateway/test_telegram_persistent_menu.py \
-  tests/gateway/test_mis_retenciones_157.py tests/gateway/test_telegram_menu_contract.py "$@"
+  tests/gateway/test_mis_retenciones_157.py tests/gateway/test_mis_comprobantes_158.py tests/gateway/test_telegram_menu_contract.py "$@"

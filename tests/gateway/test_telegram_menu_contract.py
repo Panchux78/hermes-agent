@@ -178,6 +178,7 @@ def test_arca_query_alignment_preserves_actions_labels_and_navigation(monkeypatc
         ("fq:ccma", "📊", "CCMA Obligaciones y pagos"),
         ("fq:sct", "📋", "SCT Estado de cumplimiento"),
         ("pi:mr", "🧮", "Mis Retenciones"),
+        ("pi:mc", "📑", "Mis Comprobantes"),
     ]
     assert [len(row) for row in rows] == [1] * len(actions) + [2]
     for row, (callback, icon, text) in zip(rows[:-1], actions):

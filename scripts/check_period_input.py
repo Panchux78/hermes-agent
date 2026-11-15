@@ -13,6 +13,7 @@ ENTRY_POINTS = {
     'portal_iva_flow.py': {'text', '_select'},
     'portal_iva_ddjj_flow.py': {'receive_period'},
     'mis_retenciones_flow.py': {'receive_period'},
+    'mis_comprobantes_flow.py': {'receive_period'},
     'fiscal_query_flow.py': {'_request_period', '_handle_workflow_menu_text'},
     'agip_ddjj_flow.py': {'text', '_select'},
     'comarb_ddjj_flow.py': {'text', '_ask_period'},

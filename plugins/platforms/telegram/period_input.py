@@ -79,6 +79,8 @@ SPECS = {
                                         same_year=True, all_periods=True),
     'agip-ddjj': PeriodSpec('DDJJ de IIBB', frozenset({'month', 'year'})),
     'mis-retenciones': PeriodSpec('Mis Retenciones', frozenset({'month', 'date_range'}), no_future_dates=True),
+    # #158: mes, año o fechas exactas; ARCA admite hasta 365 días por consulta (se controla al confirmar).
+    'mis-comprobantes': PeriodSpec('Mis Comprobantes', frozenset({'month', 'year', 'date_range'}), no_future_dates=True),
     'comarb-periodo': PeriodSpec('DDJJ presentadas', min_year=2010, max_year=2099, closed=True),
     'comarb-lote': PeriodSpec('Lote de DDJJ presentadas', frozenset({'range', 'list'}),
                              min_year=2010, max_year=2099, closed=True),
