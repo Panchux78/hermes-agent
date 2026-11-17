@@ -124,7 +124,7 @@ def resumen(row: dict[str, Any]) -> str:
         lines.append(f"{res['posibles_duplicados']} filas marcadas como posible duplicado; no se borró ninguna.")
     exportaciones = res.get('importaciones_sifere') or {}
     if exportaciones.get('paquete'):
-        lines.append('Te mando también los archivos para importar en SIFERE. No se incorporaron a ninguna DDJJ.')
+        lines.append('Te mando también los archivos para SIFERE. Descomprimí el ZIP e importá cada TXT por separado, eligiendo su tipo y jurisdicción. No se incorporaron a ninguna DDJJ.')
     for estado in exportaciones.get('estados', []):
         if estado.get('estado') not in ('preparado', 'no_aplica'):
             lines.append(f"• Para SIFERE · {estado['organismo']} · {estado['tipo']}: {estado['detalle']}")
@@ -564,7 +564,7 @@ class ComarbDeduccionesEntregas:
                 raise ValueError('autorizacion_cambio')
             with open(path, 'rb') as stream:
                 await bot.send_document(chat_id=chat, document=stream, filename=path.name,
-                    caption=f"Archivos para SIFERE · {row['periodo']} · también en Documentos. No se modificó ninguna DDJJ.")
+                    caption=f"Archivos para SIFERE · {row['periodo']}. Descomprimí el ZIP e importá cada TXT por separado, según su tipo y jurisdicción. También en Documentos. No se modificó ninguna DDJJ.")
         except Exception:
             logger.warning('[COMARB-DEDUCCIONES] importables no entregados; conservados en Documentos')
             await bot.send_message(chat_id=chat, text='Los archivos para SIFERE quedaron en Documentos, pero no pude enviarlos por Telegram. Descargalos desde el panel.')

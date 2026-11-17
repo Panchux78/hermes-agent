@@ -1,4 +1,4 @@
-"""#193: Excel y paquete en el entregador existente; permisos antes de cada envío."""
+"""Regresión #193: mismo entregador y permisos vivos para los TXT de SIFERE."""
 import asyncio
 import hashlib
 from types import SimpleNamespace
@@ -31,6 +31,7 @@ def test_envia_paquete_real_validado_con_nombre_y_reautorizacion(tmp_path):
         assert bot.send_document.await_count==1
         assert bot.send_document.await_args.kwargs['filename']=='cliente-importar-sifere-901-2026-09.zip'
         assert 'No se modificó ninguna DDJJ' in bot.send_document.await_args.kwargs['caption']
+        assert 'Descomprimí el ZIP e importá cada TXT por separado' in bot.send_document.await_args.kwargs['caption']
     asyncio.run(run())
 
 
