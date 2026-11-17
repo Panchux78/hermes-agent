@@ -316,7 +316,7 @@ def test_191_mismo_motivo_una_sola_vez():
     estados.update({"Santa Fe · Percepciones": {"estado": "no_verificado", "motivo": motivo_sf},
                     "Santa Fe · Retenciones": {"estado": "no_verificado", "motivo": motivo_sf},
                     "ARBA · Percepciones": {"estado": "no_verificado", "motivo": "Otro motivo."}})
-    falta = "No se pudo verificar la lectura completa; no se prepara un archivo vacío."
+    falta = "Como Tucumán no se pudo consultar, no se prepara un archivo vacío."
     row = {"nombre_legal": "Contribuyente", "periodo": "10/2026", "estado": "terminada",
            "resultado": {"estados": estados, "importaciones_sifere": {"estados": [
                {"organismo": "ARBA", "tipo": "Percepciones", "estado": "no_verificado", "detalle": falta},
