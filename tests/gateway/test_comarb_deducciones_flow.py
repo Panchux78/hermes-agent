@@ -120,7 +120,7 @@ def test_un_cliente_no_cm_informa_organismo_sin_encolar(monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("estado,texto", [("sin_acceso", "acceso actual"), ("clave_sin_verificar", "No hay un acceso utilizable"), ("solo_miba", "sólo miBA"), ("ocupado", "en curso"), ("regimen_no_verificado","régimen de Ingresos Brutos")])
+@pytest.mark.parametrize("estado,texto", [("sin_acceso", "acceso actual"), ("clave_sin_verificar", "No hay una clave cargada"), ("solo_miba", "sólo miBA"), ("ocupado", "en curso"), ("regimen_no_verificado","régimen de Ingresos Brutos")])
 def test_rechazos_de_la_base_no_consultan(monkeypatch, estado, texto):
     async def scenario():
         flow = FakeFlow([[{"estado": estado}]])
@@ -202,10 +202,11 @@ def test_sircupa_neutro_y_faltantes_identificados():
     result['estados']['SIRCUPA'] = {'estado':'no_verificado','motivo':'No se observaron CVU en la consulta conjunta. Eso no demuestra ausencia de recaudaciones SIRCUPA.'}
     row = {'nombre_legal':'Empresa Sintética SA','periodo':'09/2026','estado':'terminada','resultado':result}
     text = resumen(row)
-    assert '\nTerminada con faltantes: SIRCUPA.\n' in text
-    assert 'Sin cuentas virtuales en SIFERE (pendiente de confirmar)' in text
+    # #191: el SIRCUPA sin CVU no es un faltante y dice si hay que hacer algo.
+    assert '\nTerminada.\n' in text
+    assert 'sin cuentas virtuales (CVU) en SIFERE' in text and 'no hay que hacer nada' in text
     result['estados']['SIRCAR · Percepciones'] = {'estado':'no_verificado','motivo':'Sesión vencida'}
-    assert 'Terminada con faltantes: SIRCUPA, SIRCAR · Percepciones.' in resumen(row)
+    assert 'Terminada con faltantes: SIRCAR · Percepciones.' in resumen(row)
     result['estados']['SIRCUPA']['motivo'] = 'Consulta conjunta incompleta'
     assert 'SIRCUPA' in resumen(row).split('Terminada con faltantes: ',1)[1].split('\n',1)[0]
 
@@ -214,7 +215,7 @@ def test_resumen_separa_regimenes_y_nunca_es_cero_sin_aclarar():
     text = resumen({"nombre_legal": "Empresa Sintética SA", "periodo": "09/2026", "estado": "terminada", "resultado": RESULT})
     assert "Terminada con faltantes: SIRTAC." in text
     assert "• SIRCREB: 4 filas · $ 1.500,00" in text
-    assert "• SIRTAC: no se pudo verificar. SIFERE no respondió" in text and "día 12" in text
+    assert "• SIRTAC: no se pudo consultar. SIFERE no respondió" in text and "día 12" in text
     assert "• SIRPEI: SIFERE no registra deducciones de SIRPEI para 09/2026." in text
     assert "• SIRCAR, retenciones: 1 filas" in text
     assert "posible duplicado" in text

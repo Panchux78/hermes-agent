@@ -1,6 +1,6 @@
 """AGIP Gestión AR: mismo selector, cola, progreso, cancelación y entrega de COMARB."""
 from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow, RECHAZOS
-from plugins.platforms.telegram.accesos_texto import como_comprobar
+from plugins.platforms.telegram.accesos_texto import como_cargar
 
 
 class AgipDeduccionesFlow(ComarbDeduccionesFlow):
@@ -9,7 +9,7 @@ class AgipDeduccionesFlow(ComarbDeduccionesFlow):
     title = '📑 Retenciones y Percepciones'
     organismo = 'AGIP'
     rechazos = {**{key:text.replace('COMARB','AGIP') for key,text in RECHAZOS.items()},
-        'clave_sin_verificar':'No hay una Clave Ciudad activa y utilizable, propia o del representante autorizado. '+como_comprobar('AGIP')+' miBA todavía no está soportado. No se inició ningún ingreso.',
+        'clave_sin_verificar':'No hay una Clave Ciudad cargada, propia o del representante autorizado, o la última vez fue rechazada. '+como_cargar('AGIP')+' miBA todavía no está soportado. No se inició ningún ingreso.',
         'regimen_no_verificado':'No se pudo verificar que corresponda AGIP en ese período. Revisá el régimen y las jurisdicciones en la ficha fiscal. No se inició ningún ingreso.'}
     back_page = 'om:agip_consultar'
     cartera_text = ('Cartera de IIBB: clientes visibles con Clave Ciudad utilizable, propia o del representante, '

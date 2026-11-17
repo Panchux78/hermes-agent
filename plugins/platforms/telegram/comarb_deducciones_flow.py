@@ -37,7 +37,7 @@ from plugins.platforms.telegram.fiscal_scope import (
 )
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.lote_selector import ACCIONES, Lote, resumen_no_incluidos
-from plugins.platforms.telegram.accesos_texto import como_comprobar
+from plugins.platforms.telegram.accesos_texto import como_cargar
 
 logger = logging.getLogger(__name__)
 _CLIENTS_ROOT = Path(os.environ.get("CONTABOT_CLIENTES_ROOT", Path.home() / "clientes"))
@@ -52,8 +52,8 @@ RECHAZOS = {
     "regimen_no_verificado": "No se pudo verificar el régimen de Ingresos Brutos de ese período. Revisá la ficha fiscal; no se consultó SIFERE.",
     "sin_permiso": "Tu usuario no tiene permiso para ejecutar consultas. No se consultó COMARB.",
     "sin_acceso": "No se puede consultar ese contribuyente con tu acceso actual. No se consultó COMARB.",
-    "clave_sin_verificar": ("No hay un acceso utilizable para las fuentes de ese período: ARCA comprobada o Clave Ciudad activa. "
-                            + como_comprobar("ARCA o AGIP") + " miBA todavía no está soportado. No se inició ningún ingreso."),
+    "clave_sin_verificar": ("No hay una clave cargada para las fuentes de ese período (ARCA o Clave Ciudad de AGIP), o la última vez fue rechazada. "
+                            + como_cargar("ARCA o AGIP") + " miBA todavía no está soportado. No se inició ningún ingreso."),
     "ocupado": "Ya hay una consulta de COMARB en curso en tu estudio. Esperá que termine y volvé a pedirla.",
     "periodo_invalido": "El organismo no admite ese período. Revisá el mes solicitado.",
     "sin_estudio": "Tu usuario no pertenece a un estudio: pedí la cartera desde el panel.",
@@ -99,7 +99,9 @@ def resumen(row: dict[str, Any]) -> str:
         return f"{head}\n\n{'Cancelada' if row['estado'] == 'cancelada' else 'No se pudo consultar'}. {row.get('motivo') or ''}".rstrip()
     estados = res.get("estados") or {}
     regimes=tuple(dict.fromkeys((*(REGIMENES if res.get('operacion') in (None,'deducciones') else ()),*estados)))
-    faltan = [r for r in regimes if estados.get(r, {}).get('estado') not in ('con_datos', 'sin_datos_verificado','no_aplica')]
+    # #191: el SIRCUPA sin CVU no es un faltante (igual que en el panel): dice qué hacer en su renglón.
+    faltan = [r for r in regimes if estados.get(r, {}).get('estado') not in ('con_datos', 'sin_datos_verificado','no_aplica')
+              and not sin_cvu_pendiente(r, estados.get(r, {}))]
     lines = [head, "", "Terminada con faltantes: " + ', '.join(faltan) + '.' if faltan else "Terminada."]
     avisos = res.get("advertencias") or []
     for regimen in regimes:
@@ -113,9 +115,10 @@ def resumen(row: dict[str, Any]) -> str:
         elif e.get('estado')=='no_aplica':
             continue
         elif sin_cvu_pendiente(regimen, e):
-            line = f"• {name}: Sin cuentas virtuales en SIFERE (pendiente de confirmar)."
+            line = (f"• {name}: sin cuentas virtuales (CVU) en SIFERE. Si el cliente cobra con billeteras virtuales, "
+                    "revisá SIRCUPA en SIFERE; si no, no hay que hacer nada.")
         else:
-            line = f"• {name}: no se pudo verificar. {e.get('motivo') or ''}".rstrip()
+            line = f"• {name}: no se pudo consultar. {e.get('motivo') or ''}".rstrip()
         aviso = next((a.split(": ", 1)[1] for a in avisos if a.startswith(regimen + ":")), None)
         if aviso and e.get("estado") != "con_datos":
             line += f" {aviso}"
