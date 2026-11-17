@@ -306,8 +306,10 @@ def test_cancelar_no_toma_la_identidad_del_dueno_del_boton():
         adapter=_adapter()
         await flow.callback(adapter,_query('cd:stop:9',84),'cd:stop:9',84,None,'84')
         await flow.callback(adapter,_query('cd:stop:9',42),'cd:stop:9',42,None,'42')
-        assert flow.sql==['SELECT console.fn_comarb_deducciones_cancelar_telegram(84,9)::text;',
-                          'SELECT console.fn_comarb_deducciones_cancelar_telegram(42,9)::text;']
+        # #191: tras cancelar, el aviso lee el estado con la misma identidad (la del que tocó).
+        assert flow.sql[:2]==['SELECT console.fn_comarb_deducciones_cancelar_telegram(84,9)::text;',
+                              'SELECT console.fn_comarb_deducciones_cancelar_telegram(42,9)::text;']
+        assert all('(42,9)' in q for q in flow.sql[1:])
     asyncio.run(scenario())
 
 

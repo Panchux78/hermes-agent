@@ -334,7 +334,7 @@ class ComarbDeduccionesFlow:
                 ok = await asyncio.to_thread(self._write, f"SELECT console.fn_comarb_deducciones_cancelar_telegram({actor},{int(parts[2])})::text;")
             except Exception:
                 ok = [False]
-            await query.answer("Cancelación pedida: termino el cliente en curso sin pedirte ningún CAPTCHA más y no sigo con los demás." if ok == [True] else "La consulta ya terminó, ya se canceló o no es tuya.")
+            await query.answer(await self._aviso_cancelar(actor, int(parts[2])) if ok == [True] else "La consulta ya terminó, ya se canceló o no es tuya.")
             if ok == [True]:
                 try:
                     await query.edit_message_reply_markup(reply_markup=None)
@@ -519,6 +519,19 @@ class ComarbDeduccionesFlow:
             pass
         return True
 
+    async def _aviso_cancelar(self, actor: int, jid: int) -> str:
+        """#191 (consulta 610): el aviso dice lo que pasa de verdad; sin cliente en curso no hay nada que terminar."""
+        try:
+            rows = await asyncio.to_thread(self._query, f"SELECT console.fn_comarb_deducciones_estado_telegram({actor},{jid})::text;")
+            st = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else None
+        except Exception:
+            st = None
+        if st is not None and not st.get("actual"):
+            return "Cancelada: no se consulta ningún cliente más y no se te va a pedir ningún CAPTCHA."
+        if st is not None and st.get("solicitados", 0) <= 1:
+            return "Cancelación pedida: termino lo que está en curso sin pedirte ningún CAPTCHA más."
+        return "Cancelación pedida: termino el cliente en curso sin pedirte ningún CAPTCHA más y no sigo con los demás."
+
     async def _watch(self, message, actor: int, jid: int, head: str, extra: str) -> None:
         """Avance en el mismo mensaje. El resultado lo manda la entrega, no este seguimiento."""
         last = None
@@ -535,8 +548,15 @@ class ComarbDeduccionesFlow:
                 actual = st.get("actual") or {}
                 if st["estado"] == "cancelada":
                     sin = st.get("cancelados") or 0
-                    text = (f"{head}\nCancelada: {st['terminados'] - sin} de {st['solicitados']} terminaron"
-                            + (f"; {sin} no se consultaron (quedan en Operaciones)." if sin else ".") + " Te mando lo que terminó.")
+                    fin = st['terminados'] - sin
+                    if fin == 0:
+                        # #191 (consulta 610): nada terminó, así que no hay nada que mandar.
+                        text = (f"{head}\nCancelada: no se consultó ningún cliente." if st['solicitados'] == 1 else
+                                f"{head}\nCancelada: no se consultó ninguno de los {st['solicitados']} clientes.") \
+                            + " No hay resultado para mandarte; la corrida queda en Operaciones."
+                    else:
+                        text = (f"{head}\nCancelada: {fin} de {st['solicitados']} terminaron"
+                                + (f"; {sin} no se consultaron (quedan en Operaciones)." if sin else ".") + " Te mando lo que terminó.")
                     markup = None
                 elif st["estado"] in ("terminada", "error"):
                     text = f"{head}\nConsulta terminada: {st['terminados']} de {st['solicitados']}. Te mando el resultado."

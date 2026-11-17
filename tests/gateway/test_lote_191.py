@@ -144,12 +144,32 @@ def test_agip_y_provincia_encolan_con_su_operacion():
 
 def test_cancelar_avisa_que_termina_el_cliente_en_curso():
     async def scenario():
-        f, fake = flujo(ComarbDeduccionesFlow, [[True]])
+        f, fake = flujo(ComarbDeduccionesFlow, [[True], [{'estado': 'consultando', 'solicitados': 3, 'actual': {'contribuyente': 'Empresa Sintética 01'}}]])
         a = adapter(); q = query('cd:stop:9')
         await f.callback(a, q, 'cd:stop:9', 42, None, '42')
-        assert fake.sql == ['SELECT console.fn_comarb_deducciones_cancelar_telegram(42,9)::text;']
+        assert fake.sql == ['SELECT console.fn_comarb_deducciones_cancelar_telegram(42,9)::text;',
+                            'SELECT console.fn_comarb_deducciones_estado_telegram(42,9)::text;']
         assert 'termino el cliente en curso sin pedirte ningún CAPTCHA más' in q.answer.await_args.args[0]
         q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+    asyncio.run(scenario())
+
+
+def test_cancelar_sin_cliente_en_curso_no_promete_terminar_nada(monkeypatch):
+    """#191 (consulta 610): los tres se cancelaron sin empezar; ni el aviso ni el cierre hablan de algo en curso o terminado."""
+    async def scenario():
+        f, _ = flujo(ComarbDeduccionesFlow, [[True], [{'estado': 'cancelada', 'solicitados': 3, 'terminados': 3, 'cancelados': 3, 'actual': None}]])
+        q = query('cd:stop:9')
+        await f.callback(adapter(), q, 'cd:stop:9', 42, None, '42')
+        aviso = q.answer.await_args.args[0]
+        assert aviso == 'Cancelada: no se consulta ningún cliente más y no se te va a pedir ningún CAPTCHA.'
+        g = ComarbDeduccionesFlow(query_connection=lambda: None, write_connection=lambda: None)
+        g._query = lambda sql: [{'estado': 'cancelada', 'solicitados': 3, 'terminados': 3, 'cancelados': 3, 'actual': None}]
+        monkeypatch.setattr(asyncio, 'sleep', AsyncMock())
+        message = SimpleNamespace(edit_text=AsyncMock(), reply_markup='botón')
+        await g._watch(message, 42, 9, 'Cabecera', '')
+        texto = message.edit_text.await_args.args[0]
+        assert texto == 'Cabecera\nCancelada: no se consultó ninguno de los 3 clientes. No hay resultado para mandarte; la corrida queda en Operaciones.'
+        assert 'Te mando' not in texto and 'en curso' not in texto
     asyncio.run(scenario())
 
 
