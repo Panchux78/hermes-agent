@@ -24,6 +24,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from hermes_constants import get_hermes_home
 
+from plugins.platforms.telegram.accesos_texto import como_comprobar
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.bot_run_history import BotRunHistory, RunHandle
 from plugins.platforms.telegram.documentos_contabot import CODIGO_CUOTA, archivo_guardado, mensaje_si_cuota
@@ -94,7 +95,7 @@ _IVA_INELIGIBLE = {
     "sin_verificar": "ARCA no pudo verificar la condición frente al IVA. Consultala nuevamente antes de pedir los Libros IVA.",
     "sin_consultar": "Todavía no se consultó la condición frente al IVA en ARCA. Hacé esa consulta primero.",
     "consulta_vencida": "La consulta de la condición IVA tiene más de 30 días. Actualizala en ARCA antes de pedir los Libros IVA.",
-    "clave_sin_verificar": "La clave ARCA no está verificada o la representación no es única. Revisá ese acceso antes de pedir los Libros IVA.",
+    "clave_sin_verificar": "La clave ARCA no está comprobada o la representación no es única. " + como_comprobar("ARCA"),
     "no_autorizado": "No se puede consultar ese contribuyente con tu acceso actual.",
 }
 
@@ -284,8 +285,7 @@ class PortalIvaFlow:
     async def _ineligible_text(self, item_id: int, telegram_id: Any, operation: str | None = None) -> str:
         if operation in ("mis-retenciones", "mis-comprobantes"):
             # Para Mis Retenciones y Mis Comprobantes no cuenta la condición frente al IVA: sólo el acceso a ARCA.
-            return ("No tiene un acceso ARCA verificado y único para consultar. "
-                    "Verificá la clave en Accesos de la ficha y volvé a intentar.")
+            return "No tiene un acceso ARCA comprobado y único para consultar. " + como_comprobar("ARCA")
         try:
             reason = await asyncio.to_thread(self._iva_reason, item_id, telegram_id)
         except Exception:

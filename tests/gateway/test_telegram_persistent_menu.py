@@ -257,8 +257,10 @@ def test_implemented_tax_actions_reuse_existing_flows(monkeypatch):
         {"text": aligned_menu_label("arca_consultar", "🪪", "Constancias"), "callback_data": "ci:start"}
     ]
     assert TelegramAdapter._menu_panel_keyboard("arca_preparar")[0] == [
-        {"text": "🧾  Preparar período nuevo", "callback_data": "pi:generar"}
+        {"text": "🧾  Preparar período nuevo", "callback_data": "om:arca_preparar_nuevo"}
     ]
+    # #191: «Un cliente» es el flujo de siempre; «Elegir clientes», el lote.
+    assert [row[0]["callback_data"] for row in TelegramAdapter._menu_panel_keyboard("arca_preparar_nuevo")[:2]] == ["pi:generar", "pp:lote"]
     assert TelegramAdapter._menu_panel_keyboard("agip_consultar")[0] == [
         {"text": "🧾  DDJJ de IIBB", "callback_data": "ad:start"}
     ]

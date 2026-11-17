@@ -32,7 +32,8 @@ def test_comarb_navigation_matches_approved_mockup(monkeypatch):
     assert rows[0] == [{"text": "📑  Deducciones de IIBB", "callback_data": "om:comarb_deducciones"}]
     title, rows = _menu(monkeypatch, "comarb_deducciones")
     assert "Sólo lectura" in title
-    assert [r[0]["callback_data"] for r in rows[:2]] == ["cd:uno", "cd:cartera"]
+    # #191: entre «Un cliente» y «Cartera», elegir de una lista.
+    assert [r[0]["callback_data"] for r in rows[:3]] == ["cd:uno", "cd:lote", "cd:cartera"]
     assert rows[-1][0]["callback_data"] == "om:comarb_consultar"
 
 
@@ -151,7 +152,8 @@ def test_sin_resultados_de_busqueda_no_revela_ni_encola(monkeypatch):
 
 def test_cartera_encola_y_avisa_sin_clave(monkeypatch):
     async def scenario():
-        flow = FakeFlow([[{"estado": "encolada", "id_lectura": 9, "solicitados": 3, "sin_clave": 1}]])
+        flow = FakeFlow([[{"estado": "previa", "candidatos": 3, "sin_clave": 1}],
+                         [{"estado": "encolada", "id_lectura": 9, "solicitados": 3, "sin_clave": 1}]])
         monkeypatch.setattr(flow, "_scope", lambda: FakeScope([]))
         monkeypatch.setattr(flow, "_watch", AsyncMock())
         adapter = _adapter()
@@ -160,8 +162,14 @@ def test_cartera_encola_y_avisa_sin_clave(monkeypatch):
         await flow.text(adapter, msg)
         from tests.gateway.period_helpers import confirm_period
         await confirm_period(flow,adapter,42,'42')
-        assert flow.sql == ["SELECT console.fn_comarb_deducciones_cartera_telegram(42,'08/2026')::text;"]
-        text = msg.reply_text.await_args.args[0]
+        # #191: antes de encolar, la cantidad; nada se encola sin «Sí, consultar».
+        assert flow.sql == ["SELECT console.fn_comarb_deducciones_cartera_previa_telegram(42,'08/2026','deducciones')::text;"]
+        pregunta = msg.reply_text.await_args.args[0]
+        assert "Voy a consultar 3 clientes" in pregunta and "1 quedan afuera" in pregunta
+        nonce = flow.states[flow._key(42, None, "42")].nonce
+        await flow.callback(adapter, _query(f"cd:cc:{nonce}"), f"cd:cc:{nonce}", 42, None, "42")
+        assert flow.sql[-1] == "SELECT console.fn_comarb_deducciones_cartera_telegram(42,'08/2026')::text;"
+        text = adapter._bot.send_message.await_args.kwargs["text"]
         assert "Cartera de IIBB (3)" in text and "1 quedan afuera" in text
         await asyncio.sleep(0)
     asyncio.run(scenario())

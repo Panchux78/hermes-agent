@@ -1,4 +1,5 @@
 """#139: subclases finas de la consulta existente, sin logins ni entregas nuevas."""
+from plugins.platforms.telegram.accesos_texto import como_comprobar
 from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow, RECHAZOS
 from plugins.platforms.telegram.menu_buttons import menu_label, aligned_menu_label
 
@@ -26,23 +27,23 @@ def teclado_pagina(page,button_factory):
     if not section:
         return [button('🔎','Consultar','om:'+code+'_consultar'),button('🧾','Preparar','om:'+code+'_preparar'),button('📤','Presentar','om:'+code+'_presentar')],menu_label('‹','Organismos'),'organismos'
     if section=='consultar':return [button('📑','Retenciones y Percepciones','om:'+code+'_retenciones')],menu_label('‹',name),code
-    if section=='retenciones':return [button('👤','Un cliente',prefix+':uno'),button('📋','Cartera de IIBB',prefix+':cartera')],menu_label('‹','Volver'),code+'_consultar'
+    if section=='retenciones':return [button('👤','Un cliente',prefix+':uno'),button('☑','Elegir clientes',prefix+':lote'),button('📋','Cartera de IIBB',prefix+':cartera')],menu_label('‹','Volver'),code+'_consultar'
     return [],menu_label('‹',name),code
 
 
 def organismo_prefijo(prefix):
-    return {'cd':'COMARB','ar':'AGIP',**{v[2]:v[0] for v in PROVINCIAS.values()}}[prefix]
+    return {'cd':'COMARB','ar':'AGIP','pp':'ARCA',**{v[2]:v[0] for v in PROVINCIAS.values()}}[prefix]
 
 
 class ProvincialDeduccionesFlow(ComarbDeduccionesFlow):
     def __init__(self,codigo,**kwargs):
-        self.codigo=codigo
+        self.codigo=codigo;self.operacion=codigo+'_deducciones'
         name,_,prefix=PROVINCIAS[codigo]
         self.callback_prefix=prefix;self.organismo=name
         self.title='📑 Retenciones y Percepciones'
         self.back_page='om:'+codigo+'_consultar'
         self.rechazos={**RECHAZOS,
-            'clave_sin_verificar': ('No hay una CIT ARBA activa y comprobada, propia o del apoderado autorizado.' if codigo=='arba' else 'Necesitás Telegram vinculado y una clave ARCA activa y comprobada, propia o del representante autorizado.')+' Revisá Accesos del panel. No se inició ningún ingreso.',
+            'clave_sin_verificar': ('No hay una CIT ARBA activa y comprobada, propia o del apoderado autorizado.' if codigo=='arba' else 'Necesitás Telegram vinculado y una clave ARCA activa y comprobada, propia o del representante autorizado.')+' '+como_comprobar('ARBA' if codigo=='arba' else 'ARCA')+' No se inició ningún ingreso.',
             'regimen_no_verificado':'No se pudo verificar que corresponda '+name+' en ese período. Revisá el régimen y las jurisdicciones de la ficha fiscal. No se inició ningún ingreso.'}
         self.cartera_text='Cartera de IIBB: consulta '+name+' para los clientes visibles con jurisdicción y acceso utilizables en el mes solicitado. Recibís un Excel por contribuyente; los que no pueden incluirse se informan.'
         super().__init__(**kwargs)

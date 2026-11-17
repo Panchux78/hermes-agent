@@ -683,6 +683,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._provinciales_iibb_flows = {prefix: ProvincialDeduccionesFlow(code,
             query_connection=lookup_connection, write_connection=verification_connection)
             for code,(_,_,prefix) in PROVINCIAS.items()}
+        # #191: Preparar período nuevo por lote comparte el despacho de los flujos con prefijo.
+        from plugins.platforms.telegram.preparar_lote_flow import PrepararLoteFlow, PrepararLoteEntregas
+        self._provinciales_iibb_flows['pp'] = PrepararLoteFlow(
+            query_connection=lookup_connection, write_connection=verification_connection)
+        self._preparar_lote_entregas = PrepararLoteEntregas(self._provinciales_iibb_flows['pp'])
         self._cruce_iva_flow = CruceIvaFlow()
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection, runtime_python=runtime_python,
@@ -1034,6 +1039,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             ),
             "arca_consultar": "ARCA · Consultar",
             "arca_preparar": "ARCA · Preparar",
+            "arca_preparar_nuevo": (
+                "🧾 Preparar período nuevo\n\n"
+                "Prepara el período en Portal IVA de ARCA para uno o varios clientes y te manda los libros."
+            ),
             "arca_presentar": (
                 "ARCA · Presentar\n\n"
                 "Todavía no hay presentaciones habilitadas en ContaBot."
@@ -1126,6 +1135,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         elif page == "comarb_deducciones":
             rows = [
                 [InlineKeyboardButton(menu_label("👤", "Un cliente"), callback_data="cd:uno")],
+                [InlineKeyboardButton(menu_label("☑", "Elegir clientes"), callback_data="cd:lote")],
                 [InlineKeyboardButton(menu_label("📋", "Cartera de IIBB"), callback_data="cd:cartera")],
             ]
             back_label = menu_label("‹", "Consultar")
@@ -1157,10 +1167,18 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             back_page = "arca"
         elif page == "arca_preparar":
             rows = [
-                [InlineKeyboardButton(menu_label("🧾", "Preparar período nuevo"), callback_data="pi:generar")],
+                [InlineKeyboardButton(menu_label("🧾", "Preparar período nuevo"), callback_data="om:arca_preparar_nuevo")],
             ]
             back_label = menu_label("‹", "ARCA")
             back_page = "arca"
+        elif page == "arca_preparar_nuevo":
+            # #191: un cliente (el flujo de siempre) o varios tildados de una lista.
+            rows = [
+                [InlineKeyboardButton(menu_label("👤", "Un cliente"), callback_data="pi:generar")],
+                [InlineKeyboardButton(menu_label("☑", "Elegir clientes"), callback_data="pp:lote")],
+            ]
+            back_label = menu_label("‹", "Preparar")
+            back_page = "arca_preparar"
         elif page == "agip_consultar":
             rows = [
                 [InlineKeyboardButton(menu_label("🧾", "DDJJ de IIBB"), callback_data="ad:start")],
@@ -1171,6 +1189,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         elif page == "agip_retenciones":
             rows = [
                 [InlineKeyboardButton(menu_label("👤", "Un cliente"), callback_data="ar:uno")],
+                [InlineKeyboardButton(menu_label("☑", "Elegir clientes"), callback_data="ar:lote")],
                 [InlineKeyboardButton(menu_label("📋", "Cartera de IIBB"), callback_data="ar:cartera")],
             ]
             back_label = menu_label("‹", "Volver")
@@ -1328,6 +1347,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             "comarb_deducciones",
             "arca_consultar",
             "arca_preparar",
+            "arca_preparar_nuevo",
             "arca_presentar",
             "agip_consultar",
             "agip_retenciones",
@@ -3836,6 +3856,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             if deliveries is not None:
                 from plugins.platforms.telegram.execution_origin import programmed
                 self._restart_task_attr('_comarb_deducciones_task', programmed(deliveries.run(self),'comarb_entregas'))
+            preparar = getattr(self, '_preparar_lote_entregas', None)
+            if preparar is not None:
+                from plugins.platforms.telegram.execution_origin import programmed
+                self._restart_task_attr('_preparar_lote_task', programmed(preparar.run(self),'preparar_lote_entregas'))
             presentadas = getattr(self, '_comarb_presentadas_entregas', None)
             if presentadas is not None:
                 from plugins.platforms.telegram.execution_origin import programmed
@@ -5366,7 +5390,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
                 from plugins.platforms.telegram.provinciales_iibb import flows as iibb_flows
                 starts = set(FiscalQueryFlow.START_CALLBACKS) | {'ci:start','ve:start','px:start','bx:start','cx:start'}
-                starts.update(f'{prefix}:{mode}' for prefix in iibb_flows(self) for mode in ('uno','cartera'))
+                starts.update(f'{prefix}:{mode}' for prefix in iibb_flows(self) for mode in ('uno','lote','cartera'))
                 key = presentadas._key(cb['chat_id'], cb['thread_id'], str(query.from_user.id))
                 if key in presentadas.states and data in starts:
                     if await self._callback_authorized(query, cb, '⛔ No estás autorizado para iniciar esta operación.'):

@@ -88,6 +88,7 @@ SPECS = {
         'cd': 'Deducciones de IIBB', 'ar': 'AGIP · Retenciones y Percepciones',
         'ab': 'ARBA · Retenciones y Percepciones', 'tu': 'Tucumán · Retenciones y Percepciones',
         'sf': 'Santa Fe · Retenciones y Percepciones', 'co': 'Córdoba · Retenciones y Percepciones',
+        'pp': 'Preparar período nuevo',
     }.items()},
 }
 

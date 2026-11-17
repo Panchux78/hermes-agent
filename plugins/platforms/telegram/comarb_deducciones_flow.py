@@ -36,6 +36,8 @@ from plugins.platforms.telegram.fiscal_scope import (
     InvalidCuit,
 )
 from plugins.platforms.telegram.menu_buttons import menu_label
+from plugins.platforms.telegram.lote_selector import ACCIONES, Lote, resumen_no_incluidos
+from plugins.platforms.telegram.accesos_texto import como_comprobar
 
 logger = logging.getLogger(__name__)
 _CLIENTS_ROOT = Path(os.environ.get("CONTABOT_CLIENTES_ROOT", Path.home() / "clientes"))
@@ -51,12 +53,15 @@ RECHAZOS = {
     "sin_permiso": "Tu usuario no tiene permiso para ejecutar consultas. No se consultó COMARB.",
     "sin_acceso": "No se puede consultar ese contribuyente con tu acceso actual. No se consultó COMARB.",
     "clave_sin_verificar": ("No hay un acceso utilizable para las fuentes de ese período: ARCA comprobada o Clave Ciudad activa. "
-                            "Revisá Accesos del panel. miBA todavía no está soportado. No se inició ningún ingreso."),
+                            + como_comprobar("ARCA o AGIP") + " miBA todavía no está soportado. No se inició ningún ingreso."),
     "ocupado": "Ya hay una consulta de COMARB en curso en tu estudio. Esperá que termine y volvé a pedirla.",
     "periodo_invalido": "El organismo no admite ese período. Revisá el mes solicitado.",
     "sin_estudio": "Tu usuario no pertenece a un estudio: pedí la cartera desde el panel.",
     "demasiados": "La cartera supera los 1000 contribuyentes: pedila desde el panel por partes.",
+    "lote_invalido": "Elegí entre 1 y 200 clientes.",
 }
+# #191: lo que dice el worker de un cliente que no llegó a consultarse porque cancelaste.
+CANCELADA_ANTES = 'No se consultó: cancelaste la corrida antes de llegar a este contribuyente.'
 
 
 def importe(text: Any) -> str:
@@ -125,10 +130,12 @@ from plugins.platforms.telegram.period_input import SPECS, parse_period, propose
 class State:
     user_id: str
     nonce: str
-    stage: str  # buscar | periodo
-    modo: str  # uno | cartera
+    stage: str  # buscar | lote | periodo | confirmar
+    modo: str  # uno | lote | cartera
     contributor: dict[str, Any] | None = None
     offer: ContributorOffer | None = None
+    lote: Lote | None = None
+    periodo: str | None = None
     created_at: float = field(default_factory=time.monotonic)
 
 
@@ -145,6 +152,9 @@ class ComarbDeduccionesFlow:
     organismo = 'COMARB'
     rechazos = RECHAZOS
     back_page = 'om:comarb_deducciones'
+    operacion = 'deducciones'
+    lote_funcion = 'deducciones'
+    espera = 'En espera de la consulta de deducciones.'
     cartera_text = ('Cartera de IIBB: se consultan los contribuyentes que ves, de Convenio Multilateral o locales mensuales de CABA en ese mes, '
                     'con acceso utilizable a SIFERE o AGIP. Recibís un Excel por contribuyente, con el estado de cada fuente.')
 
@@ -198,6 +208,17 @@ class ComarbDeduccionesFlow:
         return (f"SELECT console.fn_comarb_deducciones_pedir_telegram({actor},"
                 f"{int(state.contributor['id'])},'{period}')::text;")
 
+    def _lote_sql(self, actor: int, state: State, period: str) -> str:
+        ids = ','.join(str(int(i['id'])) for i in state.lote.elegidos)
+        return (f"SELECT console.fn_comarb_deducciones_lote_telegram({actor},'{period}','{self.operacion}',"
+                f"ARRAY[{ids}]::bigint[])::text;")
+
+    def _previa_sql(self, actor: int, period: str) -> str:
+        return f"SELECT console.fn_comarb_deducciones_cartera_previa_telegram({actor},'{period}','{self.operacion}')::text;"
+
+    def _lista_sql(self, actor: int) -> str:
+        return f"SELECT row_to_json(x)::text FROM console.fn_lote_contribuyentes_telegram({actor},'{self.lote_funcion}') x;"
+
     def _fuera_de_alcance(self, state, period, organismos):
         detail = "; ".join(f"{o['jurisdiccion']}: {o['organismo']} ({o['servicio']})" for o in organismos)
         return (f"{state.contributor['nombre']} no es de Convenio Multilateral en {period}: SIFERE no es su fuente y no se consultó COMARB."
@@ -212,7 +233,7 @@ class ComarbDeduccionesFlow:
             return False
         parts = data.split(":")
         key = self._key(chat_id, thread_id, user_id)
-        if parts[1] in ("uno", "cartera"):
+        if parts[1] in ("uno", "cartera", "lote"):
             try:
                 await asyncio.to_thread(self._scope().require_actor, user_id)
                 await asyncio.to_thread(self._scope().require_permission, user_id, "operaciones.ejecutar")
@@ -229,6 +250,8 @@ class ComarbDeduccionesFlow:
                 await adapter._bot.send_message(chat_id=chat_id, text=f"No pude verificar tu acceso en la base. No se consultó {self.organismo}.")
                 return True
             nonce = secrets.token_hex(4)
+            if parts[1] == "lote":
+                return await self._abrir_lote(adapter, query, chat_id, key, user_id, nonce)
             if parts[1] == "uno":
                 self.states[key] = State(user_id, nonce, "buscar", "uno")
                 text = "Escribí nombre, CUIT o slug del contribuyente."
@@ -240,6 +263,17 @@ class ComarbDeduccionesFlow:
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"{self.callback_prefix}:cancel:{nonce}")]]))
             return True
         state = self.states.get(key)
+        if parts[1] in ACCIONES or parts[1] == "lc":
+            return await self._lote_toque(adapter, query, chat_id, state, parts)
+        if parts[1] == "cc":
+            if not state or state.stage != "confirmar" or len(parts) != 3 or parts[2] != state.nonce:
+                await query.answer("Esa confirmación ya no está vigente.")
+                return True
+            await query.answer("Consultando")
+            self.states.pop(key, None)
+            await self._encolar(adapter, chat_id, state, state.periodo,
+                lambda text, reply_markup=None: adapter._bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup))
+            return True
         if parts[1] == "cancel":
             if state and len(parts) == 3 and parts[2] == state.nonce:
                 self.states.pop(key, None)
@@ -266,7 +300,12 @@ class ComarbDeduccionesFlow:
                 ok = await asyncio.to_thread(self._write, f"SELECT console.fn_comarb_deducciones_cancelar_telegram({actor},{int(parts[2])})::text;")
             except Exception:
                 ok = [False]
-            await query.answer("Cancelación pedida" if ok == [True] else "La consulta ya terminó o no es tuya.")
+            await query.answer("Cancelación pedida: termino el cliente en curso y no sigo." if ok == [True] else "La consulta ya terminó, ya se canceló o no es tuya.")
+            if ok == [True]:
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
             return True
         await query.answer()
         return True
@@ -289,6 +328,14 @@ class ComarbDeduccionesFlow:
         if time.monotonic() - state.created_at > _STATE_TTL_SECONDS:
             self.states.pop(key, None)
             await msg.reply_text(f"Pasaron más de 10 minutos: volvé a empezar desde el menú. No se consultó {self.organismo}.")
+            return True
+        if state.stage == "lote":
+            state.lote.filtrar(msg.text)
+            state.created_at = time.monotonic()
+            await msg.reply_text(state.lote.texto(self._lote_titulo()), reply_markup=state.lote.teclado(self.callback_prefix))
+            return True
+        if state.stage == "confirmar":
+            await msg.reply_text("Tocá «Sí, consultar» o «Cancelar» en el mensaje anterior. No se consultó ningún organismo.")
             return True
         if state.stage == "buscar":
             try:
@@ -317,42 +364,125 @@ class ComarbDeduccionesFlow:
         return True
 
     async def _submit_period(self, adapter, msg, state, key, selection):
-        user_id = state.user_id
         period = selection.visible[0]
+        if state.modo == "cartera":
+            # #191: la cartera se confirma con la cantidad antes de encolar.
+            actor = FiscalScope._telegram_id(state.user_id)
+            try:
+                rows = await asyncio.to_thread(self._write, self._previa_sql(actor, period))
+                previa = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else None
+            except Exception:
+                previa = None
+            if previa is None or previa.get("estado") != "previa":
+                self.states.pop(key, None)
+                return await self._respuesta(msg.reply_text, state, period, previa)
+            state.stage = "confirmar"; state.periodo = period; state.created_at = time.monotonic()
+            fuera = f"\n{previa['sin_clave']} quedan afuera por no tener acceso utilizable a sus fuentes." if previa.get("sin_clave") else ""
+            await msg.reply_text(
+                f"{self.title} · Cartera de IIBB · {period}\nVoy a consultar {previa['candidatos']} clientes, uno por uno.{fuera}\n"
+                "¿Sigo? Si querés elegir algunos, cancelá y usá «Elegir clientes».",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(menu_label("✅", f"Sí, consultar {previa['candidatos']}"), callback_data=f"{self.callback_prefix}:cc:{state.nonce}")],
+                    [InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"{self.callback_prefix}:cancel:{state.nonce}")]]))
+            return True
         self.states.pop(key, None)
-        actor = FiscalScope._telegram_id(user_id)
+        return await self._encolar(adapter, msg.chat_id, state, period, msg.reply_text)
+
+    async def _encolar(self, adapter, chat_id, state, period, send):
+        actor = FiscalScope._telegram_id(state.user_id)
+        sql = self._lote_sql(actor, state, period) if state.modo == "lote" else self._pedir_sql(actor, state, period)
         try:
-            rows = await asyncio.to_thread(self._write, self._pedir_sql(actor, state, period))
+            rows = await asyncio.to_thread(self._write, sql)
             answer = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else None
         except Exception:
             answer = None
+        if answer is None or answer.get("estado") != "encolada":
+            return await self._respuesta(send, state, period, answer)
+        jid = int(answer["id_lectura"])
+        who = (state.contributor["nombre"] if state.modo == "uno" else
+               f"Lote de {answer.get('solicitados')} clientes" if state.modo == "lote" else f"Cartera de IIBB ({answer.get('solicitados')})")
+        extra = (f"\n{answer['sin_clave']} quedan afuera por no tener acceso utilizable a sus fuentes."
+                 if state.modo == "cartera" and answer.get("sin_clave") else "")
+        fuera = resumen_no_incluidos(self._no_incluidos(answer.get("no_incluidos") or [])) if state.modo == "lote" else ""
+        status = await send(f"{self.title} · {who} · {period}\n{self.espera}{extra}"
+                            + (f"\n\n{fuera}" if fuera else ""),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"{self.callback_prefix}:stop:{jid}")]]))
+        self.watchers[jid] = asyncio.create_task(self._watch(status, actor, jid, f"{self.title} · {who} · {period}", extra))
+        return True
+
+    async def _respuesta(self, send, state, period, answer):
+        """Lo que no se encoló: siempre una respuesta, con el motivo."""
         if answer is None:
-            await msg.reply_text(f"No pude registrar el pedido en la base. No se consultó {self.organismo}.", reply_markup=self._back())
+            await send(f"No pude registrar el pedido en la base. No se consultó {self.organismo}.", reply_markup=self._back())
             return True
         estado = answer.get("estado")
         if estado == "no_aplica":
-            await msg.reply_text(str(answer.get("motivo") or "No aplica para el régimen del período.")+" No se consultó ningún organismo.",reply_markup=self._back())
+            await send(str(answer.get("motivo") or "No aplica para el régimen del período.")+" No se consultó ningún organismo.",reply_markup=self._back())
             return True
         if estado == "no_cm":
             organismos = answer.get("organismos") or []
-            await msg.reply_text(self._fuera_de_alcance(state,period,organismos),
-                                 reply_markup=self._back())
+            await send(self._fuera_de_alcance(state,period,organismos), reply_markup=self._back())
             return True
         if estado == "sin_candidatos":
             extra = f" {answer.get('sin_clave')} no tienen acceso utilizable a las fuentes del período." if answer.get("sin_clave") else ""
-            await msg.reply_text(f"No hay contribuyentes consultables para {period}.{extra} No se inició ningún ingreso.",
-                                 reply_markup=self._back())
+            fuera = resumen_no_incluidos(self._no_incluidos(answer.get("no_incluidos") or []))
+            await send(f"No hay contribuyentes consultables para {period}.{extra} No se inició ningún ingreso." + (f"\n\n{fuera}" if fuera else ""),
+                       reply_markup=self._back())
             return True
-        if estado != "encolada":
-            await msg.reply_text(self.rechazos.get(estado, f"No se pudo iniciar la consulta. No se consultó {self.organismo}."), reply_markup=self._back())
+        await send(self.rechazos.get(estado, f"No se pudo iniciar la consulta. No se consultó {self.organismo}."), reply_markup=self._back())
+        return True
+
+    # --- lote (#191) ----------------------------------------------------------
+    def _no_incluidos(self, filas):
+        return filas
+
+    def _lote_titulo(self) -> str:
+        return f"{self.title} · Elegir clientes"
+
+    async def _abrir_lote(self, adapter, query, chat_id, key, user_id, nonce):
+        actor = FiscalScope._telegram_id(user_id)
+        try:
+            rows = await asyncio.to_thread(self._query, self._lista_sql(actor))
+            lote = Lote.desde_filas(nonce, rows)
+        except Exception:
+            await query.answer("No disponible")
+            await adapter._bot.send_message(chat_id=chat_id, text=f"No pude leer tus clientes en la base. No se consultó {self.organismo}.")
             return True
-        jid = int(answer["id_lectura"])
-        who = state.contributor["nombre"] if state.modo == "uno" else f"Cartera de IIBB ({answer.get('solicitados')})"
-        extra = (f"\n{answer['sin_clave']} quedan afuera por no tener acceso utilizable a sus fuentes."
-                 if state.modo == "cartera" and answer.get("sin_clave") else "")
-        status = await msg.reply_text(f"{self.title} · {who} · {period}\nEn espera de la consulta de deducciones.{extra}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"{self.callback_prefix}:stop:{jid}")]]))
-        self.watchers[jid] = asyncio.create_task(self._watch(status, actor, jid, f"{self.title} · {who} · {period}", extra))
+        await query.answer()
+        if not lote.elegibles:
+            await adapter._bot.send_message(chat_id=chat_id, text="No tenés clientes para elegir en esta función. No se consultó ningún organismo.", reply_markup=self._back())
+            return True
+        state = State(user_id, nonce, "lote", "lote", lote=lote)
+        self.states[key] = state
+        await adapter._bot.send_message(chat_id=chat_id, text=lote.texto(self._lote_titulo()), reply_markup=lote.teclado(self.callback_prefix))
+        return True
+
+    async def _lote_toque(self, adapter, query, chat_id, state, parts):
+        if not state or state.stage != "lote" or len(parts) < 3 or parts[2] != state.nonce:
+            await query.answer("Esa lista ya no está vigente. Volvé a empezar desde el menú.")
+            return True
+        state.created_at = time.monotonic()
+        if parts[1] == "lc":
+            if not state.lote.elegidos:
+                await query.answer("Tildá al menos un cliente.")
+                return True
+            await query.answer()
+            state.stage = "periodo"
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            nombres = ", ".join(i["nombre"] for i in state.lote.elegidos[:5]) + (" y otros" if len(state.lote.elegidos) > 5 else "")
+            await adapter._bot.send_message(chat_id=chat_id,
+                text=f"{len(state.lote.elegidos)} clientes tildados: {nombres}.\n" + SPECS[self.callback_prefix].prompt,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(menu_label("❌", "Cancelar"), callback_data=f"{self.callback_prefix}:cancel:{state.nonce}")]]))
+            return True
+        aviso = state.lote.accion(ACCIONES[parts[1]], parts[3] if len(parts) > 3 else None)
+        await query.answer(aviso or "")
+        try:
+            await query.edit_message_text(state.lote.texto(self._lote_titulo()), reply_markup=state.lote.teclado(self.callback_prefix))
+        except Exception:
+            pass
         return True
 
     async def _watch(self, message, actor: int, jid: int, head: str, extra: str) -> None:
@@ -369,8 +499,17 @@ class ComarbDeduccionesFlow:
                     return
                 st = rows[0]
                 actual = st.get("actual") or {}
-                if st["estado"] in ("terminada", "error", "cancelada"):
+                if st["estado"] == "cancelada":
+                    sin = st.get("cancelados") or 0
+                    text = (f"{head}\nCancelada: {st['terminados'] - sin} de {st['solicitados']} terminaron"
+                            + (f"; {sin} no se consultaron (quedan en Operaciones)." if sin else ".") + " Te mando lo que terminó.")
+                    markup = None
+                elif st["estado"] in ("terminada", "error"):
                     text = f"{head}\nConsulta terminada: {st['terminados']} de {st['solicitados']}. Te mando el resultado."
+                    markup = None
+                elif st.get("cancelacion_solicitada"):
+                    quien = f" con {actual['contribuyente']}" if actual and st["solicitados"] > 1 else ""
+                    text = f"{head}\nCancelación pedida: termino{quien} y no sigo con los demás."
                     markup = None
                 else:
                     now = PROGRESO.get(actual.get("progreso"), actual.get("progreso") or "En espera.")
@@ -383,7 +522,7 @@ class ComarbDeduccionesFlow:
                         await message.edit_text(text, reply_markup=markup)
                     except Exception:
                         pass
-                if markup is None:
+                if markup is None and st["estado"] in ("terminada", "error", "cancelada"):
                     return
         finally:
             self.watchers.pop(jid, None)
@@ -402,10 +541,12 @@ class ComarbDeduccionesEntregas:
             if not isinstance(row, dict):
                 continue
             chat = int(row["telegram_id"])
+            silencioso = row.get("estado") == "cancelada" and row.get("motivo") == CANCELADA_ANTES
             # Reclamar antes de enviar: una reconexión nunca repite la entrega.
             claimed = await asyncio.to_thread(self.flow._write,
                 f"SELECT console.fn_comarb_deducciones_entregada_telegram({int(row['id_lectura'])},{int(row['id_contribuyente'])})::text;")
-            if claimed != [True]:
+            if claimed != [True] or silencioso:
+                # Los que no llegaron a empezar se informan juntos en el mensaje de avance.
                 continue
             # Revalidar después del claim: el listado anterior puede haber sido
             # leído antes de retirar una asignación o cambiar el estudio.

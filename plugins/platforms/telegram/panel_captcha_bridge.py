@@ -32,6 +32,7 @@ def publish(path,payload):
 
 CAPTIONS={
     'ARCA':'Consulta COMARB. ARCA pide este CAPTCHA. Respondé a esta imagen con sus caracteres; vence en menos de dos minutos.',
+    'Portal IVA':'Preparar período nuevo. ARCA pide este CAPTCHA. Respondé a esta imagen con sus caracteres; vence en menos de dos minutos.',
     'Rentas Tucumán':'Consulta de Tucumán. Rentas Tucumán pide este código de seguridad. Respondé a esta imagen con sus caracteres; vence en menos de dos minutos.',
 }
 

@@ -16,7 +16,8 @@ def test_menu_agip_mismo_orden_y_un_cliente_cartera_sin_login_nuevo(monkeypatch)
     assert [(r[0].text,r[0].callback_data) for r in rows[:2]]==[
         ('🧾  DDJJ de IIBB','ad:start'),('📑  Retenciones y Percepciones','om:agip_retenciones')]
     menu=TelegramAdapter._menu_panel_keyboard('agip_retenciones').inline_keyboard
-    assert [r[0].callback_data for r in menu[:2]]==['ar:uno','ar:cartera']
+    # #191: elegir de una lista entre «Un cliente» y «Cartera».
+    assert [r[0].callback_data for r in menu[:3]]==['ar:uno','ar:lote','ar:cartera']
     flow=AgipDeduccionesFlow()
     state=State('42','abc','periodo','uno',contributor={'id':7})
     assert flow._pedir_sql(42,state,'08/2026')=="SELECT console.fn_comarb_deducciones_pedir_telegram(42,7,'08/2026','agip_deducciones')::text;"
