@@ -8,7 +8,7 @@ from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeducciones
 
 
 def scenario(tmp_path, *, revocar=False):
-    relative='estudios/1/sintetico/2026/09/comarb/cliente-importar-sifere-2026-09.zip'
+    relative='estudios/1/sintetico/2026/09/comarb/cliente-importar-sifere-901-2026-09.zip'
     archive=tmp_path/relative;archive.parent.mkdir(parents=True);archive.write_bytes(b'PK synth')
     meta=dict(id_archivo=3,raiz='clientes',ruta=relative,nombre=archive.name,sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
     row=dict(id_lectura=4,id_contribuyente=7,telegram_id=42,periodo='09/2026',estado='terminada',
@@ -29,7 +29,7 @@ def test_envia_paquete_real_validado_con_nombre_y_reautorizacion(tmp_path):
         assert len(calls)==2
         assert 'fn_comarb_deducciones_importaciones_telegram(42,4,7)' in calls[0]
         assert bot.send_document.await_count==1
-        assert bot.send_document.await_args.kwargs['filename']=='cliente-importar-sifere-2026-09.zip'
+        assert bot.send_document.await_args.kwargs['filename']=='cliente-importar-sifere-901-2026-09.zip'
         assert 'No se modificó ninguna DDJJ' in bot.send_document.await_args.kwargs['caption']
     asyncio.run(run())
 
