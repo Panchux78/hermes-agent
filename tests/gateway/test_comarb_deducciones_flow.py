@@ -307,3 +307,22 @@ def test_cancelar_no_toma_la_identidad_del_dueno_del_boton():
         assert flow.sql==['SELECT console.fn_comarb_deducciones_cancelar_telegram(84,9)::text;',
                           'SELECT console.fn_comarb_deducciones_cancelar_telegram(42,9)::text;']
     asyncio.run(scenario())
+
+
+def test_191_mismo_motivo_una_sola_vez():
+    """Corrida 597: Santa Fe y Tucumán repetían el mismo motivo por categoría; Para SIFERE, el mismo detalle."""
+    motivo_sf = "ARCA no tiene habilitado el servicio para la clave que se usó."
+    estados = {r: {"estado": "sin_datos_verificado"} for r in flow_module.REGIMENES}
+    estados.update({"Santa Fe · Percepciones": {"estado": "no_verificado", "motivo": motivo_sf},
+                    "Santa Fe · Retenciones": {"estado": "no_verificado", "motivo": motivo_sf},
+                    "ARBA · Percepciones": {"estado": "no_verificado", "motivo": "Otro motivo."}})
+    falta = "No se pudo verificar la lectura completa; no se prepara un archivo vacío."
+    row = {"nombre_legal": "Contribuyente", "periodo": "10/2026", "estado": "terminada",
+           "resultado": {"estados": estados, "importaciones_sifere": {"estados": [
+               {"organismo": "ARBA", "tipo": "Percepciones", "estado": "no_verificado", "detalle": falta},
+               {"organismo": "Tucumán", "tipo": "Retenciones", "estado": "no_verificado", "detalle": falta}]}}}
+    text = resumen(row)
+    assert text.count(motivo_sf) == 1
+    assert "• Santa Fe · Percepciones y Santa Fe · Retenciones: no se pudo consultar. " + motivo_sf in text
+    assert "• ARBA · Percepciones: no se pudo consultar. Otro motivo." in text
+    assert text.count(falta) == 1 and "• Para SIFERE · ARBA · Percepciones y Tucumán · Retenciones: " + falta in text

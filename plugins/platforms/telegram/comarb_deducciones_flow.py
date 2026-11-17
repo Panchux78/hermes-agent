@@ -104,6 +104,8 @@ def resumen(row: dict[str, Any]) -> str:
               and not sin_cvu_pendiente(r, estados.get(r, {}))]
     lines = [head, "", "Terminada con faltantes: " + ', '.join(faltan) + '.' if faltan else "Terminada."]
     avisos = res.get("advertencias") or []
+    # #191 (pedido 9): el mismo motivo para varias categorías se dice una sola vez.
+    grupos: dict[str, int] = {}
     for regimen in regimes:
         e = estados.get(regimen) or {}
         name = ETIQUETA.get(regimen, regimen)
@@ -118,20 +120,37 @@ def resumen(row: dict[str, Any]) -> str:
             line = (f"• {name}: sin cuentas virtuales (CVU) en SIFERE. Si el cliente cobra con billeteras virtuales, "
                     "revisá SIRCUPA en SIFERE; si no, no hay que hacer nada.")
         else:
-            line = f"• {name}: no se pudo consultar. {e.get('motivo') or ''}".rstrip()
+            line = None
         aviso = next((a.split(": ", 1)[1] for a in avisos if a.startswith(regimen + ":")), None)
+        if line is None:
+            detalle = f"{e.get('motivo') or ''} {aviso or ''}".strip()
+            if detalle in grupos:
+                nombres, _ = lines[grupos[detalle]]
+                nombres.append(name)
+            else:
+                grupos[detalle] = len(lines)
+                lines.append(([name], detalle))
+            continue
         if aviso and e.get("estado") != "con_datos":
             line += f" {aviso}"
         lines.append(line)
+    lines = [l if isinstance(l, str) else f"• {_juntar(l[0])}: no se pudo consultar. {l[1]}".rstrip() for l in lines]
     if res.get("posibles_duplicados"):
         lines.append(f"{res['posibles_duplicados']} filas marcadas como posible duplicado; no se borró ninguna.")
     exportaciones = res.get('importaciones_sifere') or {}
     if exportaciones.get('paquete'):
         lines.append('Te mando también los archivos para SIFERE. Descomprimí el ZIP e importá cada TXT por separado, eligiendo su tipo y jurisdicción. No se incorporaron a ninguna DDJJ.')
+    pendientes: dict[str, list[str]] = {}
     for estado in exportaciones.get('estados', []):
         if estado.get('estado') not in ('preparado', 'no_aplica'):
-            lines.append(f"• Para SIFERE · {estado['organismo']} · {estado['tipo']}: {estado['detalle']}")
+            pendientes.setdefault(estado['detalle'], []).append(f"{estado['organismo']} · {estado['tipo']}")
+    for detalle, nombres in pendientes.items():
+        lines.append(f"• Para SIFERE · {_juntar(nombres)}: {detalle}")
     return "\n".join(lines)
+
+
+def _juntar(nombres: list[str]) -> str:
+    return nombres[0] if len(nombres) == 1 else ", ".join(nombres[:-1]) + " y " + nombres[-1]
 
 
 from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, route_period_callback, sender
