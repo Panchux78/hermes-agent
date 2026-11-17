@@ -122,6 +122,12 @@ def resumen(row: dict[str, Any]) -> str:
         lines.append(line)
     if res.get("posibles_duplicados"):
         lines.append(f"{res['posibles_duplicados']} filas marcadas como posible duplicado; no se borró ninguna.")
+    exportaciones = res.get('importaciones_sifere') or {}
+    if exportaciones.get('paquete'):
+        lines.append('Te mando también los archivos para importar en SIFERE. No se incorporaron a ninguna DDJJ.')
+    for estado in exportaciones.get('estados', []):
+        if estado.get('estado') not in ('preparado', 'no_aplica'):
+            lines.append(f"• Para SIFERE · {estado['organismo']} · {estado['tipo']}: {estado['detalle']}")
     return "\n".join(lines)
 
 
@@ -157,7 +163,8 @@ class ComarbDeduccionesFlow:
     lote_funcion = 'deducciones'
     espera = 'En espera de la consulta de deducciones.'
     cartera_text = ('Cartera de IIBB: se consultan los contribuyentes que ves, de Convenio Multilateral o locales mensuales de CABA en ese mes, '
-                    'con acceso utilizable a SIFERE o AGIP. Recibís un Excel por contribuyente, con el estado de cada fuente.')
+                    'con acceso utilizable a SIFERE o AGIP. Recibís un Excel por contribuyente, con el estado de cada fuente. '
+                    'En Convenio, también los archivos para SIFERE que se puedan preparar completos; si falta un dato, se informa.')
 
     def __init__(self, *, query_connection=None, write_connection=None, clients_root: Path | None = None) -> None:
         self.query_connection = query_connection or lookup_connection
@@ -535,6 +542,33 @@ class ComarbDeduccionesEntregas:
     def __init__(self, flow: ComarbDeduccionesFlow) -> None:
         self.flow = flow
 
+    async def enviar_importaciones(self, bot, row):
+        """Mismo entregador del Excel; autorización viva para el adjunto adicional."""
+        if row['estado'] != 'terminada' or not (row.get('resultado') or {}).get('importaciones_sifere', {}).get('paquete'):
+            return
+        chat = int(row['telegram_id'])
+        sql = ('SELECT row_to_json(f)::text FROM console.fn_comarb_deducciones_importaciones_telegram('
+               f"{chat},{int(row['id_lectura'])},{int(row['id_contribuyente'])}) f;")
+        try:
+            files = await asyncio.to_thread(self.flow._query, sql)
+            if len(files) != 1 or not isinstance(files[0], dict):
+                await bot.send_message(chat_id=chat, text='No se pudo autorizar el envío de los archivos para SIFERE. Revisá tus permisos en el panel; los archivos se conservan en Documentos.')
+                return
+            meta = files[0]
+            path = archivo_guardado(None, self.flow.clients_root, meta['ruta'], meta['sha256'])
+            if path.suffix.lower() != '.zip' or path.stat().st_size > 45_000_000:
+                raise ValueError('archivo_no_entregable')
+            # La autorización se consulta otra vez después de leer y verificar el archivo.
+            current = await asyncio.to_thread(self.flow._query, sql)
+            if current != files:
+                raise ValueError('autorizacion_cambio')
+            with open(path, 'rb') as stream:
+                await bot.send_document(chat_id=chat, document=stream, filename=path.name,
+                    caption=f"Archivos para SIFERE · {row['periodo']} · también en Documentos. No se modificó ninguna DDJJ.")
+        except Exception:
+            logger.warning('[COMARB-DEDUCCIONES] importables no entregados; conservados en Documentos')
+            await bot.send_message(chat_id=chat, text='Los archivos para SIFERE quedaron en Documentos, pero no pude enviarlos por Telegram. Descargalos desde el panel.')
+
     async def poll(self, bot) -> None:
         rows = await asyncio.to_thread(self.flow._write,
             "SELECT row_to_json(e)::text FROM console.fn_comarb_deducciones_entregas_telegram() e;")
@@ -583,6 +617,7 @@ class ComarbDeduccionesEntregas:
                         except Exception:
                             logger.warning('[COMARB-DEDUCCIONES] Excel no entregado; conservado en Documentos')
                             await bot.send_message(chat_id=chat,text='El Excel quedó guardado en Documentos, pero no pude enviarlo por Telegram. Descargalo desde el panel.')
+                await self.enviar_importaciones(bot, row)
 
     async def run(self, adapter) -> None:
         while True:

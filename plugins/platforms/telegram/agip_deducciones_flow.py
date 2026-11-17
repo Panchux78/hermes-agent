@@ -14,7 +14,8 @@ class AgipDeduccionesFlow(ComarbDeduccionesFlow):
     back_page = 'om:agip_consultar'
     cartera_text = ('Cartera de IIBB: clientes visibles con Clave Ciudad utilizable, propia o del representante, '
         'locales mensuales de CABA o Convenio con CABA en el mes solicitado. Sólo consulta AGIP; '
-        'no ingresa a ARCA. Recibís un Excel por contribuyente. miBA todavía no está soportado.')
+        'no ingresa a ARCA. Recibís un Excel por contribuyente y, en Convenio, los archivos para SIFERE verificados. '
+        'Si falta un dato, se informa. miBA todavía no está soportado.')
 
     def _pedir_sql(self, actor, state, period):
         if state.modo=='cartera':

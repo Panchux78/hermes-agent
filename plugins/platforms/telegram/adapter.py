@@ -1034,8 +1034,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             ),
             "comarb_deducciones": (
                 "📑 Deducciones de IIBB\n\n"
-                "Deducciones de SIFERE Web y AGIP · Gestión AR, según el régimen del período, "
-                "en un Excel por contribuyente. Sólo lectura: no se modifica nada ante los organismos."
+                "Deducciones de SIFERE y organismos provinciales, según el régimen del período. "
+                "Recibís un Excel por contribuyente y, cuando los comprobantes traen los datos necesarios, "
+                "los archivos para importar en SIFERE. Si falta un dato, se informa. "
+                "Sólo lectura: no se modifica nada ante los organismos."
             ),
             "arca_consultar": "ARCA · Consultar",
             "arca_preparar": "ARCA · Preparar",
