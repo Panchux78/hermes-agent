@@ -59,6 +59,7 @@ RECHAZOS = {
     "sin_estudio": "Tu usuario no pertenece a un estudio: pedí la cartera desde el panel.",
     "demasiados": "La cartera supera los 1000 contribuyentes: pedila desde el panel por partes.",
     "lote_invalido": "Elegí entre 1 y 200 clientes.",
+    "varios_estudios": "Elegí clientes de un mismo estudio. No se consultó ningún organismo.",
 }
 # #191: lo que dice el worker de un cliente que no llegó a consultarse porque cancelaste.
 CANCELADA_ANTES = 'No se consultó: cancelaste la corrida antes de llegar a este contribuyente.'
