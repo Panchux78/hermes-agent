@@ -75,11 +75,16 @@ def importe(text: Any) -> str:
     return f"{sign}$ {int(entero):,}".replace(",", ".") + "," + dec
 
 
+# #191 (pedido 10): el mismo texto en Telegram, el panel y el Excel (deducciones_normalizar.SIN_CVU_DETALLE).
+SIN_CVU_DETALLE = ('SIFERE no muestra cuentas virtuales (CVU) del cliente, así que no se trajeron recaudaciones de SIRCUPA. '
+                   'Si el cliente no cobra con billeteras virtuales, no hay que hacer nada; si cobra con alguna, revisá SIRCUPA en SIFERE.')
+
+
 def sin_cvu_pendiente(regimen: str, e: dict[str, Any]) -> bool:
     return (regimen == 'SIRCUPA' and e.get('estado') == 'no_verificado' and not e.get('filas')
             and (e.get('observacion') == 'sin_cvu_pendiente' or e.get('motivo') in (
                 'No se observaron CVU en la consulta conjunta. Eso no demuestra ausencia de recaudaciones SIRCUPA.',
-                'La consulta conjunta no aportó un resultado específico verificable de SIRCUPA.')))
+                'La consulta conjunta no aportó un resultado específico verificable de SIRCUPA.', SIN_CVU_DETALLE)))
 
 
 def titulo(row: dict[str, Any]) -> str:
@@ -117,8 +122,7 @@ def resumen(row: dict[str, Any]) -> str:
         elif e.get('estado')=='no_aplica':
             continue
         elif sin_cvu_pendiente(regimen, e):
-            line = (f"• {name}: sin cuentas virtuales (CVU) en SIFERE. Si el cliente cobra con billeteras virtuales, "
-                    "revisá SIRCUPA en SIFERE; si no, no hay que hacer nada.")
+            line = f"• {name}: {SIN_CVU_DETALLE}"
         else:
             line = None
         aviso = next((a.split(": ", 1)[1] for a in avisos if a.startswith(regimen + ":")), None)
@@ -182,7 +186,7 @@ class ComarbDeduccionesFlow:
     rechazos = RECHAZOS
     back_page = 'om:comarb_deducciones'
     operacion = 'deducciones'
-    lote_funcion = 'deducciones'
+    lote_funcion = None  # #191: las consultas de IIBB piden la lista de su propia operación
     espera = 'En espera de la consulta de deducciones.'
     cartera_text = ('Cartera de IIBB: se consultan los contribuyentes que ves, de Convenio Multilateral o locales mensuales de CABA en ese mes, '
                     'con acceso utilizable a SIFERE o AGIP. Recibís un Excel por contribuyente, con el estado de cada fuente. '
@@ -247,7 +251,7 @@ class ComarbDeduccionesFlow:
         return f"SELECT console.fn_comarb_deducciones_cartera_previa_telegram({actor},'{period}','{self.operacion}')::text;"
 
     def _lista_sql(self, actor: int) -> str:
-        return f"SELECT row_to_json(x)::text FROM console.fn_lote_contribuyentes_telegram({actor},'{self.lote_funcion}') x;"
+        return f"SELECT row_to_json(x)::text FROM console.fn_lote_contribuyentes_telegram({actor},'{self.lote_funcion or self.operacion}') x;"
 
     def _fuera_de_alcance(self, state, period, organismos):
         detail = "; ".join(f"{o['jurisdiccion']}: {o['organismo']} ({o['servicio']})" for o in organismos)
@@ -330,7 +334,7 @@ class ComarbDeduccionesFlow:
                 ok = await asyncio.to_thread(self._write, f"SELECT console.fn_comarb_deducciones_cancelar_telegram({actor},{int(parts[2])})::text;")
             except Exception:
                 ok = [False]
-            await query.answer("Cancelación pedida: termino el cliente en curso y no sigo." if ok == [True] else "La consulta ya terminó, ya se canceló o no es tuya.")
+            await query.answer("Cancelación pedida: termino el cliente en curso sin pedirte ningún CAPTCHA más y no sigo con los demás." if ok == [True] else "La consulta ya terminó, ya se canceló o no es tuya.")
             if ok == [True]:
                 try:
                     await query.edit_message_reply_markup(reply_markup=None)
@@ -538,8 +542,12 @@ class ComarbDeduccionesFlow:
                     text = f"{head}\nConsulta terminada: {st['terminados']} de {st['solicitados']}. Te mando el resultado."
                     markup = None
                 elif st.get("cancelacion_solicitada"):
-                    quien = f" con {actual['contribuyente']}" if actual and st["solicitados"] > 1 else ""
-                    text = f"{head}\nCancelación pedida: termino{quien} y no sigo con los demás."
+                    # #191: el cliente en curso termina lo que no necesita CAPTCHA; no se pide ninguno más.
+                    if actual and st["solicitados"] > 1:
+                        text = (f"{head}\nCancelación pedida: termino con {actual['contribuyente']} sin pedirte ningún CAPTCHA más "
+                                "y no sigo con los demás.")
+                    else:
+                        text = f"{head}\nCancelación pedida: termino lo que está en curso sin pedirte ningún CAPTCHA más."
                     markup = None
                 else:
                     now = PROGRESO.get(actual.get("progreso"), actual.get("progreso") or "En espera.")

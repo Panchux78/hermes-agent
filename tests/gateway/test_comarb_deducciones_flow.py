@@ -204,7 +204,9 @@ def test_sircupa_neutro_y_faltantes_identificados():
     text = resumen(row)
     # #191: el SIRCUPA sin CVU no es un faltante y dice si hay que hacer algo.
     assert '\nTerminada.\n' in text
-    assert 'sin cuentas virtuales (CVU) en SIFERE' in text and 'no hay que hacer nada' in text
+    # #191: el mismo texto del pedido 10 que el panel y el Excel.
+    assert '• SIRCUPA: SIFERE no muestra cuentas virtuales (CVU) del cliente, así que no se trajeron recaudaciones de SIRCUPA.' in text
+    assert 'no hay que hacer nada' in text
     result['estados']['SIRCAR · Percepciones'] = {'estado':'no_verificado','motivo':'Sesión vencida'}
     assert 'Terminada con faltantes: SIRCAR · Percepciones.' in resumen(row)
     result['estados']['SIRCUPA']['motivo'] = 'Consulta conjunta incompleta'

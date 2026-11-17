@@ -132,6 +132,8 @@ def test_agip_y_provincia_encolan_con_su_operacion():
             f, fake = flujo(cls, [FILAS, [{'estado': 'encolada', 'id_lectura': 6, 'solicitados': 1}]], **kw)
             a = adapter()
             await f.callback(a, query(f'{prefix}:lote'), f'{prefix}:lote', 42, None, '42')
+            # #191 (prueba final): la lista es la de su propia consulta (sólo clientes con IIBB de ese régimen).
+            assert fake.sql[0] == f"SELECT row_to_json(x)::text FROM console.fn_lote_contribuyentes_telegram(42,'{op}') x;"
             n = f.states[f._key(42, None, '42')].nonce
             await f.callback(a, query(f'{prefix}:lt:{n}:4'), f'{prefix}:lt:{n}:4', 42, None, '42')
             await f.callback(a, query(f'{prefix}:lc:{n}'), f'{prefix}:lc:{n}', 42, None, '42')
@@ -146,7 +148,7 @@ def test_cancelar_avisa_que_termina_el_cliente_en_curso():
         a = adapter(); q = query('cd:stop:9')
         await f.callback(a, q, 'cd:stop:9', 42, None, '42')
         assert fake.sql == ['SELECT console.fn_comarb_deducciones_cancelar_telegram(42,9)::text;']
-        assert 'termino el cliente en curso' in q.answer.await_args.args[0]
+        assert 'termino el cliente en curso sin pedirte ningún CAPTCHA más' in q.answer.await_args.args[0]
         q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
     asyncio.run(scenario())
 
@@ -162,7 +164,7 @@ def test_avance_muestra_cancelacion_y_cierre_con_los_no_consultados(monkeypatch)
         message = SimpleNamespace(edit_text=AsyncMock(), reply_markup='botón')
         await f._watch(message, 42, 9, 'Cabecera', '')
         textos = [c.args[0] for c in message.edit_text.await_args_list]
-        assert 'Cancelación pedida: termino con Empresa Sintética 01 y no sigo con los demás.' in textos[0]
+        assert 'Cancelación pedida: termino con Empresa Sintética 01 sin pedirte ningún CAPTCHA más y no sigo con los demás.' in textos[0]
         assert message.edit_text.await_args_list[0].kwargs['reply_markup'] is None
         assert 'Cancelada: 1 de 3 terminaron; 2 no se consultaron' in textos[1]
     asyncio.run(scenario())
