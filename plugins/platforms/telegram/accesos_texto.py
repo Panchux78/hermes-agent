@@ -9,3 +9,9 @@ ahora dónde está y qué botón tocar.
 def como_comprobar(entidad: str) -> str:
     return (f"Para comprobarla: en el panel, abrí la ficha del cliente, andá a Accesos fiscales y tocá «Comprobar» en {entidad}. "
             "Cuando diga «Comprobada», volvé a pedirlo. Volver a cargar la clave no la comprueba.")
+
+
+def como_cargar(entidad: str) -> str:
+    """#191 (pedido 8): en Deducciones la clave se comprueba sola al consultar; sólo falta cargarla o corregirla."""
+    return (f"En el panel, abrí la ficha del cliente › Accesos fiscales y cargá o corregí la clave de {entidad}. "
+            "No hace falta comprobarla antes: se comprueba sola al consultar.")

@@ -209,7 +209,9 @@ def test_aviso_de_acceso_dice_que_boton_tocar():
     assert '«Comprobar»' in texto and 'Accesos fiscales' in texto and 'Volver a cargar la clave no la comprueba' in texto
     from plugins.platforms.telegram.comarb_deducciones_flow import RECHAZOS
     from plugins.platforms.telegram.portal_iva_flow import _IVA_INELIGIBLE
-    assert '«Comprobar»' in RECHAZOS['clave_sin_verificar'] and '«Comprobar»' in _IVA_INELIGIBLE['clave_sin_verificar']
+    assert '«Comprobar»' in _IVA_INELIGIBLE['clave_sin_verificar']
+    # #191 (pedido 8): en Deducciones la clave se comprueba sola al consultar; sólo falta cargarla o corregirla.
+    assert 'se comprueba sola al consultar' in RECHAZOS['clave_sin_verificar'] and 'Accesos fiscales' in RECHAZOS['clave_sin_verificar']
 
 
 def test_captcha_de_preparar_tiene_su_texto():
