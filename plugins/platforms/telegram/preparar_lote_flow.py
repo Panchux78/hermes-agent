@@ -50,19 +50,20 @@ class PrepararLoteFlow(ComarbDeduccionesFlow):
 
     async def _respuesta(self,send,state,period,answer):
         if answer and answer.get('estado')=='sin_configuracion':
+            from plugins.platforms.telegram.iva_configuracion import dividir
             text='No se inició ARCA. Completá las fichas antes de preparar:\n'+'\n'.join(f"• {r['nombre']}: {r['motivo']}" for r in self._no_incluidos(answer.get('no_incluidos') or []))
-            await send(text,reply_markup=self._back())
+            for chunk in dividir(text):await send(chunk,reply_markup=self._back())
             return True
         return await super()._respuesta(send,state,period,answer)
 
     async def _encolar(self,adapter,chat_id,state,period,send):
-        from plugins.platforms.telegram.iva_configuracion import consulta,resumen
+        from plugins.platforms.telegram.iva_configuracion import consulta,mensajes_lote
         try:
             ids=[int(i['id']) for i in state.lote.elegidos]
             rows=await asyncio.to_thread(self._write,consulta(int(state.user_id),ids,period[3:]+'-'+period[:2]))
             if len(rows)!=1 or not isinstance(rows[0],list):raise ValueError('preflight_no_verificado')
-            # Un mensaje corto por cliente antes de encolar, nunca un texto truncado.
-            for r in rows[0]:await send(f"{r['nombre']} · {period}\n{resumen(r['configuracion'])}")
+            # Compactar por límite de Telegram, no un mensaje por cliente.
+            for text in mensajes_lote(rows[0],period):await send(text)
         except Exception:
             await send('No se pudo comprobar la configuración de IVA. No se inició ARCA.',reply_markup=self._back())
             return True

@@ -1,6 +1,6 @@
 """#192: mensajes del preflight compartido, sin ARCA ni credenciales."""
 import pytest
-from plugins.platforms.telegram.iva_configuracion import consulta,resumen
+from plugins.platforms.telegram.iva_configuracion import consulta,resumen,dividir,mensajes_lote
 from plugins.platforms.telegram.preparar_lote_flow import PrepararLoteFlow
 
 def test_ausencia_no_es_no():
@@ -18,6 +18,18 @@ def test_sql_tipeado_y_periodo_interno():
 def test_no_pierde_motivo_configuracion():
     text='Completá Ficha › Impuestos › IVA: importador.'
     assert PrepararLoteFlow._no_incluidos(None,[dict(motivo=text)])[0]['motivo']==text
+
+def test_lote_cien_compacto_completo_y_dentro_del_limite_telegram():
+    names=[f'Cliente sintético {n:03d} 🧾' for n in range(100)]
+    rows=[dict(nombre=n,configuracion=dict(faltantes=['prorrateo de IVA','importador','exportador'])) for n in names]
+    chunks=mensajes_lote(rows,'09/2026')
+    assert 1<len(chunks)<10
+    for part in chunks:assert len(part.encode('utf-16-le'))//2<=3500
+    for n in names:assert '\n'.join(chunks).count(n)==1
+    text='No incluidos:\n'+'\n'.join(n+': Completá Ficha › Impuestos › IVA.' for n in names)
+    parts=dividir(text)
+    assert all(len(p.encode('utf-16-le'))//2<=3500 for p in parts)
+    for n in names:assert '\n'.join(parts).count(n)==1
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('rows,code',[
