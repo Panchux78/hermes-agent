@@ -235,6 +235,7 @@ from plugins.platforms.telegram.telegram_group_observe import apply_group_observ
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from plugins.platforms.telegram.telegram_vault_code import TelegramVaultCodeMixin
+from pathlib import Path as _Path  # ContaBot: upstream 0.23.2 dejó de importarlo; lo usan el menú y el worker de Portal IVA
 from utils import atomic_replace, env_float, env_int
 
 # Max seconds a send/edit may sleep inline on a flood-control RetryAfter; longer penalties fail
