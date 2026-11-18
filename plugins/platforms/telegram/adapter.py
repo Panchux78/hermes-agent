@@ -6830,10 +6830,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             presentadas = getattr(self, '_comarb_presentadas_flow', None)
             if presentadas is not None:
                 presentadas.cancel_pending(msg.chat_id, getattr(msg, 'message_thread_id', None), str(msg.from_user.id))
-            await self._reply_operational_menu(msg, context.bot)
+            await self._reply_operational_menu(msg, getattr(context, 'bot', None) or self._bot)
             return
         bridge = getattr(self, '_panel_captcha_bridge', None)
-        if bridge is not None and await bridge.text(context.bot, msg):
+        if bridge is not None and await bridge.text(getattr(context, 'bot', None) or self._bot, msg):
             return
         actividades = getattr(self,'_sifere_actividades_flow',None)
         if actividades is not None and await actividades.text(self,msg):

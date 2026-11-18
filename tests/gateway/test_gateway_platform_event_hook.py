@@ -631,14 +631,14 @@ class TestRegisterHandlers:
         app = MagicMock()
         a._register_handlers(app)
 
-        # Seven core handlers in 0.22.5 (default group, no group kwarg — incl. the
+        # Nine core handlers in 0.23.2 (dice and contact are new; default group, no group kwarg — incl. the
         # inline command picker) plus the gateway_platform_event observer
         # alone in group 99, so it observes alongside rather than
         # displacing the core handlers.
         calls = app.add_handler.call_args_list
-        assert len(calls) == 8
+        assert len(calls) == 10
         assert len([c for c in calls if c.kwargs.get("group") == 99]) == 1
-        assert len([c for c in calls if not c.kwargs]) == 7
+        assert len([c for c in calls if not c.kwargs]) == 9
         app.add_error_handler.assert_called_once_with(a._handle_application_error)
 
     def test_rebuild_re_registers_observer(self):
@@ -651,7 +651,7 @@ class TestRegisterHandlers:
         a._register_handlers(first_app)
         a._register_handlers(rebuilt_app)  # the rebuild path
 
-        assert rebuilt_app.add_handler.call_count == 8
+        assert rebuilt_app.add_handler.call_count == 10
         assert len(self._observer_calls(rebuilt_app)) == 1
         rebuilt_app.add_error_handler.assert_called_once_with(a._handle_application_error)
 

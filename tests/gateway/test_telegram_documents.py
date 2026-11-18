@@ -324,7 +324,7 @@ class TestVideoDownloadBlock:
             Dice=SimpleNamespace(ALL=_Names("DICE")), StatusUpdate=None, MessageFilter=_Filter)
         registered = {}
         with patch.multiple("plugins.platforms.telegram.adapter", filters=fake_filters,
-                            TelegramMessageHandler=lambda flt, callback: registered.setdefault(callback, flt)):
+                            TelegramMessageHandler=lambda flt, callback: registered.setdefault(getattr(callback, "__wrapped__", callback), flt)):  # ContaBot envuelve con execution_origin.incoming
             adapter._register_handlers(MagicMock())
         assert {"VIDEO", "VIDEO_NOTE"} <= registered[adapter._handle_media_message].names
 
