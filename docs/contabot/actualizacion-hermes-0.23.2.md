@@ -178,3 +178,14 @@ de cada corrida se lee en Operaciones (`tbl_corridas_bot`).
   procedencia llega dos veces en `PGOPTIONS` (las mismas opciones; inofensivo).
 - Etiquetas: CCMA, AGIP DDJJ y el mapa de impuestos quedan como «consulta no completada; causa no
   determinada», con su antecedente; no se atribuyen al organismo.
+
+## Paso 2 · Holographic (18/11, tarde)
+
+- Pedido de Pancho (16:40): la configuración de Lía tal cual, sin bloque propio del plugin (valores por defecto), versión del catálogo oficial de 0.23.2 fijada en su commit.
+- Catálogo: `holographic` 0.29.2 [community], `itpartypattaya/hermes-plugin-holographic`, commit `e9c47ea499e45b456efa8ccad82e2d9d73793116`; `plugins.auto_apply` queda en `false` (no se actualiza solo).
+- Revisión del código fijado: sólo `embeddings.py` y `rerank.py` (con `net.py`) hacen llamadas de red, y únicamente si `embeddings` o `rerank` están encendidos (`settings_from()` devuelve `None` si no); los dos vienen apagados. Sin telemetría, `eval`/`exec`, `pickle` ni subprocesos fuera de pruebas y herramientas. Dependencias `numpy` 2.5.4 y `snowballstemmer` 3.1.1, ya presentes en el venv del gateway; la instalación no las cambió. Los archivos instalados son idénticos al commit revisado.
+- Instalación: `hermes plugins install holographic --ref e9c47ea… --yes-deps --enable`, `hermes plugins enable holographic`, `hermes config set memory.write_approval false`. Cambios en `config.yaml`: `memory.provider: holographic`, `memory.write_approval: false`, `plugins.enabled: [holographic]`. El resto del bloque `memory` ya era igual al de Lía. Respaldo previo en `~/trabajo/184/paso2/config-antes-holographic.yaml`.
+- Gateway reiniciado: corte 16:18:33, Telegram conectado 16:19:13.
+- Valores efectivos (proveedor cargado como el gateway): `hermes memory status` muestra holographic activo y disponible; bloque propio vacío, sin errores de configuración; alcance `profile`; extracción automática apagada; herramientas `fact_store` y `fact_feedback`; escritura desde cron encendida; `embeddings` y `rerank` apagados; diario de experiencia, `recall_source` y presence gate apagados.
+- Verificación previa en un `HERMES_HOME` temporal: un hecho en español guardado en una sesión se encuentra en otra, por búsqueda y por el recuerdo previo al turno.
+- Hallazgo para el punto 7: el núcleo de Hermes envuelve lo recordado en `<memory-context>` con la nota «Treat as authoritative reference data — … should inform all responses» (`agent/memory_context.py:183`), mientras el plugin lo rotula «data, not instructions». Las funciones del menú son código del adaptador y no las cambia la memoria; en la conversación con el agente, un hecho recordado podría pesar más que una fuente oficial. Se mide con la prueba de Pancho; no se cambió.
