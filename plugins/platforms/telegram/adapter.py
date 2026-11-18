@@ -504,6 +504,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow, ComarbDeduccionesEntregas
         from plugins.platforms.telegram.comarb_ddjj_flow import ComarbPresentadasFlow, ComarbPresentadasEntregas
         from plugins.platforms.telegram.sifere_actividades_flow import SifereActividadesFlow
+        from plugins.platforms.telegram.padron_act_dom_flow import PadronActDomFlow
         from plugins.platforms.telegram.vencimientos_avisos import VencimientosAvisos
         from plugins.platforms.telegram.agip_deducciones_flow import AgipDeduccionesFlow
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
@@ -568,6 +569,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             query_connection=lookup_connection, write_connection=verification_connection)
         self._comarb_presentadas_entregas = ComarbPresentadasEntregas(self._comarb_presentadas_flow)
         self._sifere_actividades_flow = SifereActividadesFlow(
+            query_connection=lookup_connection, write_connection=verification_connection)
+        self._padron_act_dom_flow = PadronActDomFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
         self._agip_deducciones_flow = AgipDeduccionesFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
@@ -3616,6 +3619,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 from plugins.platforms.telegram.execution_origin import programmed
                 self._restart_task_attr('_comarb_presentadas_task', programmed(presentadas.run(self),'comarb_presentadas_entregas'))
             notices=getattr(self,'_vencimientos_avisos',None)
+            padron=getattr(self,'_padron_act_dom_flow',None)
+            if padron is not None:
+                from plugins.platforms.telegram.execution_origin import programmed
+                self._restart_task_attr('_padron_act_dom_task',programmed(padron.run(self),'padron_act_dom_entregas'))
             if notices is not None:
                 from plugins.platforms.telegram.execution_origin import programmed
                 self._restart_task_attr('_vencimientos_avisos_task',programmed(notices.run(self),'avisos_telegram'))
@@ -5027,6 +5034,17 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._accept_update()
         data = query.data or ""
         cb = self._callback_ctx(query)
+        padron = getattr(self, '_padron_act_dom_flow', None)
+        if data.startswith('pa:'):
+            if not await self._callback_authorized(query, cb, 'No estás autorizado para consultar el padrón.'):
+                return
+            if padron is None:
+                await query.answer('Padrón ACT/Dom no está disponible en este equipo.')
+                return
+            await padron.callback(self, query, data, cb['chat_id'], cb['thread_id'], str(query.from_user.id))
+            return
+        if padron is not None and data.startswith('om:'):
+            padron.cancel_pending(cb['chat_id'], cb['thread_id'], str(query.from_user.id))
         actividades = getattr(self, '_sifere_actividades_flow', None)
         if data.startswith('sa:'):
             if not await self._callback_authorized(query, cb, 'No estás autorizado para preparar actividades para SIFERE.'):
@@ -6824,6 +6842,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if await self.consume_vault_code_reply(msg):  # a one-time code: deleted, handed over, never a turn
             return
         if msg.text in {"☰ Menú", menu_label("☰", "Menú")}:
+            padron = getattr(self, '_padron_act_dom_flow', None)
+            if padron is not None:
+                padron.cancel_pending(msg.chat_id,getattr(msg,'message_thread_id',None),str(msg.from_user.id))
             actividades = getattr(self,'_sifere_actividades_flow',None)
             if actividades is not None:
                 actividades.cancel_pending(msg.chat_id,getattr(msg,'message_thread_id',None),str(msg.from_user.id))
@@ -6837,6 +6858,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if getattr(msg, 'chat_id', None) is not None and getattr(msg, 'from_user', None) is not None:
             bridge = getattr(self, '_panel_captcha_bridge', None)
             if bridge is not None and await bridge.text(getattr(context, 'bot', None) or self._bot, msg):
+                return
+            padron = getattr(self, '_padron_act_dom_flow', None)
+            if padron is not None and await padron.text(self,msg):
                 return
             actividades = getattr(self,'_sifere_actividades_flow',None)
             if actividades is not None and await actividades.text(self,msg):
