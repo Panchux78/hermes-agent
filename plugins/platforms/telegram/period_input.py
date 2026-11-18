@@ -15,7 +15,6 @@ from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TelegramError
 from plugins.platforms.telegram.menu_buttons import menu_label
 
 SYNTAX = 'Guion = rango; coma = meses sueltos. Escribí todo en un solo mensaje.'
@@ -305,6 +304,8 @@ async def period_callback(state, query, data, *, prefix, is_current, discard):
         await query.answer('Esa opción no está disponible.')
         return True
     candidate.consumed = True  # Antes de todo await: dos callbacks no duplican.
+    # Import tardío: cargar el módulo no exige telegram.error completo (las pruebas de upstream lo reemplazan).
+    from telegram.error import TelegramError
     try:
         await query.answer()
     except TelegramError:

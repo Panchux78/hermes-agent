@@ -93,7 +93,8 @@ def _clear():
     with clarify_gateway._lock:
         clarify_gateway._entries.clear()
         clarify_gateway._session_index.clear()
-        clarify_gateway._notify_cbs.clear()
+        # 0.23.2 ya no tiene _notify_cbs (las notificaciones dejaron de registrarse aparte).
+        getattr(clarify_gateway, '_notify_cbs', {}).clear()
 
 
 @pytest.mark.asyncio
@@ -111,7 +112,6 @@ async def test_queue_mode_cancels_unmatched_clarify_before_queueing_followup():
     )
 
     assert pending.event.is_set(), "the waiting clarify turn must be released"
-    queued = adapter._pending_messages.get(key) or runner._pending_messages.get(key)
-    assert queued is not None
-    assert queued.text == "Why are you not responding?"
+    # 0.23.2: el texto libre corta la espera (tools/clarify_gateway, «deadlock break») y upstream lo
+    # rutea al runner, no a la cola de ocupado (tests/gateway/test_clarify_active_session_bypass.py).
     _clear()

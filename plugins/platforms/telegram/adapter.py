@@ -6832,34 +6832,37 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 presentadas.cancel_pending(msg.chat_id, getattr(msg, 'message_thread_id', None), str(msg.from_user.id))
             await self._reply_operational_menu(msg, getattr(context, 'bot', None) or self._bot)
             return
-        bridge = getattr(self, '_panel_captcha_bridge', None)
-        if bridge is not None and await bridge.text(getattr(context, 'bot', None) or self._bot, msg):
-            return
-        actividades = getattr(self,'_sifere_actividades_flow',None)
-        if actividades is not None and await actividades.text(self,msg):
-            return
-        presentadas = getattr(self, '_comarb_presentadas_flow', None)
-        if presentadas is not None and await presentadas.text(self, msg):
-            return
-        if await self._pdf_security_flow.text(self, msg):
-            return
-        if await self._agip_ddjj_flow.text(self, msg):
-            return
-        from plugins.platforms.telegram.provinciales_iibb import flows as iibb_flows
-        for flow in iibb_flows(self).values():
-            if await flow.text(self, msg):return
-        if await self._portal_iva_flow.text(self, msg):
-            return
-        if await self._vencimientos_flow.text(self, msg):
-            return
-        if await self._constancias_flow.text(self, msg):
-            return
-        cruce_flow = getattr(self, "_cruce_iva_flow", None)
-        if cruce_flow is not None and await cruce_flow.text(self, msg):
-            return
-        fiscal_flow = getattr(self, "_fiscal_query_flow", None)
-        if fiscal_flow is not None and await fiscal_flow.text(self, msg):
-            return
+        # ContaBot: puente de CAPTCHA y flujos sólo para un mensaje con chat y remitente
+        # (siempre en Telegram; las pruebas de upstream mandan mensajes mínimos). El menú no los necesita.
+        if getattr(msg, 'chat_id', None) is not None and getattr(msg, 'from_user', None) is not None:
+            bridge = getattr(self, '_panel_captcha_bridge', None)
+            if bridge is not None and await bridge.text(getattr(context, 'bot', None) or self._bot, msg):
+                return
+            actividades = getattr(self,'_sifere_actividades_flow',None)
+            if actividades is not None and await actividades.text(self,msg):
+                return
+            presentadas = getattr(self, '_comarb_presentadas_flow', None)
+            if presentadas is not None and await presentadas.text(self, msg):
+                return
+            if await self._pdf_security_flow.text(self, msg):
+                return
+            if await self._agip_ddjj_flow.text(self, msg):
+                return
+            from plugins.platforms.telegram.provinciales_iibb import flows as iibb_flows
+            for flow in iibb_flows(self).values():
+                if await flow.text(self, msg):return
+            if await self._portal_iva_flow.text(self, msg):
+                return
+            if await self._vencimientos_flow.text(self, msg):
+                return
+            if await self._constancias_flow.text(self, msg):
+                return
+            cruce_flow = getattr(self, "_cruce_iva_flow", None)
+            if cruce_flow is not None and await cruce_flow.text(self, msg):
+                return
+            fiscal_flow = getattr(self, "_fiscal_query_flow", None)
+            if fiscal_flow is not None and await fiscal_flow.text(self, msg):
+                return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
         await self._ensure_forum_commands(update.message)

@@ -58,6 +58,9 @@ class SifereActividadesFlow(ComarbDeduccionesFlow):
         return await super().callback(adapter,query,data,chat_id,thread_id,user_id)
 
     async def text(self,adapter,msg):
+        # Un mensaje sin chat o sin remitente no puede tener una preparación en curso.
+        if getattr(msg,'chat_id',None) is None or getattr(msg,'from_user',None) is None:
+            return False
         key=self._key(msg.chat_id,getattr(msg,'message_thread_id',None),str(msg.from_user.id))
         state=self.states.get(key)
         if state and state.stage=='actividad':
