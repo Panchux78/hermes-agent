@@ -18,3 +18,23 @@ def test_sql_tipeado_y_periodo_interno():
 def test_no_pierde_motivo_configuracion():
     text='Completá Ficha › Impuestos › IVA: importador.'
     assert PrepararLoteFlow._no_incluidos(None,[dict(motivo=text)])[0]['motivo']==text
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('rows,code',[
+    ([[{'configuracion':{'faltantes':['importador']}}]],'configuracion_iva_incompleta'),
+    ([], 'configuracion_iva_no_verificada'),
+])
+async def test_rechazo_preflight_registrado_sin_abrir_arca(rows,code):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow
+    history=SimpleNamespace(reject=AsyncMock())
+    flow=PortalIvaFlow(history=history);flow._by_id=lambda *args:[{'access_id':1}]
+    flow._write_query=lambda *args:rows;flow._send=AsyncMock()
+    key='sintetico';state=SimpleNamespace(operation='generar',user_id='990000192',contributor_id=1,nonce='abcdef0123')
+    flow.states[key]=state
+    await flow._submit_single_period(SimpleNamespace(),SimpleNamespace(chat_id=990000192),state,key,SimpleNamespace(months=['2026-09']))
+    history.reject.assert_awaited_once()
+    assert history.reject.await_args.kwargs['reason_code']==code
+    assert history.reject.await_args.kwargs['operation']=='portal_iva_generar_csv'
+    assert key not in flow.states and not flow.tasks

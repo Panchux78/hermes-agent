@@ -674,11 +674,18 @@ class PortalIvaFlow:
                 config=rows[0][0]['configuracion']
                 await self._send(adapter,chat_id,resumen(config),thread_id)
                 if config['faltantes']:
+                    await self._reject(user_id=state.user_id,operation=state.operation,
+                        key_material='iva-config:'+state.nonce,code='configuracion_iva_incompleta',
+                        text=resumen(config),contributor_id=state.contributor_id)
                     self.states.pop(key,None)
                     return True
                 if type(config.get('id_dato')) is not int or config['id_dato']<=0:raise ValueError('configuracion_sin_version')
                 state.configuracion_version=config['id_dato']
             except Exception:
+                await self._reject(user_id=state.user_id,operation=state.operation,
+                    key_material='iva-config:'+state.nonce,code='configuracion_iva_no_verificada',
+                    text='No se pudo comprobar la configuración de IVA. No se inició ARCA.',
+                    contributor_id=state.contributor_id)
                 self.states.pop(key,None)
                 await self._send(adapter,chat_id,'No se pudo comprobar la configuración de IVA. No se inició ARCA.',thread_id)
                 return True
