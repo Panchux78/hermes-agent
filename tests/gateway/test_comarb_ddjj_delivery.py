@@ -104,5 +104,5 @@ class DeliveryTests(IsolatedAsyncioTestCase):
         sent=self.bot.send_document.await_args.kwargs
         self.assertEqual(sent['filename'],self.path.name)
         self.assertIn('Actividades para SIFERE',sent['caption'])
-        self.assertIn('Lista para importar',self.bot.send_message.await_args.kwargs['text'])
+        self.assertIn('Actividades listas para importar',self.bot.send_message.await_args.kwargs['text'])
         self.assertEqual(self.phase,'entregada')
