@@ -46,7 +46,27 @@ class PrepararLoteFlow(ComarbDeduccionesFlow):
         return f"SELECT console.fn_portal_iva_preparar_lote_telegram({actor},'{period}',ARRAY[{ids}]::bigint[])::text;"
 
     def _no_incluidos(self, filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [{**f, 'motivo': _IVA_INELIGIBLE.get(f.get('motivo'), 'No se puede preparar con tu acceso actual.')} for f in filas]
+        return [{**f, 'motivo': f['motivo'] if str(f.get('motivo','')).startswith('Completá Ficha › Impuestos › IVA:') else _IVA_INELIGIBLE.get(f.get('motivo'), 'No se puede preparar con tu acceso actual.')} for f in filas]
+
+    async def _respuesta(self,send,state,period,answer):
+        if answer and answer.get('estado')=='sin_configuracion':
+            text='No se inició ARCA. Completá las fichas antes de preparar:\n'+'\n'.join(f"• {r['nombre']}: {r['motivo']}" for r in self._no_incluidos(answer.get('no_incluidos') or []))
+            await send(text,reply_markup=self._back())
+            return True
+        return await super()._respuesta(send,state,period,answer)
+
+    async def _encolar(self,adapter,chat_id,state,period,send):
+        from plugins.platforms.telegram.iva_configuracion import consulta,resumen
+        try:
+            ids=[int(i['id']) for i in state.lote.elegidos]
+            rows=await asyncio.to_thread(self._write,consulta(int(state.user_id),ids,period[3:]+'-'+period[:2]))
+            if len(rows)!=1 or not isinstance(rows[0],list):raise ValueError('preflight_no_verificado')
+            # Un mensaje corto por cliente antes de encolar, nunca un texto truncado.
+            for r in rows[0]:await send(f"{r['nombre']} · {period}\n{resumen(r['configuracion'])}")
+        except Exception:
+            await send('No se pudo comprobar la configuración de IVA. No se inició ARCA.',reply_markup=self._back())
+            return True
+        return await super()._encolar(adapter,chat_id,state,period,send)
 
     def _pedir_sql(self, actor, state, period):
         raise RuntimeError('PREPARAR_SOLO_LOTE')
@@ -78,7 +98,7 @@ class PrepararLoteEntregas:
                 continue
             archivos = [a for a in (row.get('archivos') or []) if isinstance(a, dict)]
             csv = [a for a in archivos if str(a.get('nombre', '')).lower().endswith('.csv')] or archivos
-            await bot.send_message(chat_id=chat, text=f'{head}\nPeríodo preparado en ARCA. Te mando los libros; también quedan en Documentos.')
+            await bot.send_message(chat_id=chat, text=f'{head}\nPeríodo preparado en ARCA. Te mando los libros; también quedan en Documentos. Revisá la clasificación de compras en Padrón ACT/Dom antes de liquidar.')
             for a in csv:
                 try:
                     path = archivo_guardado(None, self.flow.clients_root, a['ruta'], a.get('sha256'))

@@ -111,6 +111,7 @@ class FlowState:
     cuit: str | None = None
     nombre: str | None = None
     period: str | None = None
+    configuracion_version: int | None = None
     progress_message: Any = None
     progress_label: str = "Generando CSV de período nuevo…"
     cancelled: bool = False
@@ -665,6 +666,22 @@ class PortalIvaFlow:
             return True
         if self.states.get(key) is not state:
             return True
+        if state.operation=='generar':
+            from plugins.platforms.telegram.iva_configuracion import consulta,resumen
+            try:
+                rows=await asyncio.to_thread(self._write_query,consulta(int(state.user_id),[int(state.contributor_id)],period))
+                if len(rows)!=1 or not isinstance(rows[0],list) or len(rows[0])!=1:raise ValueError('preflight_no_verificado')
+                config=rows[0][0]['configuracion']
+                await self._send(adapter,chat_id,resumen(config),thread_id)
+                if config['faltantes']:
+                    self.states.pop(key,None)
+                    return True
+                if type(config.get('id_dato')) is not int or config['id_dato']<=0:raise ValueError('configuracion_sin_version')
+                state.configuracion_version=config['id_dato']
+            except Exception:
+                self.states.pop(key,None)
+                await self._send(adapter,chat_id,'No se pudo comprobar la configuración de IVA. No se inició ARCA.',thread_id)
+                return True
         state.period = period
         state.stage = "running"
         state.progress_label = (
@@ -1216,6 +1233,10 @@ class PortalIvaFlow:
             return cuota
         prefix = "Generar CSV de período nuevo" if operation == "generar" else "Descargar CSV presentados"
         reason = str((result or {}).get("motivo", ""))
+        if reason.startswith(('DATOS_INICIALES_FICHA_INCOMPLETA','DATOS_INICIALES_CONFIGURACION_')):
+            return f'{prefix}: la preparación se detuvo. Completá o revisá Ficha › Impuestos › IVA; los cambios ya realizados, si los hubo, constan en la corrida.'
+        if reason=='DATOS_INICIALES_BORRADOR_DIFIERE_FICHA':
+            return f'{prefix}: los Datos Iniciales del borrador no coinciden con la ficha. No se modificó el borrador; revisá Ficha › Impuestos › IVA y ARCA.'
         if reason.startswith(('IMPORTACIONES_BIENES_', 'COMPRAS_IMPO_BIENES_', 'TOTAL_FILAS_NO_COINCIDE_IMPORTACIONES_BIENES')):
             return f'{prefix}: no se pudieron obtener las Importaciones de bienes. Los archivos ya obtenidos quedaron guardados. Reintentá este período.'
         if reason.startswith("CREDENCIAL_") or "CREDENTIAL" in reason:
@@ -1781,6 +1802,9 @@ class PortalIvaFlow:
             execution_lock_acquired = True
             self.execution_locks[execution_key] = key
             command = self._command(slug, period, state.operation)
+            if state.operation=='generar':command.extend(['--solicitante-telegram',str(int(state.user_id))])
+            if state.operation=='generar' and state.configuracion_version is not None:
+                command.extend(['--configuracion-version',str(state.configuracion_version)])
             started = time.monotonic()
             proc = await asyncio.create_subprocess_exec(
                 *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -1892,6 +1916,11 @@ class PortalIvaFlow:
                     history_finished.add(history_items[label])
                 await self.history.close(history_run)
             completion = self._completion_message(deliverables)
+            if state.operation=='generar' and isinstance(result.get('clasificacion_compras'),dict):
+                classification=result.get('clasificacion_compras') or {}
+                completion += ('\nLa clasificación de compras se procesa en Padrón ACT/Dom. Revisá sus pendientes antes de liquidar.'
+                               if classification.get('estado')=='solicitada' else
+                               '\nClasificación de compras pendiente: consultá Padrón ACT/Dom antes de liquidar.')
             if result.get('importaciones_bienes_estado') == 'sin_solapa':
                 completion += '\nARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar.'
             await self._edit_progress(state, completion)

@@ -364,6 +364,7 @@ def test_period_accepts_only_month_year_and_stores_executor_period(monkeypatch):
         adapter = FakeAdapter()
         state = FlowState(user_id="7", nonce="a" * 10, stage="period", contributor_id=1, slug="cliente", cuit=VALID_CUIT)
         flow._by_id = lambda _ident, _uid: [_scope_item()]
+        flow._write_query = lambda _sql: [[dict(configuracion=dict(id_dato=7,faltantes=[],valor=dict(prorrateo=False,modalidad=None,importador=False,tipo_importacion=None,exportador=False)))]]
         key = flow._key("10", None, "7")
         flow.states[key] = state
 

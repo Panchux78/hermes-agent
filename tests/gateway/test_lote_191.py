@@ -213,7 +213,8 @@ def test_preparar_por_lote_encola_tildados_por_periodo_y_explica_los_que_no():
     async def scenario():
         filas = [{'id': 1, 'nombre': 'RI Sintético', 'cuit': '30000000017', 'elegible': True},
                  {'id': 2, 'nombre': 'Mono Sintético', 'cuit': '20000000017', 'elegible': False, 'motivo': 'monotributo'}]
-        f, fake = flujo(PrepararLoteFlow, [filas, [{'estado': 'encolada', 'id_lectura': 8, 'solicitados': 1,
+        cfg=dict(faltantes=[],valor=dict(prorrateo=False,modalidad=None,importador=False,tipo_importacion=None,exportador=False))
+        f, fake = flujo(PrepararLoteFlow, [filas, [[dict(nombre='RI Sintético',configuracion=cfg)]], [{'estado': 'encolada', 'id_lectura': 8, 'solicitados': 1,
             'no_incluidos': [{'id': 2, 'nombre': 'Mono Sintético', 'motivo': 'monotributo'}]}]])
         a = adapter()
         await f.callback(a, query('pp:lote'), 'pp:lote', 42, None, '42')
