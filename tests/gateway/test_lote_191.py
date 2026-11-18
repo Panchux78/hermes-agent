@@ -161,7 +161,7 @@ def test_cancelar_sin_cliente_en_curso_no_promete_terminar_nada(monkeypatch):
         q = query('cd:stop:9')
         await f.callback(adapter(), q, 'cd:stop:9', 42, None, '42')
         aviso = q.answer.await_args.args[0]
-        assert aviso == 'Cancelada: no se consulta ningún cliente más.'
+        assert aviso == 'Cancelada: no se consulta ningún contribuyente más.'
         g = ComarbDeduccionesFlow(query_connection=lambda: None, write_connection=lambda: None)
         g._query = lambda sql: [{'estado': 'cancelada', 'solicitados': 3, 'terminados': 3, 'cancelados': 3, 'actual': None}]
         monkeypatch.setattr(asyncio, 'sleep', AsyncMock())
@@ -199,7 +199,7 @@ def test_los_no_consultados_por_cancelar_no_mandan_un_mensaje_cada_uno():
         filas = [{'telegram_id': 42, 'id_lectura': 9, 'id_contribuyente': 2, 'estado': 'cancelada', 'motivo': CANCELADA_ANTES,
                   'periodo': '07/2026', 'nombre_legal': 'Empresa Sintética 02', 'resultado': {}, 'autorizado': True},
                  {'telegram_id': 42, 'id_lectura': 9, 'id_contribuyente': 1, 'estado': 'cancelada',
-                  'motivo': 'Se cortó al cancelar la corrida: no se entrega ningún resultado de este cliente.',
+                  'motivo': 'Se cortó al cancelar la corrida: no se entrega ningún resultado de este contribuyente.',
                   'periodo': '07/2026', 'nombre_legal': 'Empresa Sintética 01', 'resultado': {'codigo': 'consulta_cancelada'}, 'autorizado': True}]
         respuestas = [filas, [True], [True]]
         f._write = lambda sql: respuestas.pop(0)

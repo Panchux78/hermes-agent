@@ -581,7 +581,7 @@ class ComarbDeduccionesFlow:
             st = None
         actual = (st or {}).get("actual")
         if st is not None and not actual:
-            return "Cancelada: no se consulta ningún cliente más."
+            return "Cancelada: no se consulta ningún contribuyente más."
         if actual:
             return f"Cancelando: corto la consulta de {actual['contribuyente']}, que no se entrega, y no sigo con los demás."[:200]
         return "Cancelando: corto la consulta en curso, que no se entrega, y no sigo con los demás."
