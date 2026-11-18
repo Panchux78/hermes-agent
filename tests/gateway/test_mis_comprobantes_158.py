@@ -289,3 +289,29 @@ def test_libros_iva_sin_respuesta_no_abre_arca(monkeypatch, tmp_path):
     s = state(mc_sentido='recibidos', mc_desde='01/07/2026', mc_hasta='31/07/2026', user_id='99')
     with pytest.raises(RuntimeError, match='MC_LIBROS_IVA_NO_DISPONIBLE'):
         mc.libros_iva(flow, s)
+
+
+def test_error_tecnico_dice_el_paso_la_corrida_y_una_sola_vez_que_no_se_modifico_arca(monkeypatch, tmp_path, caplog):
+    """Corrida 51912 (contribuyente 158, Emitidos 2025): el texto repetía «No se modificó ARCA» y no decía qué pasó."""
+    r = {'ok': False, 'operacion': 'arca_mis_comprobantes', 'motivo': 'MC_ERROR_TECNICO', 'escrituras_externas': False,
+         'mensaje': 'ARCA no respondió como esperábamos en el paso «Emitidos · Poniendo el rango de fechas», así que no se '
+                    'obtuvo ningún archivo. Probá de nuevo en un rato; si vuelve a pasar, avisá a soporte.',
+         'diagnostico': {'paso': 'Emitidos · Poniendo el rango de fechas', 'tipo': 'ElementNotInteractableException',
+                         'url': 'https://fes.afip.gob.ar/mcmp/jsp/setearContribuyente.do', 'carpeta': 'mis-comprobantes-x',
+                         'ubicaciones': [{'archivo': 'mis_comprobantes.py', 'linea': 1, 'funcion': 'a_sentido'}]}}
+    monkeypatch.setattr(_Historial, 'start', lambda self, **kw: asyncio.sleep(0, SimpleNamespace(run_id=51912)))
+    with caplog.at_level('ERROR'):
+        flow, enviados, _ = _corrida(monkeypatch, tmp_path, 'emitidos', r)
+    texto = flow.sent[-1][0]
+    assert texto == ('No se pudo completar Mis Comprobantes. ARCA no respondió como esperábamos en el paso «Emitidos · Poniendo '
+                     'el rango de fechas», así que no se obtuvo ningún archivo. Probá de nuevo en un rato; si vuelve a pasar, '
+                     'avisá a soporte con la corrida N.º 51912. No se modificó ARCA.')
+    assert texto.count('No se modificó ARCA') == 1 and 'diagnóstico' not in texto
+    assert enviados == [] and [e for _, e, _ in flow.history.items] == ['fallido']
+    assert any('corrida=51912' in m and 'ElementNotInteractableException' in m for m in caplog.messages)
+
+
+def test_mensaje_de_fallo_sin_texto_del_ejecutor():
+    texto = mc.mensaje_fallo(None, None)
+    assert texto.count('No se modificó ARCA') == 1 and 'avisá a soporte.' in texto
+    assert mc.mensaje_fallo('ARCA rechazó la clave del acceso. No se reintentó.', 7).endswith('No se reintentó. No se modificó ARCA.')

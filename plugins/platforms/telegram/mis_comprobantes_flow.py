@@ -208,6 +208,17 @@ def linea(c):
     return f"{c['etiqueta']}: {ESTADOS[c['estado']]}. {c.get('motivo_texto', '')}".strip()
 
 
+def mensaje_fallo(mensaje, corrida):
+    """#158: qué pasó y qué hacer, «No se modificó ARCA» una sola vez y la corrida para soporte."""
+    texto = mensaje or ('ARCA no respondió como esperábamos, así que no se obtuvo ningún archivo. '
+                        'Probá de nuevo en un rato; si vuelve a pasar, avisá a soporte.')
+    if corrida:
+        texto = texto.replace('avisá a soporte.', f'avisá a soporte con la corrida N.º {int(corrida)}.')
+    if 'No se modificó ARCA' not in texto:
+        texto += ' No se modificó ARCA.'
+    return f'No se pudo completar Mis Comprobantes. {texto}'
+
+
 def fuente_compras(libros):
     """Qué es Recibidos y, por mes, si el Libro IVA oficial ya está en Documentos."""
     return [AVISO_RECIBIDOS, *(f'Libro IVA Compras {m[5:]}/{m[:4]}: {estado}' for m, estado in libros)]
@@ -260,6 +271,10 @@ async def run(flow, adapter, chat, thread, key, state):
         result = flow._parse_result(raw)
         if result.get('ok') is not True and isinstance(result.get('mensaje'), str) and len(result['mensaje']) < 400:
             mensaje = result['mensaje']
+        if result.get('ok') is not True and isinstance(result.get('diagnostico'), dict):
+            # #158 (corrida 51912): el registro dice qué paso falló, con qué excepción y en qué carpeta quedó.
+            logger.error('[MIS-COMPROBANTES] error técnico: corrida=%s %s', getattr(run_handle, 'run_id', None),
+                         json.dumps(result['diagnostico'], ensure_ascii=False)[:2000])
         consultas, excel, archivos, sin_excel = validate_result(flow, state, result)
         await verify_representation(state.user_id, verified, 'ARCA', str(result.get('representado_verificado', '')))
         rels = [*(p for p, _ in archivos), *([excel] if excel else [])]
@@ -320,9 +335,7 @@ async def run(flow, adapter, chat, thread, key, state):
         code = str(exc) if re.fullmatch('[A-Z0-9_]{1,100}', str(exc)) else 'MC_ERROR_TECNICO'
         en_curso = code in ('MC_CONSULTA_EN_CURSO', 'PORTAL_IVA_EXECUTION_ALREADY_RUNNING')
         detalle = ('Ya hay una consulta de Mis Comprobantes en curso para este contribuyente. No se inició otra en ARCA.' if en_curso
-                   else f'No se pudo completar Mis Comprobantes. {mensaje} No se modificó ARCA.' if mensaje
-                   else 'No se pudo completar Mis Comprobantes. No se modificó ARCA. '
-                        'Revisá el resultado en Operaciones; el diagnóstico quedó preservado.')
+                   else mensaje_fallo(mensaje, getattr(run_handle, 'run_id', None)))
         await remaining('rechazado' if en_curso else 'fallido', code.lower(), detalle)
         await flow._edit_progress(state, 'Mis Comprobantes: la consulta no se completó.')
         await flow._send(adapter, chat, detalle, thread)
