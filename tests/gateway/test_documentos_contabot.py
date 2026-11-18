@@ -287,7 +287,7 @@ def test_lote_historial_usa_ruta_devuelta_por_documentos(tmp_path):
     from plugins.platforms.telegram.batch_pdf_xlsx_flow import BatchPdfXlsxFlow
 
     async def scenario():
-        history = NS(finish_item=AsyncMock())
+        history = NS(finish_item=AsyncMock(), attach_run=AsyncMock())
         flow = BatchPdfXlsxFlow(project_dir=tmp_path, history=history)
         flow.clients_root = tmp_path / "clientes"
         output = flow.clients_root / "estudios/1/20123456786/2026/05/bancos/x.xlsx"
@@ -301,8 +301,11 @@ def test_lote_historial_usa_ruta_devuelta_por_documentos(tmp_path):
             {"path": str(output), "ruta": "estudios/1/20123456786/2026/05/bancos/x.xlsx",
              "id_contribuyente": 9, "entity_code": "b", "currency": "ARS", "account_alias": "general"},
             already_delivered=False)
-        assert history.finish_item.await_args.kwargs["output_relative"] == \
+        # #148: el consolidado se registra una vez en la corrida, con la ruta que devolvió Documentos.
+        assert history.attach_run.await_args.kwargs["output_relative"] == \
             "estudios/1/20123456786/2026/05/bancos/x.xlsx"
+        assert history.attach_run.await_args.kwargs["libro"] == "consolidado"
+        assert history.finish_item.await_args.kwargs["state"] == "completado"
 
     asyncio.run(scenario())
 

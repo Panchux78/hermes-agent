@@ -72,6 +72,10 @@ async def test_real_menu_to_canonical_identity_period_and_dispatch(adapter, acti
                      message_thread_id=None, reply_to_message=None)
         await adapter._handle_text_message(NS(effective_message=message, message=message), NS())
     dispatch = flow._start_ccma_dispatch if action == 'ccma' else flow._start_sct_dispatch
+    # #168: el período se confirma antes de consultar; sin el «Sí» no hay despacho.
+    assert dispatch.await_count == 0
+    candidate = flow._workflow_menu_state[('7', '7')].period_candidate
+    await adapter._handle_callback_query(NS(callback_query=query(f'fq:period:yes:{candidate.nonce}')), None)
     assert dispatch.await_count == 1
     args = dispatch.await_args.kwargs
     assert args['contributor_id'] == 3
@@ -107,7 +111,12 @@ def test_restricted_lookup_uses_portable_profile_and_never_falls_back(adapter, m
     adapter._fiscal_query_flow.catalog._search('synthetic', '7')
     assert seen == ['lookup']
     assert runner.call_args.args[0][0] == 'restricted-psql'
-    assert runner.call_args.kwargs['env'] == {'PGPASSFILE': '/synthetic-only'}
+    # #162: el perfil restringido conserva su archivo de credenciales y suma sólo la procedencia.
+    from plugins.platforms.telegram.execution_origin import environment
+    env, expected = runner.call_args.kwargs['env'], environment({'PGPASSFILE': '/synthetic-only'})
+    assert set(env) == set(expected) and env['PGPASSFILE'] == '/synthetic-only'
+    assert all(env[k] == expected[k] for k in expected if k.startswith('CONTABOT_ORIGEN_'))
+    assert expected['PGOPTIONS'].strip() in env['PGOPTIONS']
     monkeypatch.setitem(sys.modules, 'contabot_pg', None)
     runner.reset_mock()
     with pytest.raises(ImportError):
