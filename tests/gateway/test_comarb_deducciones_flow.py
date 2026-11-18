@@ -90,7 +90,7 @@ def test_local_agip_no_inventa_consultas_sifere_ni_ceros_desconocidos():
         'AGIP · Percepciones aduaneras':{'estado':'sin_datos_verificado'}})
     result=resumen({'nombre_legal':'Empresa Sintética SA','periodo':'08/2026','estado':'terminada',
         'resultado':{'estados':states}})
-    assert 'Terminada con faltantes: AGIP · Percepciones' in result
+    assert '\nTerminada con faltantes.\n' in result and '• AGIP · Percepciones: no se pudo consultar.' in result
     assert '2 filas · $ 10,25' in result
     assert 'SIFERE no registra' not in result
     assert 'No se confirmó el filtro' in result
@@ -208,18 +208,18 @@ def test_sircupa_neutro_y_faltantes_identificados():
     assert '• SIRCUPA: SIFERE no muestra cuentas virtuales (CVU) del cliente, así que no se trajeron recaudaciones de SIRCUPA.' in text
     assert 'no hay que hacer nada' in text
     result['estados']['SIRCAR · Percepciones'] = {'estado':'no_verificado','motivo':'Sesión vencida'}
-    assert 'Terminada con faltantes: SIRCAR · Percepciones.' in resumen(row)
+    assert '\nTerminada con faltantes.\n' in resumen(row) and '• SIRCAR, percepciones: no se pudo consultar. Sesión vencida' in resumen(row)
     result['estados']['SIRCUPA']['motivo'] = 'Consulta conjunta incompleta'
-    assert 'SIRCUPA' in resumen(row).split('Terminada con faltantes: ',1)[1].split('\n',1)[0]
+    assert '• SIRCUPA: no se pudo consultar. Consulta conjunta incompleta' in resumen(row)
 
 
 def test_resumen_separa_regimenes_y_nunca_es_cero_sin_aclarar():
     text = resumen({"nombre_legal": "Empresa Sintética SA", "periodo": "09/2026", "estado": "terminada", "resultado": RESULT})
-    assert "Terminada con faltantes: SIRTAC." in text
+    assert "\nTerminada con faltantes.\n" in text
     assert "• SIRCREB: 4 filas · $ 1.500,00" in text
     assert "• SIRTAC: no se pudo consultar. SIFERE no respondió" in text and "día 12" in text
     assert "• SIRPEI: SIFERE no registra deducciones de SIRPEI para 09/2026." in text
-    assert "• SIRCAR, retenciones: 1 filas" in text
+    assert "• SIRCAR, retenciones: 1 fila ·" in text and "1 filas" not in text
     assert "posible duplicado" in text
 
 
@@ -327,6 +327,44 @@ def test_191_mismo_motivo_una_sola_vez():
                {"organismo": "Tucumán", "tipo": "Retenciones", "estado": "no_verificado", "detalle": falta}]}}}
     text = resumen(row)
     assert text.count(motivo_sf) == 1
-    assert "• Santa Fe · Percepciones y Santa Fe · Retenciones: no se pudo consultar. " + motivo_sf in text
+    assert "• Santa Fe · Retenciones y Santa Fe · Percepciones: no se pudo consultar. " + motivo_sf in text
     assert "• ARBA · Percepciones: no se pudo consultar. Otro motivo." in text
-    assert text.count(falta) == 1 and "• Para SIFERE · ARBA · Percepciones y Tucumán · Retenciones: " + falta in text
+    # #191 (pedido 5): lo que no se pudo consultar se dice una sola vez, en su renglón; no se repite en Para SIFERE.
+    assert falta not in text and "Para SIFERE" not in text
+
+
+def test_191_resumen_por_organismo_en_el_orden_del_menu_y_faltantes_una_vez():
+    """Lectura 614: ARBA quedó entre AGIP Retenciones y Percepciones, Tucumán partía a Santa Fe, y los faltantes
+    se repetían en el encabezado, la lista y Para SIFERE."""
+    estados = {r: {"estado": "sin_datos_verificado"} for r in flow_module.REGIMENES}
+    estados["SIRCAR · Retenciones"] = {"estado": "con_datos", "filas": 1, "importe": "45491.22"}
+    tuc = "No se consultó: cancelaste la corrida y esta fuente necesitaba un CAPTCHA, así que no se pidió."
+    arba = "No hay una clave cargada."
+    # Orden de lectura real de la 611/614: AGIP Ret, ARBA, AGIP Perc, Santa Fe Ret, Tucumán, Santa Fe Perc.
+    for r, e in (("AGIP · Retenciones", {"estado": "con_datos", "filas": 82, "importe": "1"}),
+                 ("ARBA · Retenciones", {"estado": "no_verificado", "motivo": arba}),
+                 ("ARBA · Percepciones", {"estado": "no_verificado", "motivo": arba}),
+                 ("AGIP · Percepciones", {"estado": "con_datos", "filas": 38, "importe": "1"}),
+                 ("Santa Fe · Retenciones", {"estado": "con_datos", "filas": 2, "importe": "1"}),
+                 ("Tucumán · Percepciones", {"estado": "no_verificado", "motivo": tuc}),
+                 ("Tucumán · Retenciones", {"estado": "no_verificado", "motivo": tuc}),
+                 ("Santa Fe · Percepciones", {"estado": "sin_datos_verificado"})):
+        estados[r] = e
+    falta = "Como ARBA no se pudo consultar, no se prepara un archivo vacío."
+    text = resumen({"nombre_legal": "Contribuyente", "periodo": "10/2026", "estado": "terminada",
+                    "resultado": {"estados": estados, "posibles_duplicados": 1, "importaciones_sifere": {"estados": [
+                        {"organismo": "ARBA", "tipo": "Retenciones", "estado": "no_verificado", "detalle": falta}]}}})
+    lineas = [l for l in text.split("\n") if l.startswith("• ")]
+    orden = [l.split(":")[0][2:] for l in lineas]
+    assert orden == ["AGIP · Retenciones", "AGIP · Percepciones", "ARBA · Retenciones y ARBA · Percepciones",
+                     "Tucumán · Retenciones y Tucumán · Percepciones", "Santa Fe · Retenciones", "Santa Fe · Percepciones",
+                     "SIRCREB", "SIRCUPA", "SIRTAC", "SIRPEI", "SIRCAR, retenciones", "SIRCAR, percepciones"]
+    assert "\nTerminada con faltantes.\n" in text and text.count("ARBA · Retenciones") == 1 and falta not in text
+    assert "• SIRCAR, retenciones: 1 fila · $ 45.491,22" in text
+    assert "1 fila marcada como posible duplicado" in text
+
+
+def test_191_captcha_sin_atribuirlo_a_arca():
+    """Mientras espera el CAPTCHA de Rentas Tucumán, el avance decía «ARCA pidió un CAPTCHA»."""
+    assert "ARCA" not in flow_module.PROGRESO["captcha_telegram"]
+    assert "ARCA" not in flow_module.PROGRESO["consulta_en_curso"]

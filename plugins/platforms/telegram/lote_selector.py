@@ -99,9 +99,6 @@ class Lote:
         lineas = [titulo, 'Tocá cada cliente para tildarlo. Para buscar, escribí parte del nombre o del CUIT.']
         if self.filtro:
             lineas.append(f'Filtro: «{self.filtro}» · {len(self.visibles)} de {len(self.elegibles)}.')
-        no = len(self.items) - len(self.elegibles)
-        if no:
-            lineas.append(f'{no} no se pueden elegir para esta función: no aparecen en la lista.')
         lineas.append(f'Tildados: {len(self.marcados)}.')
         if not self.visibles:
             lineas.append('Ningún cliente coincide con el filtro.' if self.filtro else 'No hay clientes para elegir.')

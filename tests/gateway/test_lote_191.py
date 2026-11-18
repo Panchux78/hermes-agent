@@ -149,7 +149,7 @@ def test_cancelar_avisa_que_termina_el_cliente_en_curso():
         await f.callback(a, q, 'cd:stop:9', 42, None, '42')
         assert fake.sql == ['SELECT console.fn_comarb_deducciones_cancelar_telegram(42,9)::text;',
                             'SELECT console.fn_comarb_deducciones_estado_telegram(42,9)::text;']
-        assert 'termino el cliente en curso sin pedirte ningún CAPTCHA más' in q.answer.await_args.args[0]
+        assert q.answer.await_args.args[0] == 'Cancelando: corto la consulta de Empresa Sintética 01, que no se entrega, y no sigo con los demás.'
         q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
     asyncio.run(scenario())
 
@@ -161,14 +161,14 @@ def test_cancelar_sin_cliente_en_curso_no_promete_terminar_nada(monkeypatch):
         q = query('cd:stop:9')
         await f.callback(adapter(), q, 'cd:stop:9', 42, None, '42')
         aviso = q.answer.await_args.args[0]
-        assert aviso == 'Cancelada: no se consulta ningún cliente más y no se te va a pedir ningún CAPTCHA.'
+        assert aviso == 'Cancelada: no se consulta ningún cliente más.'
         g = ComarbDeduccionesFlow(query_connection=lambda: None, write_connection=lambda: None)
         g._query = lambda sql: [{'estado': 'cancelada', 'solicitados': 3, 'terminados': 3, 'cancelados': 3, 'actual': None}]
         monkeypatch.setattr(asyncio, 'sleep', AsyncMock())
         message = SimpleNamespace(edit_text=AsyncMock(), reply_markup='botón')
         await g._watch(message, 42, 9, 'Cabecera', '')
         texto = message.edit_text.await_args.args[0]
-        assert texto == 'Cabecera\nCancelada: no se consultó ninguno de los 3 clientes. No hay resultado para mandarte; la corrida queda en Operaciones.'
+        assert texto == 'Cabecera\nCancelada: no terminó ninguno de los 3; 3 no llegaron a empezar. Quedan en Operaciones.'
         assert 'Te mando' not in texto and 'en curso' not in texto
     asyncio.run(scenario())
 
@@ -178,24 +178,30 @@ def test_avance_muestra_cancelacion_y_cierre_con_los_no_consultados(monkeypatch)
         f = ComarbDeduccionesFlow(query_connection=lambda: None, write_connection=lambda: None)
         estados = [[{'estado': 'consultando', 'solicitados': 3, 'terminados': 0, 'cancelacion_solicitada': True, 'cancelados': 0,
                      'actual': {'contribuyente': 'Empresa Sintética 01', 'progreso': 'Leyendo SIFERE'}}],
-                   [{'estado': 'cancelada', 'solicitados': 3, 'terminados': 3, 'cancelados': 2, 'actual': None}]]
+                   [{'estado': 'cancelada', 'solicitados': 4, 'terminados': 4, 'cancelados': 3, 'cortados': 1, 'actual': None}]]
         f._query = lambda sql: estados.pop(0)
         monkeypatch.setattr(asyncio, 'sleep', AsyncMock())
         message = SimpleNamespace(edit_text=AsyncMock(), reply_markup='botón')
         await f._watch(message, 42, 9, 'Cabecera', '')
         textos = [c.args[0] for c in message.edit_text.await_args_list]
-        assert 'Cancelación pedida: termino con Empresa Sintética 01 sin pedirte ningún CAPTCHA más y no sigo con los demás.' in textos[0]
+        assert textos[0] == 'Cabecera\nCancelando: corto la consulta de Empresa Sintética 01, que no se entrega.'
         assert message.edit_text.await_args_list[0].kwargs['reply_markup'] is None
-        assert 'Cancelada: 1 de 3 terminaron; 2 no se consultaron' in textos[1]
+        # Lectura 614: un único aviso; lo terminado ya se mandó cliente por cliente.
+        assert textos[1] == ('Cabecera\nCancelada: 1 de 4 terminó y ya te mandé su resultado; se cortó la consulta en curso '
+                             'y no se entrega; 2 no llegaron a empezar. Quedan en Operaciones.')
     asyncio.run(scenario())
 
 
 def test_los_no_consultados_por_cancelar_no_mandan_un_mensaje_cada_uno():
     async def scenario():
         f = ComarbDeduccionesFlow(query_connection=lambda: None, write_connection=lambda: None)
+        # Lectura 614: tampoco el cliente cortado en curso; el aviso único de la cancelación los cuenta.
         filas = [{'telegram_id': 42, 'id_lectura': 9, 'id_contribuyente': 2, 'estado': 'cancelada', 'motivo': CANCELADA_ANTES,
-                  'periodo': '07/2026', 'nombre_legal': 'Empresa Sintética 02', 'resultado': {}, 'autorizado': True}]
-        respuestas = [filas, [True]]
+                  'periodo': '07/2026', 'nombre_legal': 'Empresa Sintética 02', 'resultado': {}, 'autorizado': True},
+                 {'telegram_id': 42, 'id_lectura': 9, 'id_contribuyente': 1, 'estado': 'cancelada',
+                  'motivo': 'Se cortó al cancelar la corrida: no se entrega ningún resultado de este cliente.',
+                  'periodo': '07/2026', 'nombre_legal': 'Empresa Sintética 01', 'resultado': {'codigo': 'consulta_cancelada'}, 'autorizado': True}]
+        respuestas = [filas, [True], [True]]
         f._write = lambda sql: respuestas.pop(0)
         bot = SimpleNamespace(send_message=AsyncMock(), send_document=AsyncMock())
         await ComarbDeduccionesEntregas(f).poll(bot)
@@ -213,7 +219,8 @@ def test_preparar_por_lote_encola_tildados_por_periodo_y_explica_los_que_no():
         await f.callback(a, query('pp:lote'), 'pp:lote', 42, None, '42')
         assert fake.sql[0] == "SELECT row_to_json(x)::text FROM console.fn_lote_contribuyentes_telegram(42,'preparar') x;"
         lista = a._bot.send_message.await_args.kwargs
-        assert '1 no se pueden elegir' in lista['text']
+        # Lectura 614 (pedido 2): sin la leyenda «N no se pueden elegir…»; la lista muestra sólo los elegibles.
+        assert 'no se pueden elegir' not in lista['text']
         assert [cb for _, cb in botones(lista['reply_markup']) if ':lt:' in cb] == [f"pp:lt:{f.states[f._key(42, None, '42')].nonce}:1"]
         n = f.states[f._key(42, None, '42')].nonce
         await f.callback(a, query(f'pp:la:{n}'), f'pp:la:{n}', 42, None, '42')

@@ -45,8 +45,10 @@ _STATE_TTL_SECONDS = 600
 TITLE = "📑 Deducciones de IIBB"
 REGIMENES = ("SIRCREB", "SIRCUPA", "SIRTAC", "SIRPEI", "SIRCAR · Retenciones", "SIRCAR · Percepciones")
 ETIQUETA = {"SIRCAR · Retenciones": "SIRCAR, retenciones", "SIRCAR · Percepciones": "SIRCAR, percepciones"}
-PROGRESO = {"captcha_telegram": "ARCA pidió un CAPTCHA: respondé a la imagen que te mandé.",
-            "consulta_en_curso": "CAPTCHA respondido; ingresando a ARCA…"}
+# #191 (pedido 7): el CAPTCHA puede ser de ARCA o de un organismo provincial (Rentas Tucumán); el texto no lo
+# atribuye: la imagen que llega a Telegram ya dice de dónde viene.
+PROGRESO = {"captcha_telegram": "Esperando tu respuesta al CAPTCHA que te mandé.",
+            "consulta_en_curso": "CAPTCHA respondido; sigue la consulta…"}
 RECHAZOS = {
     "solo_miba": "No se pudo verificar: el cliente tiene cargado sólo miBA, que todavía no está soportado. No se intentó ningún ingreso.",
     "regimen_no_verificado": "No se pudo verificar el régimen de Ingresos Brutos de ese período. Revisá la ficha fiscal; no se consultó SIFERE.",
@@ -103,19 +105,20 @@ def resumen(row: dict[str, Any]) -> str:
     if row["estado"] != "terminada":
         return f"{head}\n\n{'Cancelada' if row['estado'] == 'cancelada' else 'No se pudo consultar'}. {row.get('motivo') or ''}".rstrip()
     estados = res.get("estados") or {}
-    regimes=tuple(dict.fromkeys((*(REGIMENES if res.get('operacion') in (None,'deducciones') else ()),*estados)))
+    regimes=orden_regimenes((*(REGIMENES if res.get('operacion') in (None,'deducciones') else ()),*estados))
     # #191: el SIRCUPA sin CVU no es un faltante (igual que en el panel): dice qué hacer en su renglón.
     faltan = [r for r in regimes if estados.get(r, {}).get('estado') not in ('con_datos', 'sin_datos_verificado','no_aplica')
               and not sin_cvu_pendiente(r, estados.get(r, {}))]
-    lines = [head, "", "Terminada con faltantes: " + ', '.join(faltan) + '.' if faltan else "Terminada."]
+    # #191 (pedido 5): los faltantes se nombran una sola vez, en su renglón con el motivo.
+    lines = [head, "", "Terminada con faltantes." if faltan else "Terminada."]
     avisos = res.get("advertencias") or []
     # #191 (pedido 9): el mismo motivo para varias categorías se dice una sola vez.
-    grupos: dict[str, int] = {}
+    grupos: dict[tuple[str, str], int] = {}
     for regimen in regimes:
         e = estados.get(regimen) or {}
         name = ETIQUETA.get(regimen, regimen)
         if e.get("estado") == "con_datos":
-            line = f"• {name}: {e.get('filas', 0)} filas · {importe(e.get('importe'))}"
+            line = f"• {name}: {filas(e.get('filas', 0))} · {importe(e.get('importe'))}"
         elif e.get("estado") == "sin_datos_verificado":
             line = (f"• {name}: {regimen.split(' ·')[0]} confirmó que no hubo deducciones para {row['periodo']}." if regimen.split(' ·')[0] in ('AGIP','ARBA','Tucumán','Santa Fe','Córdoba')
                     else f"• {name}: SIFERE no registra deducciones de {regimen} para {row['periodo']}.")
@@ -128,11 +131,12 @@ def resumen(row: dict[str, Any]) -> str:
         aviso = next((a.split(": ", 1)[1] for a in avisos if a.startswith(regimen + ":")), None)
         if line is None:
             detalle = f"{e.get('motivo') or ''} {aviso or ''}".strip()
-            if detalle in grupos:
-                nombres, _ = lines[grupos[detalle]]
+            grupo = (organismo_de(regimen), detalle)  # el mismo motivo se junta dentro de un organismo, no entre organismos
+            if grupo in grupos:
+                nombres, _ = lines[grupos[grupo]]
                 nombres.append(name)
             else:
-                grupos[detalle] = len(lines)
+                grupos[grupo] = len(lines)
                 lines.append(([name], detalle))
             continue
         if aviso and e.get("estado") != "con_datos":
@@ -140,17 +144,64 @@ def resumen(row: dict[str, Any]) -> str:
         lines.append(line)
     lines = [l if isinstance(l, str) else f"• {_juntar(l[0])}: no se pudo consultar. {l[1]}".rstrip() for l in lines]
     if res.get("posibles_duplicados"):
-        lines.append(f"{res['posibles_duplicados']} filas marcadas como posible duplicado; no se borró ninguna.")
+        lines.append(f"{filas(res['posibles_duplicados'])} marcada{'' if res['posibles_duplicados'] == 1 else 's'} como posible duplicado; no se borró ninguna.")
     exportaciones = res.get('importaciones_sifere') or {}
     if exportaciones.get('paquete'):
         lines.append('Te mando también los archivos para SIFERE. Descomprimí el ZIP e importá cada TXT por separado, eligiendo su tipo y jurisdicción. No se incorporaron a ninguna DDJJ.')
     pendientes: dict[str, list[str]] = {}
     for estado in exportaciones.get('estados', []):
-        if estado.get('estado') not in ('preparado', 'no_aplica'):
+        # La fuente que no se pudo consultar ya figura arriba con su motivo: no se repite acá.
+        if estado.get('estado') not in ('preparado', 'no_aplica', 'no_verificado'):
             pendientes.setdefault(estado['detalle'], []).append(f"{estado['organismo']} · {estado['tipo']}")
     for detalle, nombres in pendientes.items():
         lines.append(f"• Para SIFERE · {_juntar(nombres)}: {detalle}")
     return "\n".join(lines)
+
+
+# #191 (pedido 3): el resumen va agrupado por organismo, en el orden del menú Organismos fiscales.
+ORDEN_ORGANISMOS = ("AGIP", "ARBA", "Tucumán", "Santa Fe", "Córdoba", "COMARB")
+ORDEN_CATEGORIAS = ("Retenciones", "Percepciones", "Retenciones bancarias", "Percepciones aduaneras")
+
+
+def organismo_de(regimen: str) -> str:
+    prefijo = regimen.split(" · ")[0]
+    return prefijo if prefijo in ORDEN_ORGANISMOS[:-1] else "COMARB"
+
+
+def orden_regimenes(regimenes) -> list[str]:
+    def clave(r):
+        org = organismo_de(r)
+        if org == "COMARB":
+            interno = REGIMENES.index(r) if r in REGIMENES else len(REGIMENES)
+        else:
+            cat = r.split(" · ", 1)[1] if " · " in r else ""
+            interno = ORDEN_CATEGORIAS.index(cat) if cat in ORDEN_CATEGORIAS else len(ORDEN_CATEGORIAS)
+        return (ORDEN_ORGANISMOS.index(org), interno)
+    return sorted(dict.fromkeys(regimenes), key=clave)
+
+
+def filas(n: Any) -> str:
+    """#191 (pedido 4): «1 fila», nunca «1 filas»."""
+    return f"{n} fila" if n == 1 else f"{n} filas"
+
+
+def cierre_cancelada(st: dict[str, Any]) -> str:
+    """#191 (lectura 614): un único aviso al cancelar; lo terminado ya se entregó cliente por cliente."""
+    n = st["solicitados"]
+    cancelados = st.get("cancelados") or 0
+    cortados = min(st.get("cortados") or 0, cancelados)
+    sin = cancelados - cortados
+    fin = st["terminados"] - cancelados
+    if n == 1:
+        return ("Cancelada: se cortó la consulta en curso y no se entrega." if cortados else
+                "Cancelada antes de empezar: no se consultó." if sin else "Cancelada.")
+    partes = [f"{fin} de {n} {'terminó' if fin == 1 else 'terminaron'} y ya te mandé su resultado" if fin else
+              f"no terminó ninguno de los {n}"]
+    if cortados:
+        partes.append(("se cortó la consulta en curso" if cortados == 1 else f"se cortaron {cortados} en curso") + " y no se entrega")
+    if sin:
+        partes.append(f"{sin} no llegaron a empezar" if sin > 1 else "1 no llegó a empezar")
+    return "Cancelada: " + "; ".join(partes) + ". Quedan en Operaciones."
 
 
 def _juntar(nombres: list[str]) -> str:
@@ -520,17 +571,20 @@ class ComarbDeduccionesFlow:
         return True
 
     async def _aviso_cancelar(self, actor: int, jid: int) -> str:
-        """#191 (consulta 610): el aviso dice lo que pasa de verdad; sin cliente en curso no hay nada que terminar."""
+        """#191 (prueba de Pancho, lectura 614): cancelar como en la industria (AWS Batch CancelJob/TerminateJob,
+        terminación de pods de Kubernetes): lo no empezado queda cancelado en el instante; el cliente en curso
+        recibe la orden de parar, tiene un plazo corto para cerrar y se corta, sin entregarse."""
         try:
             rows = await asyncio.to_thread(self._query, f"SELECT console.fn_comarb_deducciones_estado_telegram({actor},{jid})::text;")
             st = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else None
         except Exception:
             st = None
-        if st is not None and not st.get("actual"):
-            return "Cancelada: no se consulta ningún cliente más y no se te va a pedir ningún CAPTCHA."
-        if st is not None and st.get("solicitados", 0) <= 1:
-            return "Cancelación pedida: termino lo que está en curso sin pedirte ningún CAPTCHA más."
-        return "Cancelación pedida: termino el cliente en curso sin pedirte ningún CAPTCHA más y no sigo con los demás."
+        actual = (st or {}).get("actual")
+        if st is not None and not actual:
+            return "Cancelada: no se consulta ningún cliente más."
+        if actual:
+            return f"Cancelando: corto la consulta de {actual['contribuyente']}, que no se entrega, y no sigo con los demás."[:200]
+        return "Cancelando: corto la consulta en curso, que no se entrega, y no sigo con los demás."
 
     async def _watch(self, message, actor: int, jid: int, head: str, extra: str) -> None:
         """Avance en el mismo mensaje. El resultado lo manda la entrega, no este seguimiento."""
@@ -547,27 +601,15 @@ class ComarbDeduccionesFlow:
                 st = rows[0]
                 actual = st.get("actual") or {}
                 if st["estado"] == "cancelada":
-                    sin = st.get("cancelados") or 0
-                    fin = st['terminados'] - sin
-                    if fin == 0:
-                        # #191 (consulta 610): nada terminó, así que no hay nada que mandar.
-                        text = (f"{head}\nCancelada: no se consultó ningún cliente." if st['solicitados'] == 1 else
-                                f"{head}\nCancelada: no se consultó ninguno de los {st['solicitados']} clientes.") \
-                            + " No hay resultado para mandarte; la corrida queda en Operaciones."
-                    else:
-                        text = (f"{head}\nCancelada: {fin} de {st['solicitados']} terminaron"
-                                + (f"; {sin} no se consultaron (quedan en Operaciones)." if sin else ".") + " Te mando lo que terminó.")
+                    text = f"{head}\n{cierre_cancelada(st)}"
                     markup = None
                 elif st["estado"] in ("terminada", "error"):
                     text = f"{head}\nConsulta terminada: {st['terminados']} de {st['solicitados']}. Te mando el resultado."
                     markup = None
                 elif st.get("cancelacion_solicitada"):
-                    # #191: el cliente en curso termina lo que no necesita CAPTCHA; no se pide ninguno más.
-                    if actual and st["solicitados"] > 1:
-                        text = (f"{head}\nCancelación pedida: termino con {actual['contribuyente']} sin pedirte ningún CAPTCHA más "
-                                "y no sigo con los demás.")
-                    else:
-                        text = f"{head}\nCancelación pedida: termino lo que está en curso sin pedirte ningún CAPTCHA más."
+                    # #191 (lectura 614): mientras el cliente en curso cierra, el estado dice que se está cancelando.
+                    text = (f"{head}\nCancelando: corto la consulta de {actual['contribuyente']}, que no se entrega." if actual
+                            else f"{head}\nCancelando…")
                     markup = None
                 else:
                     now = PROGRESO.get(actual.get("progreso"), actual.get("progreso") or "En espera.")
@@ -626,7 +668,9 @@ class ComarbDeduccionesEntregas:
             if not isinstance(row, dict):
                 continue
             chat = int(row["telegram_id"])
-            silencioso = row.get("estado") == "cancelada" and row.get("motivo") == CANCELADA_ANTES
+            # #191 (lectura 614): lo cancelado (no empezado o cortado) no manda un mensaje por cliente:
+            # el aviso único de la cancelación ya dice cuántos terminaron y cuántos no.
+            silencioso = row.get("estado") == "cancelada"
             # Reclamar antes de enviar: una reconexión nunca repite la entrega.
             claimed = await asyncio.to_thread(self.flow._write,
                 f"SELECT console.fn_comarb_deducciones_entregada_telegram({int(row['id_lectura'])},{int(row['id_contribuyente'])})::text;")
