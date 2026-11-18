@@ -69,6 +69,7 @@ class PeriodSpec:
 
 
 SPECS = {
+    'sa': PeriodSpec('Actividades para SIFERE',min_year=2010,max_year=2099,closed=True),
     'descargar-presentados': PeriodSpec('CSV de períodos presentados'),
     'generar': PeriodSpec('Preparar período nuevo'),
     'descargar-lote': PeriodSpec('Lote de Libros IVA', frozenset({'range'})),

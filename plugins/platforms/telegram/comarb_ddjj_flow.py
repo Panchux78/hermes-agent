@@ -257,11 +257,16 @@ class ComarbPresentadasEntregas:
                         'el Excel no se reenvía automáticamente y no se repitió la consulta fiscal.')
                     await transition('error_notificado', notice)
                     continue
-                text = resumen_presentadas(row)
+                actividades=(row.get('resultado') or {}).get('operacion')=='sifere_actividades'
+                if actividades:
+                    from plugins.platforms.telegram.sifere_actividades_flow import resumen_actividades
+                    text=resumen_actividades(row)
+                else:
+                    text = resumen_presentadas(row)
                 path = None
                 if row['estado'] == 'terminada':
                     path = archivo_guardado(None,self.flow.clients_root,row.get('ruta'),row.get('sha256'))
-                    if path is None or path.suffix.lower() != '.xlsx' or path.stat().st_size > 45_000_000:
+                    if path is None or path.suffix.lower() != ('.zip' if actividades else '.xlsx') or path.stat().st_size > 45_000_000:
                         raise ValueError('excel_no_verificado')
                 if phase == 'reclamada':
                     if not await current():
@@ -276,9 +281,9 @@ class ComarbPresentadasEntregas:
                         continue
                     with path.open('rb') as stream:
                         await transition('enviando_archivo')
-                        sheets = 'Resumen y hojas de período' if len(row['periodos']) >= 2 else 'sólo hojas de período'
+                        sheets = 'Resumen y hojas de período' if len(row.get('periodos') or []) >= 2 else 'sólo hojas de período'
                         sent = await bot.send_document(chat_id=chat,document=stream,filename=path.name,
-                            caption='DDJJ presentadas · '+sheets+' · también en Documentos')
+                            caption=('Actividades para SIFERE · control y archivos · también en Documentos' if actividades else 'DDJJ presentadas · '+sheets+' · también en Documentos'))
                     await transition('entregada', sent)
                 else:
                     await transition('entregada')

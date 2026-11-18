@@ -614,6 +614,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         from plugins.platforms.telegram.panel_captcha_bridge import PanelCaptchaBridge
         from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow, ComarbDeduccionesEntregas
         from plugins.platforms.telegram.comarb_ddjj_flow import ComarbPresentadasFlow, ComarbPresentadasEntregas
+        from plugins.platforms.telegram.sifere_actividades_flow import SifereActividadesFlow
         from plugins.platforms.telegram.vencimientos_avisos import VencimientosAvisos
         from plugins.platforms.telegram.agip_deducciones_flow import AgipDeduccionesFlow
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
@@ -677,6 +678,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._comarb_presentadas_flow = ComarbPresentadasFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
         self._comarb_presentadas_entregas = ComarbPresentadasEntregas(self._comarb_presentadas_flow)
+        self._sifere_actividades_flow = SifereActividadesFlow(
+            query_connection=lookup_connection, write_connection=verification_connection)
         self._agip_deducciones_flow = AgipDeduccionesFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
         from plugins.platforms.telegram.provinciales_iibb import PROVINCIAS, ProvincialDeduccionesFlow
@@ -1124,6 +1127,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             rows = [
                 [InlineKeyboardButton(menu_label("📑", "Deducciones de IIBB"), callback_data="om:comarb_deducciones")],
                 [InlineKeyboardButton(menu_label("🧾", "DDJJ presentadas"), callback_data="om:comarb_presentadas")],
+                [InlineKeyboardButton(menu_label("📄", "Actividades para SIFERE"), callback_data="sa:uno")],
             ]
             back_label = menu_label("‹", "COMARB")
             back_page = "comarb"
@@ -5430,6 +5434,25 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._accept_update()
         data = query.data
         cb = self._callback_ctx(query)
+        actividades = getattr(self, '_sifere_actividades_flow', None)
+        if data.startswith('sa:'):
+            if not await self._callback_authorized(query, cb, 'No estás autorizado para preparar actividades para SIFERE.'):
+                return
+            if str(cb['chat_type']).lower() != 'private':
+                await query.answer('Esta preparación se realiza por privado.')
+                return
+            if actividades is None:
+                await query.answer('La preparación no está disponible en este equipo.')
+                return
+            if data == 'sa:uno':
+                others = [getattr(self, name, None) for name in ('_portal_iva_flow','_agip_ddjj_flow','_pdf_security_flow','_comarb_presentadas_flow','_comarb_deducciones_flow')]
+                if any(f is not None and f._key(cb['chat_id'],cb['thread_id'],str(query.from_user.id)) in f.states for f in others):
+                    await query.answer('Completá o cancelá la operación en curso antes de iniciar otra.')
+                    return
+            await actividades.callback(self,query,data,cb['chat_id'],cb['thread_id'],str(query.from_user.id))
+            return
+        if actividades is not None and data.startswith('om:'):
+            actividades.cancel_pending(cb['chat_id'],cb['thread_id'],str(query.from_user.id))
         if await self._handle_comarb_presentadas_callback(query, data, cb):
             return
         presentadas = getattr(self, '_comarb_presentadas_flow', None)
@@ -7449,6 +7472,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             self._log_blocked_user(msg)
             return
         if msg.text in {"☰ Menú", menu_label("☰", "Menú")}:
+            actividades = getattr(self,'_sifere_actividades_flow',None)
+            if actividades is not None:
+                actividades.cancel_pending(msg.chat_id,getattr(msg,'message_thread_id',None),str(msg.from_user.id))
             presentadas = getattr(self, '_comarb_presentadas_flow', None)
             if presentadas is not None:
                 presentadas.cancel_pending(msg.chat_id, getattr(msg, 'message_thread_id', None), str(msg.from_user.id))
@@ -7456,6 +7482,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return
         bridge = getattr(self, '_panel_captcha_bridge', None)
         if bridge is not None and await bridge.text(context.bot, msg):
+            return
+        actividades = getattr(self,'_sifere_actividades_flow',None)
+        if actividades is not None and await actividades.text(self,msg):
             return
         presentadas = getattr(self, '_comarb_presentadas_flow', None)
         if presentadas is not None and await presentadas.text(self, msg):

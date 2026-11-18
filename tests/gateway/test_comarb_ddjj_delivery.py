@@ -91,3 +91,18 @@ class DeliveryTests(IsolatedAsyncioTestCase):
         self.bot.send_document.side_effect=RuntimeError('synthetic network failure')
         await self.deliver.poll(self.bot)
         self.assertEqual(self.phase,'error');self.assertNotIn('entregada',self.transitions)
+
+    async def test_194_zip_mismo_entregador_y_nombre_externo_con_slug(self):
+        import zipfile
+        self.path=self.path.with_name('sintetica-sifere-actividades-2026-09-listo.zip')
+        with zipfile.ZipFile(self.path,'w') as archive:archive.writestr('sintetica-control.xlsx',b'contenido sintetico')
+        self.row.update(periodos=None,ruta='estudios/1/'+self.path.name,nombre=self.path.name,
+            sha256=hashlib.sha256(self.path.read_bytes()).hexdigest(),resultado=dict(operacion='sifere_actividades',listo=True,
+                periodo='09/2026',ventas=10,jurisdicciones=2,pendientes=[]))
+        await self.deliver.poll(self.bot)
+        self.bot.send_document.assert_awaited_once()
+        sent=self.bot.send_document.await_args.kwargs
+        self.assertEqual(sent['filename'],self.path.name)
+        self.assertIn('Actividades para SIFERE',sent['caption'])
+        self.assertIn('Lista para importar',self.bot.send_message.await_args.kwargs['text'])
+        self.assertEqual(self.phase,'entregada')
