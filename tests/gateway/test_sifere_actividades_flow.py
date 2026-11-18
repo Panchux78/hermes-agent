@@ -7,6 +7,12 @@ from plugins.platforms.telegram.comarb_deducciones_flow import State
 from plugins.platforms.telegram.period_input import parse_period
 
 class Textos194(TestCase):
+    def test_actividades_listas_no_ocultan_deducciones_incompletas(self):
+        text=resumen_actividades(dict(estado='terminada',nombre_legal='Sintética',resultado=dict(
+            operacion='sifere_actividades',listo=True,periodo='09/2026',ventas=2,jurisdicciones=1,
+            advertencias=['Deducciones · Tucumán · percepciones: falta tipo de comprobante.'])))
+        self.assertIn('Actividades listas',text);self.assertIn('falta tipo de comprobante',text)
+
     def test_no_promete_importable_con_pendientes(self):
         r=dict(estado='terminada',nombre_legal='Sintética',resultado=dict(operacion='sifere_actividades',listo=False,
             periodo='09/2026',ventas=2,jurisdicciones=1,pendientes=[dict(detalle='Falta asignar actividad.')]))

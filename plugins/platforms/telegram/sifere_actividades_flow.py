@@ -14,10 +14,13 @@ def resumen_actividades(row):
     r=row.get('resultado') or {}
     head=TITLE+' · '+row['nombre_legal']+' · '+r.get('periodo','')
     if row['estado']!='terminada':return head+'\n'+('Cancelada.' if row['estado']=='cancelada' else 'No se pudo preparar.')+' '+(row.get('motivo') or '')
-    lines=[head,'',('Lista para importar.' if r.get('listo') else 'Requiere revisión. No hay archivo listo para importar.'),
+    lines=[head,'',('Actividades listas para importar.' if r.get('listo') else 'Requiere revisión. No hay archivo listo para importar.'),
       f"{r.get('ventas',0)} comprobantes de ventas · {r.get('jurisdicciones',0)} jurisdicciones."]
     for p in (r.get('pendientes') or [])[:4]:lines.append('• '+p['detalle'])
     if len(r.get('pendientes') or [])>4:lines.append('El control adjunto contiene todas las observaciones.')
+    avisos=[a for a in r.get('advertencias',[]) if a.startswith(('Deducciones ·','No hay archivos de deducciones'))]
+    for aviso in avisos[:3]:lines.append('• '+aviso)
+    if len(avisos)>3:lines.append('El control adjunto detalla los demás archivos de deducciones no preparados.')
     lines.append('No se importó ni presentó ninguna DDJJ. También está en Documentos.')
     return '\n'.join(lines)
 
