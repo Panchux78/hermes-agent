@@ -485,7 +485,7 @@ class ComarbDeduccionesFlow:
             return await self._respuesta(send, state, period, answer)
         jid = int(answer["id_lectura"])
         who = (state.contributor["nombre"] if state.modo == "uno" else
-               f"Lote de {answer.get('solicitados')} clientes" if state.modo == "lote" else f"Cartera de IIBB ({answer.get('solicitados')})")
+               f"Lote de {answer.get('solicitados')} contribuyentes" if state.modo == "lote" else f"Cartera de IIBB ({answer.get('solicitados')})")
         extra = (f"\n{answer['sin_clave']} quedan afuera por no tener acceso utilizable a sus fuentes."
                  if state.modo == "cartera" and answer.get("sin_clave") else "")
         fuera = resumen_no_incluidos(self._no_incluidos(answer.get("no_incluidos") or [])) if state.modo == "lote" else ""

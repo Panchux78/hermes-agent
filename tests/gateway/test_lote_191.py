@@ -108,7 +108,7 @@ def test_lote_de_deducciones_corre_solo_los_tildados():
         await confirm_period(f, a, 42, '42')
         assert fake.sql[-1] == "SELECT console.fn_comarb_deducciones_lote_telegram(42,'07/2026','deducciones',ARRAY[2,3]::bigint[])::text;"
         texto = m.reply_text.await_args.args[0]
-        assert 'Lote de 2 clientes' in texto and 'No incluidos (1)' in texto
+        assert 'Lote de 2 contribuyentes' in texto  # detalle de la 619: la palabra del panel and 'No incluidos (1)' in texto
         assert botones(m.reply_text.await_args.kwargs['reply_markup']) == [('❌  Cancelar', 'cd:stop:5')]
     asyncio.run(scenario())
 
