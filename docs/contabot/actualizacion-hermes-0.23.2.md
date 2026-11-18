@@ -155,3 +155,26 @@ de cada corrida se lee en Operaciones (`tbl_corridas_bot`).
   próximo texto aunque el usuario haya ido a otra función; «☰ Menú» sólo cancela Actividades y
   DDJJ presentadas. Igual en el código anterior.
 - El registro de Lote de Libros IVA por Telegram no admite el canal «prueba» de la #162.
+
+## Correcciones a la revisión de Codex-CBT (18/11, tarde)
+
+- R1, arnés: un escenario ya no empieza en «ok». Queda «aceptada» sólo con un documento entregado en ese
+  escenario o con la corrida de la operación **exacta**, del mismo usuario, canal «prueba», iniciada
+  después del comienzo y **única**, en el estado esperado. Los errores no cuentan como final. La sonda
+  de Libros que Codex señaló ahora da «sin_evidencia». Se repitió lo que no tenía evidencia exacta:
+  Constancias (corrida 56735), Mis Comprobantes (56733, 2 archivos) y Preparar período (56734,
+  2 archivos), las tres aceptadas.
+- R2, caminos instalados:
+  - avisos de vencimientos por Telegram: el ciclo `VencimientosAvisos` del gateway corre cada 30 s sin
+    advertencias. Hoy hay 31 avisos pendientes de un usuario que ya recibió su resumen diario a las
+    00:00:24 (antes de activar). La función manda uno por día, así que la entrega se ve mañana.
+  - conversación real, CAPTCHA interactivo (SCT o PDF de constancia) y Lote de Libros por Telegram
+    real: necesitan la mano de Pancho; quedan como tres acciones exactas.
+  - El journal registró una sola sonda «update queued but not consumed» (12:06, 1/2), sin segunda
+    sonda ni reinicio.
+- R3, pruebas: ccma/sct confirman el período (#168) antes del despacho; la consulta restringida conserva
+  `PGPASSFILE` y suma sólo la procedencia (#162); el lote PDF→Excel registra el consolidado con
+  `attach_run` (#148). 108 pruebas focales OK (`d145fdeb40`). Observación: en la consulta restringida la
+  procedencia llega dos veces en `PGOPTIONS` (las mismas opciones; inofensivo).
+- Etiquetas: CCMA, AGIP DDJJ y el mapa de impuestos quedan como «consulta no completada; causa no
+  determinada», con su antecedente; no se atribuyen al organismo.
