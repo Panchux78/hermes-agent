@@ -47,6 +47,18 @@ def test_cancel_running_requests_server_cancel_and_stops_poll():
     asyncio.run(run())
 
 
+def test_changing_menu_cancels_the_saved_draft_not_just_memory():
+    async def run():
+        flow=ConciliacionMayorFlow();s=State('nonce','12345',stage='ledger_upload',id=7)
+        key=flow._key(55,None,'12345');flow.states[key]=s
+        with patch.object(flow,'_request',return_value={}) as request:
+            assert flow.cancel_pending(55,None,'12345')
+            await asyncio.gather(*tuple(flow.cleanup_tasks))
+            request.assert_called_once_with('12345','cancelar',{'id':7})
+        assert key not in flow.states
+    asyncio.run(run())
+
+
 def test_upload_then_poll_delivers_official_result_and_no_old_file(tmp_path):
     async def run():
         flow=ConciliacionMayorFlow();s=State('nonce','12345',stage='ledger_upload',id=7,candidate={'nombre':'Sintético'})

@@ -51,6 +51,7 @@ class ConciliacionMayorFlow:
 
     def __init__(self):
         self.states = {}
+        self.cleanup_tasks = set()
 
     _key = staticmethod(CruceIvaFlow._key)
     _search = classmethod(lambda cls, uid, term: CruceIvaFlow._search(uid, term))
@@ -83,8 +84,17 @@ class ConciliacionMayorFlow:
         state = self.states.get(key)
         if state and state.stage != 'running':
             self.states.pop(key)
+            if state.id:
+                task=asyncio.create_task(asyncio.to_thread(self._request,state.user,'cancelar',{'id':state.id}))
+                self.cleanup_tasks.add(task)
+                task.add_done_callback(self._cleanup_done)
             return True
         return False
+
+    def _cleanup_done(self,task):
+        self.cleanup_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            log.warning('conciliacion no pudo cancelar el pedido abandonado')
 
     async def _say(self, target, state, text, entries=()):
         await target.reply_text(f'{TITLE}\n{text}', reply_markup=self._keyboard(state, entries))
@@ -180,6 +190,8 @@ class ConciliacionMayorFlow:
             await asyncio.to_thread(self._request,state.user,'columnas',{'id':state.id,'opciones':
                 {'hoja':state.preview['hojas'][index]}})
             self._start_poll(adapter,target,state,key,chat_id,thread_id)
+        else:
+            await self._say(target,state,'Esta opción ya no corresponde al paso actual. Seguí el último mensaje o tocá Cancelar.')
 
     async def text(self, adapter, message):
         uid = str(getattr(getattr(message, 'from_user', None), 'id', ''))
