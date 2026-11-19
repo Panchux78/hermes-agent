@@ -867,15 +867,20 @@ def test_captcha_path_rejects_escape_and_symlink(tmp_path):
         flow._validated_captcha_path(str(link), nonce)
 
 
+@pytest.mark.parametrize('apertura',[None,'pendiente','verificada'])
 def test_success_delivers_both_csvs_and_updates_same_message(
-    monkeypatch, tmp_path, verify_representation_mock,
+    monkeypatch, tmp_path, verify_representation_mock, apertura,
 ):
     async def scenario():
         flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
         flow.executor.touch(); flow.uv.touch()
         adapter = FakeAdapter()
         state = FlowState(user_id="7", nonce="a" * 10, stage="running", contributor_id=1, slug="cliente", cuit=VALID_CUIT, period="2026-08", progress_message=FakeMessage(), scope_item=_scope_item(slug="cliente"))
-        payload = json.dumps(_result(tmp_path, state)).encode()
+        result = _result(tmp_path, state)
+        if apertura:
+            result.update(clasificacion_compras={'estado':'confirmada' if apertura=='verificada' else 'solicitada'},
+                          apertura_iva={'estado':apertura,'motivo':'dato privado que no debe mostrarse'})
+        payload = json.dumps(result).encode()
         flow._by_id = lambda _ident, _uid: [_scope_item(slug="cliente")]
         flow._query = _scope_query
         flow._acquire_execution_lock = lambda _key: None
@@ -885,11 +890,15 @@ def test_success_delivers_both_csvs_and_updates_same_message(
         sent_names = [call.kwargs["file_name"] for call in adapter.send_document.await_args_list]
         assert sent_names == ["cliente-portal-iva-ventas-2026-08.csv", "cliente-portal-iva-compras-2026-08.csv"]
         verify_representation_mock.assert_awaited_once()
-        assert state.progress_message.edits[-1][0] == (
+        expected = (
             "Portal IVA completado.\n"
             "Ventas: sin comprobantes para el período.\n"
             "Compras: sin comprobantes para el período."
         )
+        if apertura=='pendiente':
+            expected += '\nLibros obtenidos. Apertura de IVA pendiente: revisá la clasificación en Padrón ACT/Dom y la fuente del crédito computable antes de liquidar.'
+        elif apertura=='verificada':expected += '\nApertura de compras verificada en el borrador; sin presentar.'
+        assert state.progress_message.edits[-1][0] == expected
     asyncio.run(scenario())
 
 

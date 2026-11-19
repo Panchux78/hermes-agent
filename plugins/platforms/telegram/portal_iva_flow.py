@@ -1924,10 +1924,9 @@ class PortalIvaFlow:
                 await self.history.close(history_run)
             completion = self._completion_message(deliverables)
             if state.operation=='generar' and isinstance(result.get('clasificacion_compras'),dict):
-                classification=result.get('clasificacion_compras') or {}
-                completion += ('\nLa clasificación de compras se procesa en Padrón ACT/Dom. Revisá sus pendientes antes de liquidar.'
-                               if classification.get('estado')=='solicitada' else
-                               '\nClasificación de compras pendiente: consultá Padrón ACT/Dom antes de liquidar.')
+                completion += ('\nApertura de compras verificada en el borrador; sin presentar.'
+                               if (result.get('apertura_iva') or {}).get('estado')=='verificada' else
+                               '\nLibros obtenidos. Apertura de IVA pendiente: revisá la clasificación en Padrón ACT/Dom y la fuente del crédito computable antes de liquidar.')
             if result.get('importaciones_bienes_estado') == 'sin_solapa':
                 completion += '\nARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar.'
             await self._edit_progress(state, completion)
