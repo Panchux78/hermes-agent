@@ -31,6 +31,14 @@ first wins; the other fails with ``ImportError``, and the polluted
 incident.
 """
 
+import os as _os
+
+# #200: PDF y Vencimientos cargan el motor compartido de ContaBot (lib/). Las pruebas lo toman del
+# checkout indicado; en producción, de /srv/contabot-console/integrations (contabot_compartido.py).
+if not _os.environ.get("CONTABOT_INTEGRATIONS_DIR") and _os.environ.get("CONTABOT_CHECKOUT"):
+    _os.environ["CONTABOT_INTEGRATIONS_DIR"] = _os.path.join(_os.environ["CONTABOT_CHECKOUT"], "lib")
+
+
 import ast
 import os
 import sys

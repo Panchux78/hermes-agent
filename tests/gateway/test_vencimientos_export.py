@@ -4,7 +4,10 @@ import importlib.util
 from datetime import date
 from pathlib import Path
 
-from plugins.platforms.telegram.vencimientos_export import generate
+from plugins.platforms.telegram.contabot_compartido import cargar
+
+# #200: el exportador es el módulo compartido con el panel (ContaBot lib/contabot_vencimientos.py).
+generate = cargar("contabot_vencimientos").generate
 
 
 ROWS = [{
@@ -94,3 +97,29 @@ class VencimientosExportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MotorCompartidoTests(unittest.TestCase):
+    """#200: bot y panel ejecutan el mismo archivo; el plugin no conserva copia."""
+
+    def test_flujo_de_telegram_ejecuta_el_script_compartido(self):
+        import sys
+        from plugins.platforms.telegram import contabot_compartido
+        from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
+        self.assertFalse(Path("plugins/platforms/telegram/vencimientos_export.py").exists())
+        flow = VencimientosFlow.__new__(VencimientosFlow)
+        flow.runtime_python = Path(sys.executable)
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "cliente-demo-vencimientos-arca.ics"
+            flow._generate("ics", out, 7, "cliente-demo", ROWS)
+            esperado = cargar("contabot_vencimientos").ics_bytes(7, ROWS)
+            self.assertEqual(out.read_bytes(), esperado)
+        self.assertEqual(contabot_compartido.ruta("contabot_vencimientos").name, "contabot_vencimientos.py")
+
+    def test_pdf_usa_las_funciones_del_modulo_compartido(self):
+        import plugins.platforms.telegram.pdf_security_flow as flujo
+        motor = cargar("contabot_pdf_seguridad")
+        for nombre in ("protect_pdf", "unlock_pdf_without_password", "recover_common_pdf_password",
+                       "PdfSecurityError", "_delivery_filename", "_COMMON_PDF_PASSWORDS"):
+            self.assertIs(getattr(flujo, nombre), getattr(motor, nombre))
+        self.assertNotIn("def protect_pdf", Path(flujo.__file__).read_text())

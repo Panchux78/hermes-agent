@@ -16,148 +16,28 @@ from typing import Any
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
+from plugins.platforms.telegram.contabot_compartido import cargar
+
+# #200: motor único con el panel. Las funciones puras viven en ContaBot (lib/contabot_pdf_seguridad.py),
+# publicadas por el despliegue; el panel importa el mismo archivo. No hay copia en el plugin.
+_motor = cargar("contabot_pdf_seguridad")
+_MAX_DELIVERY_FILENAME = _motor._MAX_DELIVERY_FILENAME
+_PASSWORD_RECOVERY_SECONDS = _motor._PASSWORD_RECOVERY_SECONDS
+_COMMON_PDF_PASSWORDS = _motor._COMMON_PDF_PASSWORDS
+PdfSecurityError = _motor.PdfSecurityError
+_delivery_filename = _motor._delivery_filename
+_run_qpdf = _motor._run_qpdf
+_run_qpdf_argument_file = _motor._run_qpdf_argument_file
+_page_count = _motor._page_count
+_validate_unlocked_output = _motor._validate_unlocked_output
+recover_common_pdf_password = _motor.recover_common_pdf_password
+unlock_pdf_without_password = _motor.unlock_pdf_without_password
+protect_pdf = _motor.protect_pdf
 
 logger = logging.getLogger(__name__)
 
 _PDF_MIME = "application/pdf"
 _STATE_TTL_SECONDS = 15 * 60
-_MAX_DELIVERY_FILENAME = 64
-_PASSWORD_RECOVERY_SECONDS = 15
-# Lista local original seguida por las entradas no duplicadas de:
-# SecLists/Passwords/Common-Credentials/xato-net-10-million-passwords-100.txt
-# https://github.com/danielmiessler/SecLists (licencia MIT)
-_COMMON_PDF_PASSWORDS = (
-    "password",
-    "Password",
-    "PASSWORD",
-    "contraseña",
-    "Contrasena",
-    "1234",
-    "12345",
-    "123456",
-    "1234567",
-    "12345678",
-    "123456789",
-    "1234567890",
-    "0000",
-    "1111",
-    "1212",
-    "4321",
-    "987654",
-    "qwerty",
-    "qwerty123",
-    "abc123",
-    "admin",
-    "admin123",
-    "welcome",
-    "Welcome1",
-    "letmein",
-    "iloveyou",
-    "secret",
-    "documento",
-    "Documento",
-    "empresa",
-    "Empresa",
-    "contador",
-    "Contador",
-    "contable",
-    "argentina",
-    "Argentina",
-    "111111",
-    "dragon",
-    "123123",
-    "baseball",
-    "football",
-    "monkey",
-    "696969",
-    "shadow",
-    "master",
-    "666666",
-    "qwertyuiop",
-    "123321",
-    "mustang",
-    "michael",
-    "654321",
-    "pussy",
-    "superman",
-    "1qaz2wsx",
-    "7777777",
-    "fuckyou",
-    "121212",
-    "000000",
-    "qazwsx",
-    "123qwe",
-    "killer",
-    "trustno1",
-    "jordan",
-    "jennifer",
-    "zxcvbnm",
-    "asdfgh",
-    "hunter",
-    "buster",
-    "soccer",
-    "harley",
-    "batman",
-    "andrew",
-    "tigger",
-    "sunshine",
-    "fuckme",
-    "2000",
-    "charlie",
-    "robert",
-    "thomas",
-    "hockey",
-    "ranger",
-    "daniel",
-    "starwars",
-    "klaster",
-    "112233",
-    "george",
-    "asshole",
-    "computer",
-    "michelle",
-    "jessica",
-    "pepper",
-    "zxcvbn",
-    "555555",
-    "11111111",
-    "131313",
-    "freedom",
-    "777777",
-    "pass",
-    "fuck",
-    "maggie",
-    "159753",
-    "aaaaaa",
-    "ginger",
-    "princess",
-    "joshua",
-    "cheese",
-    "amanda",
-    "summer",
-    "love",
-    "ashley",
-    "6969",
-    "nicole",
-    "chelsea",
-    "biteme",
-    "matthew",
-    "access",
-    "yankees",
-    "987654321",
-    "dallas",
-    "austin",
-    "thunder",
-    "taylor",
-)
-
-
-class PdfSecurityError(RuntimeError):
-    """Error de negocio saneado del flujo de seguridad PDF."""
-
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
 
 
 @dataclass
@@ -169,161 +49,6 @@ class PdfSecurityState:
     run_dir: Path | None = None
     source_path: Path | None = None
     received_name: str | None = None
-
-
-def _delivery_filename(received_name: str, suffix: str) -> str:
-    """Preserva el sufijo funcional dentro del límite observado de Telegram."""
-    safe_name = Path(received_name).name
-    stem = Path(safe_name).stem
-    tail = f"-{suffix}.pdf"
-    available = _MAX_DELIVERY_FILENAME - len(tail)
-    if available < 1:
-        raise PdfSecurityError("INVALID_FILENAME", "El nombre del PDF no es válido.")
-    return f"{stem[:available]}{tail}"
-
-
-def _run_qpdf(
-    args: list[str], *, password: str | None = None, timeout: int = 120
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["qpdf", *args],
-        input=f"{password}\n" if password is not None else None,
-        stdin=subprocess.DEVNULL if password is None else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
-
-
-def _run_qpdf_argument_file(lines: list[str]) -> subprocess.CompletedProcess[str]:
-    """Entrega argumentos sensibles por un pipe heredado, no por argv o disco."""
-    read_fd, write_fd = os.pipe()
-    try:
-        os.write(write_fd, ("\n".join([*lines, ""])).encode("utf-8"))
-    finally:
-        os.close(write_fd)
-    try:
-        return subprocess.run(
-            ["qpdf", f"@/proc/self/fd/{read_fd}"],
-            pass_fds=(read_fd,),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-    finally:
-        os.close(read_fd)
-
-
-def _page_count(path: Path, password: str | None = None) -> int:
-    args = ["--warning-exit-0", "--show-npages", str(path)]
-    if password is not None:
-        args.insert(0, "--password-file=/dev/stdin")
-    run = _run_qpdf(args, password=password)
-    if run.returncode != 0:
-        raise PdfSecurityError("INVALID_PDF", "El archivo no es un PDF procesable.")
-    try:
-        pages = int(run.stdout.strip())
-    except ValueError as exc:
-        raise PdfSecurityError("INVALID_PDF", "No se pudo verificar la cantidad de páginas.") from exc
-    if pages < 1:
-        raise PdfSecurityError("INVALID_PDF", "El PDF no contiene páginas.")
-    return pages
-
-
-def _validate_unlocked_output(path: Path, expected_pages: int) -> None:
-    check = _run_qpdf(["--warning-exit-0", "--check", str(path)])
-    if check.returncode != 0 or not path.is_file():
-        raise PdfSecurityError("OUTPUT_INVALID", "El PDF resultante no superó la validación.")
-    password_status = _run_qpdf(["--requires-password", str(path)])
-    if password_status.returncode != 2:
-        raise PdfSecurityError("OUTPUT_STILL_ENCRYPTED", "El PDF resultante continúa cifrado.")
-    if _page_count(path) != expected_pages:
-        raise PdfSecurityError("PAGE_COUNT_MISMATCH", "El PDF resultante no conserva todas las páginas.")
-
-
-def recover_common_pdf_password(source: Path) -> str | None:
-    """Prueba un conjunto fijo y acotado sin exponer candidatos fuera del proceso."""
-    deadline = time.monotonic() + _PASSWORD_RECOVERY_SECONDS
-    for candidate in _COMMON_PDF_PASSWORDS:
-        if time.monotonic() >= deadline:
-            break
-        run = _run_qpdf(
-            ["--password-file=/dev/stdin", "--requires-password", str(source)],
-            password=candidate,
-            timeout=5,
-        )
-        if run.returncode == 3:
-            return candidate
-        if run.returncode not in {0, 2}:
-            raise PdfSecurityError("PASSWORD_CHECK_FAILED", "No se pudo verificar la protección del PDF.")
-    return None
-
-
-def unlock_pdf_without_password(source: Path, output: Path) -> None:
-    """Retira restricciones y recupera contraseñas comunes de forma acotada."""
-    password_status = _run_qpdf(["--requires-password", str(source)])
-    recovered_password: str | None = None
-    if password_status.returncode == 0:
-        recovered_password = recover_common_pdf_password(source)
-        if recovered_password is None:
-            raise PdfSecurityError(
-                "PASSWORD_RECOVERY_FAILED",
-                "El PDF exige una contraseña de apertura y no pude recuperarla con el método automático.",
-            )
-    elif password_status.returncode not in {2, 3}:
-        raise PdfSecurityError("INVALID_PDF", "No se pudo determinar el estado de protección del PDF.")
-
-    expected_pages = _page_count(source, recovered_password)
-    args = ["--warning-exit-0", "--decrypt", "--remove-restrictions", str(source), str(output)]
-    if recovered_password is not None:
-        args.insert(0, "--password-file=/dev/stdin")
-    run = _run_qpdf(args, password=recovered_password)
-    if run.returncode != 0:
-        raise PdfSecurityError("UNLOCK_FAILED", "No se pudo retirar la protección del PDF.")
-    os.chmod(output, 0o600)
-    _validate_unlocked_output(output, expected_pages)
-
-
-def protect_pdf(source: Path, output: Path, password: str) -> None:
-    """Cifra con AES-256 sin exponer la contraseña en argv ni logs."""
-    if not password or "\n" in password or "\r" in password or "\x00" in password:
-        raise PdfSecurityError("INVALID_PASSWORD", "La contraseña no puede estar vacía ni contener saltos de línea.")
-    if len(password) > 128:
-        raise PdfSecurityError("INVALID_PASSWORD", "La contraseña no puede superar 128 caracteres.")
-
-    password_status = _run_qpdf(["--requires-password", str(source)])
-    if password_status.returncode == 0:
-        raise PdfSecurityError("SOURCE_PASSWORD_REQUIRED", "El PDF de origen ya exige una contraseña de apertura.")
-    if password_status.returncode not in {2, 3}:
-        raise PdfSecurityError("INVALID_PDF", "No se pudo determinar el estado del PDF.")
-    expected_pages = _page_count(source)
-
-    owner_password = secrets.token_urlsafe(32)
-    run = _run_qpdf_argument_file(
-        [
-            "--encrypt",
-            f"--user-password={password}",
-            f"--owner-password={owner_password}",
-            "--bits=256",
-            "--",
-            str(source),
-            str(output),
-        ]
-    )
-
-    if run.returncode != 0:
-        raise PdfSecurityError("PROTECT_FAILED", "No se pudo proteger el PDF con la contraseña indicada.")
-    os.chmod(output, 0o600)
-    check = _run_qpdf(["--requires-password", str(output)])
-    if check.returncode != 0:
-        raise PdfSecurityError("OUTPUT_NOT_PROTECTED", "El PDF resultante no quedó protegido por contraseña.")
-    if _page_count(output, password) != expected_pages:
-        raise PdfSecurityError("OUTPUT_INVALID", "El PDF protegido no superó la validación.")
 
 
 class PdfSecurityFlow:

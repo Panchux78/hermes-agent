@@ -22,6 +22,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from plugins.platforms.telegram.menu_buttons import aligned_menu_label, menu_label
 from plugins.platforms.telegram.ccma_artifact import nombre_guardado, vencimientos_destino
 from plugins.platforms.telegram import documentos_contabot as documentos
+from plugins.platforms.telegram.contabot_compartido import ruta as ruta_compartida
 from plugins.platforms.telegram.contributor_selector import (
     CONTRIBUTOR_PROMPT,
     MULTIPLE_CONTRIBUTORS_TEXT,
@@ -257,7 +258,8 @@ class VencimientosFlow:
     def _generate(self, kind: str, output: Path, contributor_id: int, slug: str,
                   rows: list[dict[str, Any]]) -> None:
         python = self.runtime_python
-        script = Path(__file__).with_name("vencimientos_export.py")
+        # #200: el mismo exportador que usa el panel (ContaBot lib/contabot_vencimientos.py, publicado).
+        script = ruta_compartida("contabot_vencimientos")
         if (python is None or not python.is_absolute() or not python.is_file()
                 or not os.access(python, os.X_OK) or not script.is_file()):
             raise RuntimeError("vencimientos_export_runtime_unavailable")
