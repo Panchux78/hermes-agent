@@ -57,6 +57,8 @@ MENU_ALIGNMENT_PADDING = {
     # Excel» (7, 2) y «Lote de Libros IVA» (7, 3) de arca_consultar. Requiere
     # verificación con captura real del cliente antes de darlo por alineado.
     ("bancos", "Cruce con Libros IVA"): (11, 2),
+    # #102: estimación contra Resumen bancario; requiere captura del cliente Telegram.
+    ("bancos", "Conciliación con el mayor"): (7, 2),
     ("herramientas", "Proteger PDF"): (3, 0),
     ("ayuda", "Hacer una consulta"): (0, 1),
     ("administracion", "Actualizar bancos BCRA"): (4, 0),

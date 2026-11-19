@@ -68,6 +68,7 @@ class PeriodSpec:
 
 
 SPECS = {
+    'conciliacion-mayor': PeriodSpec('Conciliación con el mayor', frozenset({'month','range'}), max_months=12),
     'pa': PeriodSpec('Padrón ACT/Dom',min_year=2010,max_year=2099,closed=True),
     'sa': PeriodSpec('Actividades para SIFERE',min_year=2010,max_year=2099,closed=True),
     'descargar-presentados': PeriodSpec('CSV de períodos presentados'),

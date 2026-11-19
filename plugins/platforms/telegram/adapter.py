@@ -508,6 +508,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         from plugins.platforms.telegram.vencimientos_avisos import VencimientosAvisos
         from plugins.platforms.telegram.agip_deducciones_flow import AgipDeduccionesFlow
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
+        from plugins.platforms.telegram.conciliacion_mayor_flow import ConciliacionMayorFlow
         from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
         from plugins.platforms.telegram.fiscal_credentials import lookup_connection, verification_connection
         from plugins.platforms.telegram.contabot_deployment import deployment_paths
@@ -584,6 +585,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             query_connection=lookup_connection, write_connection=verification_connection)
         self._preparar_lote_entregas = PrepararLoteEntregas(self._provinciales_iibb_flows['pp'])
         self._cruce_iva_flow = CruceIvaFlow()
+        self._conciliacion_mayor_flow = ConciliacionMayorFlow()
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection, runtime_python=runtime_python,
             **({"executor": portal_executor} if portal_executor is not None else {}),
@@ -940,7 +942,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             ),
             "bancos": (
                 "Bancos\n\n"
-                "Convertí resúmenes bancarios compatibles a Excel y cruzalos con los Libros IVA. "
+                "Convertí resúmenes bancarios compatibles a Excel, cruzalos con Libros IVA o concilialos con el mayor. "
                 "No convierte PDFs generales."
             ),
             "herramientas": (
@@ -1086,6 +1088,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                     )
                 ],
                 [InlineKeyboardButton(aligned_menu_label(page, "🔀", "Cruce con Libros IVA"), callback_data="cx:start")],
+                [InlineKeyboardButton(aligned_menu_label(page, "⚖️", "Conciliación con el mayor"), callback_data="cm:start")],
             ]
 
         elif page == "herramientas":
@@ -5118,6 +5121,20 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 return
 
         # --- Cruce de planillas bancarias con Libros IVA (Ágora #122) ---
+        if data.startswith("cm:"):
+            if not await self._callback_authorized(query, cb, "No estás autorizado para conciliar archivos."):
+                return
+            if str(cb["chat_type"]).lower() != "private":
+                await query.answer(text="La conciliación se hace por privado.")
+                return
+            caller_id = str(query.from_user.id)
+            if data == 'cm:start':
+                for name in ('_cruce_iva_flow', '_pdf_xlsx_flow', '_batch_pdf_xlsx_flow'):
+                    flow = getattr(self, name, None)
+                    if flow is not None:
+                        flow.cancel_pending(cb['chat_id'], cb['thread_id'], caller_id)
+            await self._conciliacion_mayor_flow.callback(self, query, data, cb['chat_id'], cb['thread_id'], caller_id)
+            return
         if data.startswith("cx:"):
             if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para cruzar con Libros IVA."):
                 return
@@ -5127,7 +5144,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             caller_id = str(getattr(query.from_user, "id", ""))
             if data == "cx:start":
                 # Elegir el cruce descarta pedidos de PDF o lote que quedaron sin completar.
-                for other in ("_pdf_xlsx_flow", "_batch_pdf_xlsx_flow"):
+                for other in ("_pdf_xlsx_flow", "_batch_pdf_xlsx_flow", "_conciliacion_mayor_flow"):
                     flow = getattr(self, other, None)
                     if flow is not None:
                         flow.cancel_pending(cb["chat_id"], cb["thread_id"], caller_id)
@@ -5167,6 +5184,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 await self._record_bot_rejection(query, operation="lote_resumen_bancario_xlsx", code="usuario_no_autorizado", text="El usuario no estaba autorizado para procesar lotes.")
                 return
             if data == "bx:start":
+                conc = getattr(self, '_conciliacion_mayor_flow', None)
+                if conc is not None:
+                    conc.cancel_pending(cb['chat_id'], cb['thread_id'], caller_id)
                 # Elegir «Lote» descarta un pedido de PDF suelto que quedó sin completar.
                 single_flow = getattr(self, "_pdf_xlsx_flow", None)
                 if single_flow is not None:
@@ -5193,6 +5213,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 await self._record_bot_rejection(query, operation="resumen_bancario_xlsx", code="usuario_no_autorizado", text="El usuario no estaba autorizado para convertir documentos.")
                 return
             if data == "px:start":
+                conc = getattr(self, '_conciliacion_mayor_flow', None)
+                if conc is not None:
+                    conc.cancel_pending(cb['chat_id'], cb['thread_id'], caller_id)
                 # Elegir «Resumen bancario» descarta un pedido de lote que quedó sin
                 # completar: si no, el lote se queda con el PDF (caso real 22/09/2026).
                 batch_flow = getattr(self, "_batch_pdf_xlsx_flow", None)
@@ -6881,6 +6904,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 return
             if await self._constancias_flow.text(self, msg):
                 return
+            conciliacion_flow = getattr(self, '_conciliacion_mayor_flow', None)
+            if conciliacion_flow is not None and await conciliacion_flow.text(self, msg):
+                return
             cruce_flow = getattr(self, "_cruce_iva_flow", None)
             if cruce_flow is not None and await cruce_flow.text(self, msg):
                 return
@@ -7212,6 +7238,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
         cruce_flow = getattr(self, "_cruce_iva_flow", None)
         if msg.document and cruce_flow is not None and await cruce_flow.document(self, msg):
+            return
+        conciliacion_flow = getattr(self, '_conciliacion_mayor_flow', None)
+        if msg.document and conciliacion_flow is not None and await conciliacion_flow.document(self, msg):
             return
 
         if msg.document and await self._batch_pdf_xlsx_flow.document(self, msg):

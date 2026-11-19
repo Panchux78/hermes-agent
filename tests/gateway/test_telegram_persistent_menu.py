@@ -170,7 +170,7 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
         query.edit_message_caption.assert_awaited_once_with(
             caption=(
                 "Bancos\n\n"
-                "Convertí resúmenes bancarios compatibles a Excel y cruzalos con los Libros IVA. "
+                "Convertí resúmenes bancarios compatibles a Excel, cruzalos con Libros IVA o concilialos con el mayor. "
                 "No convierte PDFs generales."
             ),
             reply_markup=[
@@ -187,6 +187,7 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
                         "callback_data": "cx:start",
                     }
                 ],
+                [{"text": "⚖️  Conciliación con el mayor" + "\u200a" * 2 + "\u2800" * 7, "callback_data": "cm:start"}],
                 [
                     {"text": "‹  Menú", "callback_data": "om:main"},
                     {"text": "✕  Cerrar", "callback_data": "om:close"},
