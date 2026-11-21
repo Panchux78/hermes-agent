@@ -332,7 +332,7 @@ def test_command_is_exact_and_shell_free(tmp_path):
     flow.executor.touch()
     flow.uv.touch()
     assert flow._command("cliente", "2026-08", "generar") == [
-        str(tmp_path / "uv"), "run", "--no-project", "--with", "selenium", "xvfb-run", "-a",
+        str(tmp_path / "uv"), "run", "--no-project", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
         "python3", str(tmp_path / "portal_iva.py"), "--cliente", "cliente", "--periodo", "2026-08", "--operacion", "generar", "--captcha-stdin",
     ]
 
@@ -378,6 +378,71 @@ def test_period_accepts_only_month_year_and_stores_executor_period(monkeypatch):
         await confirm_period(flow, adapter)
         assert state.period == "2026-08"
         assert state.stage == "running"
+
+    asyncio.run(scenario())
+
+
+def test_sin_ficha_guardada_corre_con_version_cero(monkeypatch):
+    """0133: «No» por defecto; el ejecutor revalida que siga sin ficha guardada."""
+    async def scenario():
+        flow = PortalIvaFlow()
+        adapter = FakeAdapter()
+        state = FlowState(user_id="7", nonce="a" * 10, stage="period", contributor_id=1, slug="cliente", cuit=VALID_CUIT, operation="generar")
+        flow._by_id = lambda _ident, _uid: [_scope_item()]
+        flow._write_query = lambda _sql: [[dict(configuracion=dict(id_dato=None,faltantes=[],por_defecto=["prorrateo","importador","exportador"],
+            valor=dict(prorrateo=False,modalidad=None,importador=False,tipo_importacion=None,exportador=False)))]]
+        key = flow._key("10", None, "7")
+        flow.states[key] = state
+
+        def fake_task(coro):
+            coro.close()
+            return SimpleNamespace(add_done_callback=lambda _callback: None)
+
+        monkeypatch.setattr(asyncio, "create_task", fake_task)
+        assert await flow.text(adapter, _message("08/2026")) is True
+        await confirm_period(flow, adapter)
+        assert (state.stage, state.configuracion_version) == ("running", 0)
+        texts = [c.kwargs["text"] for c in adapter._bot.send_message.await_args_list]
+        assert any("no (por defecto)" in t for t in texts)
+        assert not any("Completá" in t for t in texts)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("historial_falla", [False, True])
+def test_fallo_con_archivos_guardados_un_solo_aviso_y_motivo_real(monkeypatch, tmp_path, historial_falla):
+    """Corrida 59061: un aviso, motivo real en el historial y sin reeditar el progreso."""
+    async def scenario():
+        history = SimpleNamespace(
+            start=AsyncMock(return_value=SimpleNamespace(run_id=1, item_id=1)),
+            prepare_items=AsyncMock(return_value=[{"id_item": 10}, {"id_item": 11}]),
+            finish_item=AsyncMock(side_effect=RuntimeError("HISTORY_UNAVAILABLE") if historial_falla else None), close=AsyncMock())
+        flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path, history=history)
+        flow.executor.touch(); flow.uv.touch()
+        adapter = FakeAdapter()
+        state = FlowState(
+            user_id="7", nonce="a" * 10, stage="running", contributor_id=1,
+            slug="cliente", cuit=VALID_CUIT, period="2026-10",
+            progress_message=FakeMessage(), operation="generar",
+            scope_item=_scope_item(slug="cliente"),
+        )
+        failed = {"ok": False, "motivo": "No module named 'openpyxl'", "archivos_guardados": []}
+        flow._by_id = lambda _ident, _uid: [_scope_item(slug="cliente")]
+        flow._query = _scope_query
+        flow._acquire_execution_lock = lambda _key: None
+        flow._saved_before_failure = lambda _result: ["cliente-portal-iva-ventas-2026-10-v03.csv"]
+        monkeypatch.setattr(asyncio, "create_subprocess_exec",
+                            AsyncMock(return_value=FakeProcess(json.dumps(failed).encode(), returncode=1)))
+
+        await flow._run(adapter, "10", None, "10::7", state)
+
+        assert adapter._bot.send_message.await_count == 1
+        sent = adapter._bot.send_message.await_args.kwargs["text"]
+        assert "Quedaron guardados en Documentos" in sent
+        assert all("Quedaron guardados" not in e[0] for e in state.progress_message.edits)
+        assert state.progress_message.edits[-1][0] == "Generar CSV de período nuevo: terminó. El resultado está en el mensaje siguiente."
+        codes = {c.kwargs["reason_code"] for c in history.finish_item.await_args_list}
+        assert codes == {"no_module_named_openpyxl"}
 
     asyncio.run(scenario())
 
@@ -998,7 +1063,8 @@ def test_incomplete_output_and_exit_one_do_not_deliver(monkeypatch, tmp_path):
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess(json.dumps(blocked).encode(), returncode=1)))
         await flow._run(adapter, "10", None, "10::7", state)
         assert adapter.send_document.await_count == 0
-        assert "rechazó la credencial" in state.progress_message.edits[-1][0]
+        assert "rechazó la credencial" in adapter._bot.send_message.await_args.kwargs["text"]
+        assert "rechazó la credencial" not in state.progress_message.edits[-1][0]
     asyncio.run(scenario())
 
 
@@ -1030,8 +1096,10 @@ def test_terminal_failure_sends_a_new_visible_message(monkeypatch, tmp_path):
             "Descargar CSV presentados: el período 08/2026 no figura como presentado en ARCA. "
             "Si todavía no fue presentado, usá “Generar CSV de período nuevo”."
         )
-        assert state.progress_message.edits[-1][0] == expected
+        # #192: el resultado va una sola vez, en el mensaje nuevo; el de progreso remite a él.
+        assert state.progress_message.edits[-1][0] == "Descargar CSV presentados: terminó. El resultado está en el mensaje siguiente."
         assert adapter._bot.send_message.await_args.kwargs["text"] == expected
+        assert adapter._bot.send_message.await_count == 1
 
     asyncio.run(scenario())
 

@@ -667,7 +667,7 @@ class PortalIvaFlow:
         if self.states.get(key) is not state:
             return True
         if state.operation=='generar':
-            from plugins.platforms.telegram.iva_configuracion import consulta,resumen
+            from plugins.platforms.telegram.iva_configuracion import consulta,resumen,version
             try:
                 rows=await asyncio.to_thread(self._write_query,consulta(int(state.user_id),[int(state.contributor_id)],period))
                 if len(rows)!=1 or not isinstance(rows[0],list) or len(rows[0])!=1:raise ValueError('preflight_no_verificado')
@@ -679,8 +679,7 @@ class PortalIvaFlow:
                         text=resumen(config),contributor_id=state.contributor_id)
                     self.states.pop(key,None)
                     return True
-                if type(config.get('id_dato')) is not int or config['id_dato']<=0:raise ValueError('configuracion_sin_version')
-                state.configuracion_version=config['id_dato']
+                state.configuracion_version=version(config)
             except Exception:
                 await self._reject(user_id=state.user_id,operation=state.operation,
                     key_material='iva-config:'+state.nonce,code='configuracion_iva_no_verificada',
@@ -756,7 +755,8 @@ class PortalIvaFlow:
         # tiene pyproject.toml; sin esto uv intenta crear .venv ahí y sale
         # antes de ejecutar el procedimiento (09/10/2026).
         return [
-            str(self.uv), "run", "--no-project", "--with", "selenium", "xvfb-run", "-a",
+            # openpyxl: lo usan los pasos posteriores a los libros (corrida 59061, 20/11/2026).
+            str(self.uv), "run", "--no-project", "--with", "selenium", "--with", "openpyxl", "xvfb-run", "-a",
             "python3", str(self.executor), "--cliente", slug, "--periodo", period,
             "--operacion", operation, "--captcha-stdin",
         ]
@@ -1752,6 +1752,7 @@ class PortalIvaFlow:
         history_run: RunHandle | None = None
         history_items: dict[str, int] = {}
         history_finished: set[int] = set()
+        reported = False
 
         async def finish_remaining(item_state: str, code: str, text: str) -> None:
             if history_run is None or self.history is None:
@@ -1845,15 +1846,19 @@ class PortalIvaFlow:
                     # Lo ya guardado no se pierde ni se calla (Ágora #115).
                     failure_message += ("\nQuedaron guardados en Documentos: "
                                         + ", ".join(saved_names) + ".")
-                await self._edit_progress(state, failure_message)
-                # A terminal outcome must create a fresh, visible notification.
-                # Editing an older progress message alone is easy to miss in Telegram.
+                # A terminal outcome must create a fresh, visible notification; the
+                # progress message only points to it, so the text is not repeated (#192).
+                await self._edit_progress(state, self._progress_closed(state.operation))
                 await self._send(adapter, chat_id, failure_message, thread_id)
-                await finish_remaining(
-                    "fallido",
-                    CODIGO_CUOTA if mensaje_si_cuota(result) else self._history_reason_code(result.get("motivo")),
-                    failure_message,
-                )
+                reported = True
+                try:
+                    await finish_remaining(
+                        "fallido",
+                        CODIGO_CUOTA if mensaje_si_cuota(result) else self._history_reason_code(result.get("motivo")),
+                        failure_message,
+                    )
+                except Exception:
+                    logger.exception("[PORTAL-IVA] history failure close failed")
                 return
             if result.get("etapa") != "completado":
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
@@ -1924,9 +1929,13 @@ class PortalIvaFlow:
                 await self.history.close(history_run)
             completion = self._completion_message(deliverables)
             if state.operation=='generar' and isinstance(result.get('clasificacion_compras'),dict):
-                completion += ('\nApertura de compras verificada en el borrador; sin presentar.'
-                               if (result.get('apertura_iva') or {}).get('estado')=='verificada' else
-                               '\nLibros obtenidos. Apertura de IVA pendiente: revisá la clasificación en Padrón ACT/Dom y la fuente del crédito computable antes de liquidar.')
+                apertura = result.get('apertura_iva') if isinstance(result.get('apertura_iva'), dict) else {}
+                if apertura.get('estado') == 'verificada':
+                    completion += '\nApertura de compras verificada en el borrador; sin presentar.'
+                elif apertura.get('estado') == 'no_verificada' or apertura.get('codigo'):
+                    completion += '\nLibros obtenidos. ' + str(apertura.get('motivo') or 'Revisá la apertura en el borrador de ARCA antes de presentar.')
+                else:
+                    completion += ('\nLibros obtenidos. Apertura de IVA pendiente: revisá la clasificación en Padrón ACT/Dom y la fuente del crédito computable antes de liquidar.')
             if result.get('importaciones_bienes_estado') == 'sin_solapa':
                 completion += '\nARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar.'
             await self._edit_progress(state, completion)
@@ -1947,7 +1956,7 @@ class PortalIvaFlow:
                 type(exc).__name__,
                 self._safe_error_code(exc),
             )
-            if not state.cancelled:
+            if not state.cancelled and not reported:
                 error_result = result if result is not None else {"motivo": str(exc)}
                 await self._edit_progress(
                     state,
@@ -1972,6 +1981,11 @@ class PortalIvaFlow:
                 self._release_execution_lock(execution_key)
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
+
+    @staticmethod
+    def _progress_closed(operation: str) -> str:
+        prefix = "Generar CSV de período nuevo" if operation == "generar" else "Descargar CSV presentados"
+        return f"{prefix}: terminó. El resultado está en el mensaje siguiente."
 
     @staticmethod
     def _history_reason_code(reason: object) -> str:

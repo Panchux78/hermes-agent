@@ -19,6 +19,17 @@ _RECOVERY_LOCK = asyncio.Lock()
 _RECOVERED = False
 
 
+def texto_motivo(text: object) -> str:
+    """Una línea de hasta 300 caracteres: el contrato SQL rechaza el resto.
+
+    Corrida 59061 (20/11/2026): el aviso con la lista de archivos tenía un salto
+    de línea, la base lo rechazó y el historial quedó con «history_unavailable»
+    en lugar del motivo real.
+    """
+    plano = " ".join(str(text or "").split())
+    return plano if len(plano) <= 300 else plano[:299].rstrip() + "…"
+
+
 @dataclass(frozen=True)
 class RunHandle:
     run_id: int
@@ -108,7 +119,7 @@ class BotRunHistory:
             "reject", "--telegram-id", str(telegram_id), "--operation", operation,
             "--idempotency-key", self.key("rejection", key_material),
             "--instance", self.instance_id, "--reference", Path(reference).name,
-            "--reason-code", reason_code, "--reason-text", reason_text,
+            "--reason-code", reason_code, "--reason-text", texto_motivo(reason_text),
         ]
         if contributor_id is not None:
             args += ["--contributor-id", str(contributor_id)]
@@ -182,7 +193,7 @@ class BotRunHistory:
         args = [
             "finish-item", "--run-id", str(run.run_id), "--item-id", str(item_id),
             "--instance", self.instance_id, "--state", state,
-            "--reason-code", reason_code, "--reason-text", reason_text,
+            "--reason-code", reason_code, "--reason-text", texto_motivo(reason_text),
             "--effects-json", json.dumps(effects, ensure_ascii=False, separators=(",", ":")),
         ]
         if contributor_id is not None:

@@ -43,7 +43,7 @@ class PrepararLoteFlow(ComarbDeduccionesFlow):
 
     def _lote_sql(self, actor: int, state, period: str) -> str:
         ids = ','.join(str(int(i['id'])) for i in state.lote.elegidos)
-        return f"SELECT console.fn_portal_iva_preparar_lote_telegram({actor},'{period}',ARRAY[{ids}]::bigint[])::text;"
+        return f"SELECT console.fn_portal_iva_preparar_lote_telegram_v2({actor},'{period}',ARRAY[{ids}]::bigint[])::text;"
 
     def _no_incluidos(self, filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [{**f, 'motivo': f['motivo'] if str(f.get('motivo','')).startswith('Completá Ficha › Impuestos › IVA:') else _IVA_INELIGIBLE.get(f.get('motivo'), 'No se puede preparar con tu acceso actual.')} for f in filas]

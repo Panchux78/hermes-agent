@@ -227,7 +227,7 @@ def test_preparar_por_lote_encola_tildados_por_periodo_y_explica_los_que_no():
         await f.callback(a, query(f'pp:la:{n}'), f'pp:la:{n}', 42, None, '42')
         await f.callback(a, query(f'pp:lc:{n}'), f'pp:lc:{n}', 42, None, '42')
         m = msg('10/2026'); await f.text(a, m); await confirm_period(f, a, 42, '42')
-        assert fake.sql[-1] == "SELECT console.fn_portal_iva_preparar_lote_telegram(42,'10/2026',ARRAY[1]::bigint[])::text;"
+        assert fake.sql[-1] == "SELECT console.fn_portal_iva_preparar_lote_telegram_v2(42,'10/2026',ARRAY[1]::bigint[])::text;"
         texto = m.reply_text.await_args.args[0]
         assert 'Preparar período nuevo' in texto and 'En espera de Preparar período nuevo.' in texto
         assert 'monotributista' in texto

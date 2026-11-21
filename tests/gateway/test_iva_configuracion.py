@@ -50,3 +50,26 @@ async def test_rechazo_preflight_registrado_sin_abrir_arca(rows,code):
     assert history.reject.await_args.kwargs['reason_code']==code
     assert history.reject.await_args.kwargs['operation']=='portal_iva_generar_csv'
     assert key not in flow.states and not flow.tasks
+
+
+def test_por_defecto_se_informa_y_no_frena():
+    # 0133 (contadora, 19/11 y 20/11/2026): sin respuesta vale «No», informado como por defecto.
+    from plugins.platforms.telegram.iva_configuracion import version
+    cfg=dict(id_dato=None,faltantes=[],por_defecto=['prorrateo','importador','exportador'],
+             valor=dict(prorrateo=False,modalidad=None,importador=False,tipo_importacion=None,exportador=False))
+    text=resumen(cfg)
+    assert text.count('no (por defecto)')==3 and 'Completá' not in text
+    assert version(cfg)==0
+    assert version(dict(cfg,id_dato=7,por_defecto=['exportador']))==7
+    for bad in (dict(cfg,por_defecto=['importador']),dict(cfg,id_dato=0),dict(cfg,id_dato='7')):
+        with pytest.raises(ValueError):version(bad)
+    with pytest.raises(ValueError):resumen(dict(cfg,por_defecto=['otro']))
+    assert 'fn_iva_preflight_telegram_v2(' in consulta(99,[1],'2026-09')
+
+
+def test_motivo_del_historial_en_una_linea_y_dentro_del_limite():
+    # Corrida 59061: un salto de línea hizo que la base rechazara el cierre.
+    from plugins.platforms.telegram.bot_run_history import texto_motivo
+    assert texto_motivo('No se completó.\nQuedaron guardados en Documentos: a.csv, b.zip.')=='No se completó. Quedaron guardados en Documentos: a.csv, b.zip.'
+    largo=texto_motivo('x '*400)
+    assert len(largo)==300 and largo.endswith('…') and '\n' not in largo
