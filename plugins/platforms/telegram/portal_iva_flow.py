@@ -1932,10 +1932,14 @@ class PortalIvaFlow:
                 apertura = result.get('apertura_iva') if isinstance(result.get('apertura_iva'), dict) else {}
                 if apertura.get('estado') == 'verificada':
                     completion += '\nApertura de compras verificada en el borrador; sin presentar.'
-                elif apertura.get('estado') == 'no_verificada' or apertura.get('codigo'):
+                    aviso = (apertura.get('computable') or {}).get('advertencia') if isinstance(apertura.get('computable'), dict) else None
+                    if aviso:
+                        completion += '\n' + str(aviso)
+                elif apertura.get('estado') == 'no_verificada':
                     completion += '\nLibros obtenidos. ' + str(apertura.get('motivo') or 'Revisá la apertura en el borrador de ARCA antes de presentar.')
                 else:
-                    completion += ('\nLibros obtenidos. Apertura de IVA pendiente: revisá la clasificación en Padrón ACT/Dom y la fuente del crédito computable antes de liquidar.')
+                    # Criterios del 21/11/2026: el motivo concreto (excepciones, ajuste o control) lo da el ejecutor.
+                    completion += '\nLibros obtenidos. Apertura de IVA pendiente: ' + str(apertura.get('motivo') or 'revisá la clasificación en ARCA › Padrón ACT/Dom.')
             if result.get('importaciones_bienes_estado') == 'sin_solapa':
                 completion += '\nARCA no ofrece la solapa Impor. de Bienes para esta presentación: no hay importaciones que bajar.'
             await self._edit_progress(state, completion)

@@ -403,7 +403,8 @@ def test_sin_ficha_guardada_corre_con_version_cero(monkeypatch):
         await confirm_period(flow, adapter)
         assert (state.stage, state.configuracion_version) == ("running", 0)
         texts = [c.kwargs["text"] for c in adapter._bot.send_message.await_args_list]
-        assert any("no (por defecto)" in t for t in texts)
+        assert any("Importación de servicios: no" in t for t in texts)
+        assert not any("por defecto" in t for t in texts)
         assert not any("Completá" in t for t in texts)
 
     asyncio.run(scenario())
@@ -944,7 +945,7 @@ def test_success_delivers_both_csvs_and_updates_same_message(
         result = _result(tmp_path, state)
         if apertura:
             result.update(clasificacion_compras={'estado':'confirmada' if apertura=='verificada' else 'solicitada'},
-                          apertura_iva={'estado':apertura,'motivo':'dato privado que no debe mostrarse'})
+                          apertura_iva={'estado':apertura,'motivo':'Hay 2 compras sin categoría ($ 10,00 de neto).'})
         payload = json.dumps(result).encode()
         flow._by_id = lambda _ident, _uid: [_scope_item(slug="cliente")]
         flow._query = _scope_query
@@ -961,7 +962,8 @@ def test_success_delivers_both_csvs_and_updates_same_message(
             "Compras: sin comprobantes para el período."
         )
         if apertura=='pendiente':
-            expected += '\nLibros obtenidos. Apertura de IVA pendiente: revisá la clasificación en Padrón ACT/Dom y la fuente del crédito computable antes de liquidar.'
+            # Criterios del 21/11/2026: el motivo lo redacta el ejecutor para el usuario.
+            expected += '\nLibros obtenidos. Apertura de IVA pendiente: Hay 2 compras sin categoría ($ 10,00 de neto).'
         elif apertura=='verificada':expected += '\nApertura de compras verificada en el borrador; sin presentar.'
         assert state.progress_message.edits[-1][0] == expected
     asyncio.run(scenario())

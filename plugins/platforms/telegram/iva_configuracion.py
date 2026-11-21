@@ -1,20 +1,23 @@
 """Resumen de configuración192. La decisión y el preflight están en la base.
 
-Sin respuesta vale «No» por defecto (0133; contadora, 19/11 y 20/11/2026)."""
+Criterios de la contadora del 21/11/2026: todo arranca en «No», sin rótulo «por
+defecto»; importación de bienes y de servicios por separado, y las otras opciones
+de Datos Iniciales de ARCA (TurIVA, bienes usados). Exportador: dato del cliente."""
 def resumen(config):
     faltan=config.get('faltantes')
     if not isinstance(faltan,list):raise ValueError('configuracion_iva_no_verificada')
     if faltan:return 'Completá Ficha › Impuestos › IVA: '+', '.join(faltan)+'. No se iniciará ARCA.'
     v=config['valor']
     if any(type(v.get(k)) is not bool for k in ('prorrateo','importador','exportador')):raise ValueError('configuracion_iva_no_verificada')
-    defecto=config.get('por_defecto') or []
-    if not isinstance(defecto,list) or not set(defecto)<={'prorrateo','importador','exportador'}:raise ValueError('configuracion_iva_no_verificada')
-    no=lambda k:'no (por defecto)' if k in defecto else 'no'
+    if any(v.get(k) is not None and type(v.get(k)) is not bool for k in ('turiva','bienes_usados')):raise ValueError('configuracion_iva_no_verificada')
+    si=lambda b:'sí' if b else 'no'
     modos={'directa':'asignación directa','global':'global','directa_y_global':'asignación directa y global'}
-    tipos={'bienes':'bienes','servicios':'servicios','ambos':'bienes y servicios'}
-    return ('Prorrateo: '+('sí · '+modos[v['modalidad']] if v['prorrateo'] else no('prorrateo'))+
-            '\nImportador: '+('sí · '+tipos[v['tipo_importacion']] if v['importador'] else no('importador'))+
-            '\nExportador: '+('sí' if v['exportador'] else no('exportador'))+' (dato del estudio; sin casilla en ARCA).')
+    tipo=v.get('tipo_importacion') if v['importador'] else None
+    return ('Prorrateo: '+('sí · '+modos[v['modalidad']] if v['prorrateo'] else 'no')+
+            '\nImportación de bienes: '+si(tipo in ('bienes','ambos'))+
+            '\nImportación de servicios: '+si(tipo in ('servicios','ambos'))+
+            '\nTurIVA: '+si(v.get('turiva'))+' · Bienes usados: '+si(v.get('bienes_usados'))+
+            '\nExportador: '+si(v['exportador'])+' (dato del cliente; sin casilla en ARCA).')
 
 
 def version(config):

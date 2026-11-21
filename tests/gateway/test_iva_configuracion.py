@@ -9,7 +9,7 @@ def test_ausencia_no_es_no():
 
 def test_no_inventa_exportador_arca():
     text=resumen(dict(faltantes=[],valor=dict(prorrateo=True,modalidad='global',importador=True,tipo_importacion='bienes',exportador=False)))
-    assert 'sí · global' in text and 'sí · bienes' in text and 'sin casilla en ARCA' in text
+    assert 'sí · global' in text and 'Importación de bienes: sí' in text and 'sin casilla en ARCA' in text
 
 def test_sql_tipeado_y_periodo_interno():
     assert "date '2026-09-01'" in consulta(99,[1,2],'2026-09')
@@ -52,18 +52,21 @@ async def test_rechazo_preflight_registrado_sin_abrir_arca(rows,code):
     assert key not in flow.states and not flow.tasks
 
 
-def test_por_defecto_se_informa_y_no_frena():
-    # 0133 (contadora, 19/11 y 20/11/2026): sin respuesta vale «No», informado como por defecto.
+def test_todo_en_no_sin_rotulo_y_no_frena():
+    # Criterios del 21/11/2026: todo arranca en «No», sin rótulo «por defecto»; dos importaciones y TurIVA.
     from plugins.platforms.telegram.iva_configuracion import version
     cfg=dict(id_dato=None,faltantes=[],por_defecto=['prorrateo','importador','exportador'],
-             valor=dict(prorrateo=False,modalidad=None,importador=False,tipo_importacion=None,exportador=False))
+             valor=dict(prorrateo=False,modalidad=None,importador=False,tipo_importacion=None,exportador=False,turiva=False,bienes_usados=False))
     text=resumen(cfg)
-    assert text.count('no (por defecto)')==3 and 'Completá' not in text
+    assert 'por defecto' not in text and 'Completá' not in text
+    assert 'Importación de bienes: no' in text and 'Importación de servicios: no' in text and 'TurIVA: no' in text
+    assert 'Importación de servicios: sí' in resumen(dict(cfg,valor=dict(cfg['valor'],importador=True,tipo_importacion='servicios')))
+    assert 'TurIVA: sí' in resumen(dict(cfg,valor=dict(cfg['valor'],turiva=True)))
+    with pytest.raises(ValueError):resumen(dict(cfg,valor=dict(cfg['valor'],turiva='sí')))
     assert version(cfg)==0
     assert version(dict(cfg,id_dato=7,por_defecto=['exportador']))==7
     for bad in (dict(cfg,por_defecto=['importador']),dict(cfg,id_dato=0),dict(cfg,id_dato='7')):
         with pytest.raises(ValueError):version(bad)
-    with pytest.raises(ValueError):resumen(dict(cfg,por_defecto=['otro']))
     assert 'fn_iva_preflight_telegram_v2(' in consulta(99,[1],'2026-09')
 
 
