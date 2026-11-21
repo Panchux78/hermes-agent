@@ -505,6 +505,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         from plugins.platforms.telegram.comarb_ddjj_flow import ComarbPresentadasFlow, ComarbPresentadasEntregas
         from plugins.platforms.telegram.sifere_actividades_flow import SifereActividadesFlow
         from plugins.platforms.telegram.padron_act_dom_flow import PadronActDomFlow
+        from plugins.platforms.telegram.apocrifos_flow import ApocrifosFlow
         from plugins.platforms.telegram.vencimientos_avisos import VencimientosAvisos
         from plugins.platforms.telegram.agip_deducciones_flow import AgipDeduccionesFlow
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
@@ -572,6 +573,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._sifere_actividades_flow = SifereActividadesFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
         self._padron_act_dom_flow = PadronActDomFlow(
+            query_connection=lookup_connection, write_connection=verification_connection)
+        self._apocrifos_flow = ApocrifosFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
         self._agip_deducciones_flow = AgipDeduccionesFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
@@ -3626,6 +3629,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             if padron is not None:
                 from plugins.platforms.telegram.execution_origin import programmed
                 self._restart_task_attr('_padron_act_dom_task',programmed(padron.run(self),'padron_act_dom_entregas'))
+            apoc = getattr(self, '_apocrifos_flow', None)
+            if apoc is not None:
+                from plugins.platforms.telegram.execution_origin import programmed
+                self._restart_task_attr('_apocrifos_task', programmed(apoc.run(self), 'apocrifos_entregas'))
             if notices is not None:
                 from plugins.platforms.telegram.execution_origin import programmed
                 self._restart_task_attr('_vencimientos_avisos_task',programmed(notices.run(self),'avisos_telegram'))
@@ -3795,14 +3802,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         lifecycle_tasks = self._collect_live_tasks(
             [getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
              getattr(self, '_panel_captcha_task', None), getattr(self, '_comarb_deducciones_task', None),
-             getattr(self, '_comarb_presentadas_task', None), getattr(self,'_vencimientos_avisos_task',None)], current_task)
+             getattr(self, '_comarb_presentadas_task', None), getattr(self,'_vencimientos_avisos_task',None),
+             getattr(self, '_apocrifos_task', None)], current_task)
         for task in lifecycle_tasks:
             task.cancel()
         lifecycle_tasks = [t for t in lifecycle_tasks if asyncio.isfuture(t) or asyncio.iscoroutine(t)]
         if lifecycle_tasks:
             await self._await_disconnect_step(
                 asyncio.gather(*lifecycle_tasks, return_exceptions=True), _DISCONNECT_STEP_TIMEOUT, "lifecycle-task cancel")
-        self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task", '_panel_captcha_task', '_comarb_deducciones_task', '_comarb_presentadas_task','_vencimientos_avisos_task')
+        self._clear_task_attrs_except(current_task, "_polling_error_task", "_polling_progress_verifier_task", '_panel_captcha_task', '_comarb_deducciones_task', '_comarb_presentadas_task','_vencimientos_avisos_task','_apocrifos_task')
         presentadas = getattr(self, '_comarb_presentadas_flow', None)
         if presentadas is not None:
             await presentadas.close()
@@ -5037,6 +5045,17 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._accept_update()
         data = query.data or ""
         cb = self._callback_ctx(query)
+        apoc = getattr(self, '_apocrifos_flow', None)
+        if data.startswith('apo:'):
+            if not await self._callback_authorized(query, cb, 'No estás autorizado para pedir una revisión.'):
+                return
+            if apoc is None:
+                await query.answer('Proveedores apócrifos no está disponible en este equipo.')
+                return
+            await apoc.callback(self, query, data, cb['chat_id'], cb['thread_id'], str(query.from_user.id))
+            return
+        if apoc is not None and data.startswith('om:'):
+            apoc.cancel_pending(cb['chat_id'], cb['thread_id'], str(query.from_user.id))
         padron = getattr(self, '_padron_act_dom_flow', None)
         if data.startswith('pa:'):
             if not await self._callback_authorized(query, cb, 'No estás autorizado para consultar el padrón.'):
@@ -6865,6 +6884,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if await self.consume_vault_code_reply(msg):  # a one-time code: deleted, handed over, never a turn
             return
         if msg.text in {"☰ Menú", menu_label("☰", "Menú")}:
+            apoc = getattr(self, '_apocrifos_flow', None)
+            if apoc is not None:
+                apoc.cancel_pending(msg.chat_id, getattr(msg, 'message_thread_id', None), str(msg.from_user.id))
             padron = getattr(self, '_padron_act_dom_flow', None)
             if padron is not None:
                 padron.cancel_pending(msg.chat_id,getattr(msg,'message_thread_id',None),str(msg.from_user.id))
@@ -6881,6 +6903,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if getattr(msg, 'chat_id', None) is not None and getattr(msg, 'from_user', None) is not None:
             bridge = getattr(self, '_panel_captcha_bridge', None)
             if bridge is not None and await bridge.text(getattr(context, 'bot', None) or self._bot, msg):
+                return
+            apoc = getattr(self, '_apocrifos_flow', None)
+            if apoc is not None and await apoc.text(self, msg, update_id=getattr(update, 'update_id', None)):
                 return
             padron = getattr(self, '_padron_act_dom_flow', None)
             if padron is not None and await padron.text(self,msg):

@@ -180,6 +180,7 @@ def test_arca_query_alignment_preserves_actions_labels_and_navigation(monkeypatc
         ("pi:mr", "🧮", "Mis Retenciones"),
         ("pi:mc", "📑", "Mis Comprobantes"),
         ("pa:uno", "🪪", "Padrón ACT/Dom"),
+        ("apo:uno", "🔎", "Proveedores apócrifos"),
     ]
     assert [len(row) for row in rows] == [1] * len(actions) + [2]
     for row, (callback, icon, text) in zip(rows[:-1], actions):
