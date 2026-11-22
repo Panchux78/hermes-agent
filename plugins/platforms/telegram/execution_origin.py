@@ -32,6 +32,15 @@ def incoming(callback):
         else:
             mid = getattr(message, 'message_id', None)
             origin = ('telegram', '', f'update:{uid}/'+('callback' if query else f'mensaje:{mid}'), str(actor.id))
+            text = getattr(query if query else message, 'data' if query else 'text', None)
+            chat_id = getattr(getattr(update, 'effective_chat', None), 'id', None)
+            if chat_id == actor.id and isinstance(text, str):
+                try:
+                    from .lunix_origin import PROCESS, claim
+                    if claim(actor.id, 'callback' if query else 'mensaje', mid if query else None, text.encode()):
+                        origin = ('automatico', PROCESS, origin[2], str(actor.id))
+                except ImportError:
+                    pass  # Instalaciones sin control Lunix conservan la procedencia habitual.
         token = _origin.set(origin)
         try:return await callback(update, context)
         finally:_origin.reset(token)

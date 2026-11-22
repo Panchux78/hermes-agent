@@ -31,7 +31,7 @@ def id_contribuyente_de(contributor_id, scope_item):
 
 async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha256,
                    period_from, period_to, client_slug, client_cuit,
-                   contributor_id=None, holder_cuit=None, telegram_id=None, scope_item=None):
+                   contributor_id=None, holder_cuit=None, telegram_id=None, scope_item=None, qa_record=None):
     from plugins.platforms.telegram.ccma_artifact import ccma_destino, nombre_guardado
     try:
         # El documento se describe antes de consultar; la ruta la decide ContaBot.
@@ -157,6 +157,8 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
                     file_name=nombre_guardado(guardado, workbook.name),
                     caption=f'CCMA — consulta nueva de {period_from} a {period_to}.')
         diagnostic.record({'code': 'complete' if delivery.success else 'delivery_failed'})
+        if qa_record is not None and delivery.success:
+            qa_record.received(guardado,delivery.success)
         await flow.send(chat_id, 'Consulta CCMA finalizada. Se entregó el Excel de esta ejecución.' if delivery.success
                         else 'La consulta CCMA finalizó, pero Telegram no pudo entregar el Excel.')
     except asyncio.CancelledError:

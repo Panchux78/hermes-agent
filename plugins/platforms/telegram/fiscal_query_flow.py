@@ -382,12 +382,14 @@ class FiscalQueryFlow:
 
     async def _start_ccma_dispatch(self, **kwargs):
         from plugins.platforms.telegram.ccma_dispatch import run_ccma
+        from plugins.platforms.telegram.lunix_fiscal_history import tracked
+        from functools import partial
         key = kwargs['state_key']
         if key in self._sct_dispatch_tasks and not self._sct_dispatch_tasks[key].done():
             await self.send(kwargs['chat_id'], 'Ya hay una consulta en curso.')
             return
         await self.send(kwargs['chat_id'], 'Consulta CCMA iniciada. Consultando ARCA para el período solicitado…')
-        task = asyncio.create_task(run_ccma(self, **kwargs))
+        task = asyncio.create_task(tracked(self,'ccma',partial(run_ccma,self),kwargs))
         self._sct_dispatch_tasks[key] = task
         self._background_tasks.add(task)
         def done(finished):
@@ -423,8 +425,9 @@ class FiscalQueryFlow:
             await self.send(chat_id, "Ya hay una consulta SCT en curso. Esperá su resultado o tocá Cancelar.")
             return
 
+        from plugins.platforms.telegram.lunix_fiscal_history import tracked
         task = asyncio.get_running_loop().create_task(
-            self._run_sct_dispatch(
+            tracked(self,'sct',self._run_sct_dispatch,dict(
                 chat_id=chat_id,
                 state_key=state_key,
                 credential_line=credential_line,
@@ -437,7 +440,7 @@ class FiscalQueryFlow:
                 client_cuit=client_cuit,
                 contributor_id=contributor_id, holder_cuit=holder_cuit,
                 telegram_id=telegram_id, scope_item=scope_item,
-            )
+            ))
         )
         self._sct_dispatch_tasks[state_key] = task
         self._background_tasks.add(task)
@@ -471,6 +474,7 @@ class FiscalQueryFlow:
         holder_cuit: Optional[str] = None,
         telegram_id: Optional[str] = None,
         scope_item: Optional[dict] = None,
+        qa_record=None,
     ) -> None:
         """Execute and deliver the bounded SCT runner without involving an LLM."""
         hermes_home = _Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes"))
@@ -608,6 +612,8 @@ class FiscalQueryFlow:
             if not delivery.success:
                 await self.send(chat_id, "La consulta SCT finalizó, pero Telegram no pudo entregar el XLSX. No se informó una entrega inexistente.")
                 return
+            if qa_record is not None:
+                qa_record.received(guardado,delivery.success)
             await self.send(chat_id, "Consulta SCT finalizada. Se entregó el XLSX; la fuente y evidencias quedan privadas.")
         except asyncio.TimeoutError:
             await self.send(chat_id, "La consulta SCT excedió el límite de ejecución y fue detenida. No se entregó ningún resultado.")
