@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 def periodo_anual(value):
     for mask in (r'(20[0-9]{2})(?:-(?:0[1-9]|1[0-2])(?:-[0-9]{2})?)?',
-                 r'(?:0[1-9]|1[0-2])/(20[0-9]{2})'):
+                 r'(?:0[1-9]|1[0-2])/(20[0-9]{2})',r'(20[0-9]{2})0000'):
         if m := re.fullmatch(mask,value):
             return m.group(1)
     raise ValueError('periodo_anual_de_control_invalido')

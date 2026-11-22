@@ -1,16 +1,19 @@
 import tempfile
 from pathlib import Path
+from datetime import date
 from types import SimpleNamespace as Obj
 from unittest import IsolatedAsyncioTestCase,TestCase
 from unittest.mock import AsyncMock,patch
 
 from plugins.platforms.telegram import execution_origin as execution, lunix_origin as labels, lunix_fiscal_history as fiscal
+from plugins.platforms.telegram.period_input import parse_period
 
 
 class LunixOrigin(TestCase):
     def test_ccma_and_sct_supply_different_internal_period_formats(self):
         self.assertEqual(fiscal.periodo_anual('01/2025'),'2025')
-        self.assertEqual(fiscal.periodo_anual('2024-01'),'2024')
+        selection=parse_period('2024','sct_estado_cumplimiento',today=date(2026,11,22))
+        self.assertEqual(fiscal.periodo_anual(selection.sct()[1]),'2024')
         with self.assertRaises(ValueError):
             fiscal.periodo_anual('01/2')
 
