@@ -55,13 +55,44 @@ class UpdateOrigin(IsolatedAsyncioTestCase):
         self.assertEqual(manual['CONTABOT_ORIGEN_CANAL'],'telegram')
         self.assertEqual(execution.environment({})['CONTABOT_ORIGEN_CANAL'],'prueba')
 
-    async def test_manual_fiscal_query_never_enters_automation_history(self):
+    async def test_direct_call_without_update_is_not_telegram(self):
         target=AsyncMock()
         arguments={'chat_id':'12345'}
         with patch.object(fiscal,'BotRunHistory') as history:
             await fiscal.tracked(None,'sct',target,arguments)
         target.assert_awaited_once_with(**arguments)
         history.assert_not_called()
+
+    async def test_manual_sct_month_failure_is_recorded_with_actual_origin_and_reason(self):
+        actor='12345'
+        params={'chat_id':actor,'telegram_id':actor,'contributor_id':20,'period_mode':'range',
+                'period_from':'20261000','period_until':'20261031'}
+        obj=Obj(start=AsyncMock(return_value=22),finish_single=AsyncMock())
+        async def runner(**kw):
+            kw['qa_record'].failure('sct_subject_selection_timeout','ARCA no confirmó la selección.')
+        with patch.object(execution,'_origin',execution.ContextVar('test')), patch.object(fiscal,'BotRunHistory',return_value=obj):
+            execution._origin.set(('telegram','','update:8/callback',actor))
+            await fiscal.tracked(Obj(send=AsyncMock()),'sct',runner,params)
+        self.assertEqual(obj.start.await_args.kwargs['key_material'],'sct:update:8/callback')
+        record=obj.finish_single.await_args.kwargs
+        self.assertEqual((record['state'],record['period'],record['reason_code']),
+                         ('fallido','2026-10','sct_subject_selection_timeout'))
+
+    async def test_manual_ccma_only_completes_with_attachment_and_telegram_receipt(self):
+        actor='12345'
+        params={'chat_id':actor,'telegram_id':actor,'contributor_id':20,'period_from':'10/2026','period_to':'10/2026'}
+        obj=Obj(start=AsyncMock(return_value=22),finish_single=AsyncMock())
+        async def runner(**kw):
+            record=kw['qa_record']
+            record.output=Path('/private/qa.xlsx')
+            record.relative='estudios/qa.xlsx'
+            record.failure('delivery_failed','El archivo quedó en Documentos.')
+        with patch.object(execution,'_origin',execution.ContextVar('test')), patch.object(fiscal,'BotRunHistory',return_value=obj):
+            execution._origin.set(('telegram','','update:51/callback',actor))
+            await fiscal.tracked(Obj(send=AsyncMock()),'ccma',runner,params)
+        record=obj.finish_single.await_args.kwargs
+        self.assertEqual((record['state'],record['period'],record['reason_code']),('incompleto','2026-10','delivery_failed'))
+        self.assertEqual(record['output_relative'],'estudios/qa.xlsx')
 
     async def test_automatic_cannot_call_fiscal_worker_without_its_history(self):
         target,send=AsyncMock(),AsyncMock()

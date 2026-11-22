@@ -477,6 +477,11 @@ class FiscalQueryFlow:
         qa_record=None,
     ) -> None:
         """Execute and deliver the bounded SCT runner without involving an LLM."""
+        async def failed(code, text):
+            if qa_record is not None:
+                qa_record.failure(code,text)
+            await self.send(chat_id,text)
+
         hermes_home = _Path(os.environ.get("HERMES_HOME", _Path.home() / ".hermes"))
         skill_dir = hermes_home / "skills" / "productivity" / "sct-estado-cumplimiento"
         probe = skill_dir / "scripts" / "sct_probe.js"
@@ -488,7 +493,7 @@ class FiscalQueryFlow:
                 raise RuntimeError('fiscal_runtime_missing')
             await require_fiscal_runtime(python, node, probe, hermes_home, canonical=contributor_id is not None)
         except RuntimeError as error:
-            await self.send(chat_id, unavailable_message('SCT', str(error)))
+            await failed(str(error), unavailable_message('SCT', str(error)))
             return
         from plugins.platforms.telegram.ccma_artifact import sct_destino, nombre_guardado
         from plugins.platforms.telegram.ccma_dispatch import id_contribuyente_de
@@ -498,15 +503,15 @@ class FiscalQueryFlow:
                 client_slug, client_cuit, id_contribuyente_de(contributor_id, scope_item),
                 period_mode, period_from, period_until, hoy=_fecha_consulta())
         except ValueError:
-            await self.send(chat_id, 'SCT no pudo verificar el contribuyente o período del archivo. No se consultó ARCA.')
+            await failed('periodo_o_contribuyente_no_acreditado','SCT no pudo verificar el contribuyente o período del archivo. No se consultó ARCA.')
             return
         try:
             await documentos.espacio(destino['id_contribuyente'], _SCT_BYTES_PREVISTOS)
         except documentos.CuotaInsuficiente as error:
-            await self.send(chat_id, error.mensaje)
+            await failed('cuota_insuficiente',error.mensaje)
             return
         except documentos.DocumentoNoGuardado:
-            await self.send(chat_id, 'SCT no pudo verificar el espacio de Documentos. No se consultó ARCA.')
+            await failed('documento_no_guardado','SCT no pudo verificar el espacio de Documentos. No se consultó ARCA.')
             return
 
         xlsx_file, source_csv, login_screenshot, service_screenshot, result_screenshot = self._sct_dispatch_paths()
@@ -557,14 +562,14 @@ class FiscalQueryFlow:
             initial = None
             status = self._sct_runner_status(stdout)
             if status is None:
-                await self.send(chat_id, f"El runner SCT terminó sin un estado verificable (salida {process.returncode}). No se entregó ningún resultado. Referencia: {captcha_dir.name}.")
+                await failed('runner_exit_error',f"El runner SCT terminó sin un estado verificable (salida {process.returncode}). No se entregó ningún resultado. Referencia: {captcha_dir.name}.")
                 return
             if status != "sct_exported":
-                await self.send(chat_id, sct_failure_message(status, captcha_dir.name))
+                await failed(status,sct_failure_message(status, captcha_dir.name))
                 return
 
             if process.returncode != 0:
-                await self.send(chat_id, f"SCT informó exportación, pero terminó con error ({process.returncode}). No se entregó ningún resultado. Referencia: {captcha_dir.name}.")
+                await failed('runner_exit_error',f"SCT informó exportación, pero terminó con error ({process.returncode}). No se entregó ningún resultado. Referencia: {captcha_dir.name}.")
                 return
 
             source_exported = True
@@ -592,15 +597,15 @@ class FiscalQueryFlow:
             self._sct_dispatch_processes[state_key] = process
             await asyncio.wait_for(process.communicate(), timeout=60)
             if process.returncode != 0 or not xlsx_file.is_file():
-                await self.send(chat_id, "La fuente SCT se obtuvo, pero no se pudo generar el XLSX. No se entregó un archivo incompleto.")
+                await failed('workbook_failed',"La fuente SCT se obtuvo, pero no se pudo generar el XLSX. No se entregó un archivo incompleto.")
                 return
             try:
                 guardado = await documentos.guardar(xlsx_file, destino)
             except documentos.CuotaInsuficiente as error:
-                await self.send(chat_id, error.mensaje)
+                await failed('cuota_insuficiente',error.mensaje)
                 return
             except documentos.DocumentoNoGuardado:
-                await self.send(chat_id, "SCT generó el XLSX, pero no se pudo guardar en Documentos. No se entregó el archivo.")
+                await failed('documento_no_guardado',"SCT generó el XLSX, pero no se pudo guardar en Documentos. No se entregó el archivo.")
                 return
             # Se envía el archivo producido, con el nombre con que quedó en Documentos.
             delivery = await self.send_document(
@@ -609,35 +614,35 @@ class FiscalQueryFlow:
                 file_name=nombre_guardado(guardado, xlsx_file.name),
                 caption="Estado de Cumplimiento SCT — consulta read-only.",
             )
-            if not delivery.success:
-                await self.send(chat_id, "La consulta SCT finalizó, pero Telegram no pudo entregar el XLSX. No se informó una entrega inexistente.")
-                return
             if qa_record is not None:
                 qa_record.received(guardado,delivery.success)
+            if not delivery.success:
+                await failed('delivery_failed',"La consulta SCT finalizó, pero Telegram no pudo entregar el XLSX. No se informó una entrega inexistente.")
+                return
             await self.send(chat_id, "Consulta SCT finalizada. Se entregó el XLSX; la fuente y evidencias quedan privadas.")
         except asyncio.TimeoutError:
-            await self.send(chat_id, "La consulta SCT excedió el límite de ejecución y fue detenida. No se entregó ningún resultado.")
+            await failed('timeout',"La consulta SCT excedió el límite de ejecución y fue detenida. No se entregó ningún resultado.")
         except asyncio.CancelledError:
             raise
         except FiscalDatabaseError as error:
             if source_exported:
-                await self.send(
-                    chat_id,
+                await failed(
+                    str(error),
                     'SCT consultó ARCA y obtuvo la exportación, pero no pudo registrar '
                     'la verificación local. No se generó ni entregó el Excel; requiere '
                     'mantenimiento local.',
                 )
             else:
-                await self.send(chat_id, unavailable_message('SCT', str(error)))
+                await failed(str(error),unavailable_message('SCT', str(error)))
         except ValueError as error:
             if str(error) == 'canonical_access_changed_or_ambiguous' and process is None:
-                await self.send(chat_id, 'SCT no encontró un acceso ARCA habilitado y único para el titular seleccionado. No se consultó ARCA. Revisá Accesos en el panel.')
+                await failed('canonical_access_changed_or_ambiguous','SCT no encontró un acceso ARCA habilitado y único para el titular seleccionado. No se consultó ARCA. Revisá Accesos en el panel.')
             else:
-                await self.send(chat_id, 'SCT no pudo verificar el acceso o el CAPTCHA. Iniciá una consulta nueva.')
+                await failed('sct_fiscal_input_invalid','SCT no pudo verificar el acceso o el CAPTCHA. Iniciá una consulta nueva.')
         except OSError:
-            await self.send(chat_id, 'SCT no pudo completar la consulta por un error local. No se entregó un archivo incompleto.')
+            await failed('fiscal_runtime_error','SCT no pudo completar la consulta por un error local. No se entregó un archivo incompleto.')
         except Exception:
-            await self.send(chat_id, 'SCT no pudo completar la consulta por un error técnico. No se informó una entrega inexistente.')
+            await failed('unexpected_error','SCT no pudo completar la consulta por un error técnico. No se informó una entrega inexistente.')
         finally:
             try:
                 await terminate_owned_group(process)
