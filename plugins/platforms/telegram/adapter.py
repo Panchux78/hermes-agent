@@ -510,6 +510,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         from plugins.platforms.telegram.vencimientos_avisos import VencimientosAvisos
         from plugins.platforms.telegram.agip_deducciones_flow import AgipDeduccionesFlow
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
+        from plugins.platforms.telegram.cruce_iva_meses_flow import CruceIvaMesesFlow
         from plugins.platforms.telegram.conciliacion_mayor_flow import ConciliacionMayorFlow
         from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
         from plugins.platforms.telegram.fiscal_credentials import lookup_connection, verification_connection
@@ -589,6 +590,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             query_connection=lookup_connection, write_connection=verification_connection)
         self._preparar_lote_entregas = PrepararLoteEntregas(self._provinciales_iibb_flows['pp'])
         self._cruce_iva_flow = CruceIvaFlow()
+        # #152: el cruce de varios meses de un cliente; el de a uno (cx:start) no cambia.
+        self._cruce_iva_meses_flow = CruceIvaMesesFlow()
         self._conciliacion_mayor_flow = ConciliacionMayorFlow()
         self._fiscal_query_flow = FiscalQueryFlow(catalog=PortalIvaFlow(
             query_connection=lookup_connection, runtime_python=runtime_python,
@@ -1092,6 +1095,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                     )
                 ],
                 [InlineKeyboardButton(aligned_menu_label(page, "🔀", "Cruce con Libros IVA"), callback_data="cx:start")],
+                [
+                    InlineKeyboardButton(
+                        aligned_menu_label(page, "📦", "Cruce de varios meses con Libros IVA"),
+                        callback_data="cx:meses",
+                    )
+                ],
                 [InlineKeyboardButton(aligned_menu_label(page, "⚖️", "Conciliación con el mayor"), callback_data="cm:start")],
             ]
 
@@ -3646,6 +3655,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             if padron is not None:
                 from plugins.platforms.telegram.execution_origin import programmed
                 self._restart_task_attr('_padron_act_dom_task',programmed(padron.run(self),'padron_act_dom_entregas'))
+            meses=getattr(self,'_cruce_iva_meses_flow',None)
+            if meses is not None:
+                from plugins.platforms.telegram.execution_origin import programmed
+                self._restart_task_attr('_cruce_iva_meses_task',programmed(meses.run(self),'cruce_iva_meses_entregas'))
             apoc = getattr(self, '_apocrifos_flow', None)
             if apoc is not None:
                 from plugins.platforms.telegram.execution_origin import programmed
@@ -5023,7 +5036,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             if presentadas is not None and getattr(presentadas, 'states', {}):
                 from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
                 from plugins.platforms.telegram.provinciales_iibb import flows as iibb_flows
-                starts = set(FiscalQueryFlow.START_CALLBACKS) | {'ci:start','ve:start','px:start','bx:start','cx:start'}
+                starts = set(FiscalQueryFlow.START_CALLBACKS) | {'ci:start','ve:start','px:start','bx:start','cx:start','cx:meses'}
                 starts.update(f'{prefix}:{mode}' for prefix in iibb_flows(self) for mode in ('uno','lote','cartera'))
                 key = presentadas._key(cb['chat_id'], cb['thread_id'], str(query.from_user.id))
                 if key in presentadas.states and data in starts:
@@ -5171,6 +5184,22 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                         flow.cancel_pending(cb['chat_id'], cb['thread_id'], caller_id)
             await self._conciliacion_mayor_flow.callback(self, query, data, cb['chat_id'], cb['thread_id'], caller_id)
             return
+        meses_flow = getattr(self, "_cruce_iva_meses_flow", None)
+        if meses_flow is not None and meses_flow.handles(data):
+            # #152: Cruce de varios meses con Libros IVA (cx:meses y cxm:*), por privado.
+            if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para cruzar con Libros IVA."):
+                return
+            if str(cb["chat_type"]).lower() != "private":
+                await query.answer(text="El cruce de varios meses se pide por privado.")
+                return
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if data == "cx:meses":
+                for other in ("_cruce_iva_flow", "_pdf_xlsx_flow", "_batch_pdf_xlsx_flow", "_conciliacion_mayor_flow"):
+                    flow = getattr(self, other, None)
+                    if flow is not None:
+                        flow.cancel_pending(cb["chat_id"], cb["thread_id"], caller_id)
+            await meses_flow.callback(self, query, data, cb["chat_id"], cb["thread_id"], caller_id)
+            return
         if data.startswith("cx:"):
             if not await self._callback_authorized(query, cb, "⛔ No estás autorizado para cruzar con Libros IVA."):
                 return
@@ -5180,7 +5209,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             caller_id = str(getattr(query.from_user, "id", ""))
             if data == "cx:start":
                 # Elegir el cruce descarta pedidos de PDF o lote que quedaron sin completar.
-                for other in ("_pdf_xlsx_flow", "_batch_pdf_xlsx_flow", "_conciliacion_mayor_flow"):
+                for other in ("_pdf_xlsx_flow", "_batch_pdf_xlsx_flow", "_conciliacion_mayor_flow", "_cruce_iva_meses_flow"):
                     flow = getattr(self, other, None)
                     if flow is not None:
                         flow.cancel_pending(cb["chat_id"], cb["thread_id"], caller_id)
@@ -6907,6 +6936,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             padron = getattr(self, '_padron_act_dom_flow', None)
             if padron is not None:
                 padron.cancel_pending(msg.chat_id,getattr(msg,'message_thread_id',None),str(msg.from_user.id))
+            meses_flow = getattr(self, '_cruce_iva_meses_flow', None)
+            if meses_flow is not None:
+                meses_flow.cancel_pending(msg.chat_id,getattr(msg,'message_thread_id',None),str(msg.from_user.id))
             actividades = getattr(self,'_sifere_actividades_flow',None)
             if actividades is not None:
                 actividades.cancel_pending(msg.chat_id,getattr(msg,'message_thread_id',None),str(msg.from_user.id))
@@ -6920,6 +6952,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if getattr(msg, 'chat_id', None) is not None and getattr(msg, 'from_user', None) is not None:
             bridge = getattr(self, '_panel_captcha_bridge', None)
             if bridge is not None and await bridge.text(getattr(context, 'bot', None) or self._bot, msg):
+                return
+            meses_flow = getattr(self, '_cruce_iva_meses_flow', None)
+            if meses_flow is not None and await meses_flow.text(self, msg):
                 return
             apoc = getattr(self, '_apocrifos_flow', None)
             if apoc is not None and await apoc.text(self, msg, update_id=getattr(update, 'update_id', None)):
@@ -7280,6 +7315,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
         cruce_flow = getattr(self, "_cruce_iva_flow", None)
         if msg.document and cruce_flow is not None and await cruce_flow.document(self, msg):
+            return
+        meses_flow = getattr(self, "_cruce_iva_meses_flow", None)
+        if msg.document and meses_flow is not None and await meses_flow.document(self, msg):
             return
         conciliacion_flow = getattr(self, '_conciliacion_mayor_flow', None)
         if msg.document and conciliacion_flow is not None and await conciliacion_flow.document(self, msg):

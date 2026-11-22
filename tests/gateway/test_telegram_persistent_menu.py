@@ -187,6 +187,12 @@ def test_photo_menu_navigation_edits_the_caption(monkeypatch):
                         "callback_data": "cx:start",
                     }
                 ],
+                [
+                    {
+                        "text": "📦  Cruce de varios meses con Libros IVA",
+                        "callback_data": "cx:meses",
+                    }
+                ],
                 [{"text": "⚖️  Conciliación con el mayor" + "\u200a" * 2 + "\u2800" * 7, "callback_data": "cm:start"}],
                 [
                     {"text": "‹  Menú", "callback_data": "om:main"},
