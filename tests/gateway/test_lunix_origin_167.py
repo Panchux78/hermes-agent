@@ -8,6 +8,12 @@ from plugins.platforms.telegram import execution_origin as execution, lunix_orig
 
 
 class LunixOrigin(TestCase):
+    def test_ccma_and_sct_supply_different_internal_period_formats(self):
+        self.assertEqual(fiscal.periodo_anual('01/2025'),'2025')
+        self.assertEqual(fiscal.periodo_anual('2024-01'),'2024')
+        with self.assertRaises(ValueError):
+            fiscal.periodo_anual('01/2')
+
     def test_reservation_uses_the_same_wire_across_distinct_private_message_ids(self):
         with tempfile.TemporaryDirectory() as target:
             directory=Path(target)

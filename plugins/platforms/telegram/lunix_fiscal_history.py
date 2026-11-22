@@ -3,11 +3,20 @@ import asyncio
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+import re
 from plugins.platforms.telegram.bot_run_history import BotRunHistory
 from plugins.platforms.telegram import documentos_contabot as docs
 from plugins.platforms.telegram.execution_origin import environment
 
 log = logging.getLogger(__name__)
+
+
+def periodo_anual(value):
+    for mask in (r'(20[0-9]{2})(?:-(?:0[1-9]|1[0-2])(?:-[0-9]{2})?)?',
+                 r'(?:0[1-9]|1[0-2])/(20[0-9]{2})'):
+        if m := re.fullmatch(mask,value):
+            return m.group(1)
+    raise ValueError('periodo_anual_de_control_invalido')
 
 
 @dataclass
@@ -34,7 +43,11 @@ async def tracked(flow, operation, target, kwargs):
             or str(actor)!=origin['CONTABOT_ORIGEN_ACTOR'] or str(kwargs['chat_id'])!=str(actor)):
         await flow.send(kwargs['chat_id'],'No se acreditó el caso del control diario. No se consultó ARCA.')
         return
-    period=kwargs.get('period_from','')[:4]
+    try:
+        period=periodo_anual(kwargs.get('period_from',''))
+    except (TypeError,ValueError):
+        await flow.send(kwargs['chat_id'],'No se acreditó el año del control diario. No se consultó ARCA.')
+        return
     delivery=Delivery()
     history=BotRunHistory()
     entry=origin['CONTABOT_ORIGEN_ENTRADA']
