@@ -93,6 +93,31 @@ def test_mapping_sends_field_names_not_value_types():
     asyncio.run(run())
 
 
+def test_diario_asks_bank_account_and_sends_it_with_mapping():
+    # #102 caso real: un diario de cobranzas y pagos trae varias cuentas; se elige la del banco.
+    async def run():
+        flow=ConciliacionMayorFlow();s=State('nonce','12345',stage='columns',id=7)
+        s.columns=[{'indice':'0','encabezado':'Saldo_Debe','muestras':['1,00','',''],'campo':'saldo_deudor'}]
+        s.mapping={'0':'saldo_deudor'}
+        s.preview={'hoja':'Hoja1','hojas':['Hoja1'],'cuentas':[{'codigo':'1110101','nombre':'CAJA','filas':3},
+                                                             {'codigo':'1110202','nombre':'BCO PRUEBA','filas':2}]}
+        key=flow._key(55,None,'12345');flow.states[key]=s
+        q=SimpleNamespace(answer=AsyncMock(),message=message())
+        sent=[]
+        with patch.object(ConciliacionMayorFlow,'_request',side_effect=lambda uid,action,datos:sent.append((action,datos)) or {}), \
+             patch.object(flow,'_start_poll'):
+            await flow.callback(None,q,'cm:mapped:nonce',55,None,'12345')
+            assert sent==[]  # sin cuenta elegida no se envía nada
+            await flow.callback(None,q,'cm:account:5:nonce',55,None,'12345')
+            assert 'cuenta_diario' not in s.datos
+            await flow.callback(None,q,'cm:account:1:nonce',55,None,'12345')
+            await flow.callback(None,q,'cm:mapped:nonce',55,None,'12345')
+        assert sent==[('columnas',{'id':7,'opciones':{'mapeo':{'0':'saldo_deudor'},'hoja':'Hoja1','formato':'ar','cuenta_diario':'1110202'}})]
+        shown='\n'.join(str(c.args[0]) for c in q.message.reply_text.call_args_list)
+        assert 'Saldo deudor' in shown and 'Cuenta del banco en el diario: 1110202' in shown
+    asyncio.run(run())
+
+
 def test_transport_uses_stdin_not_argv_for_file():
     from plugins.platforms.telegram import conciliacion_mayor_flow as module
     data={'id':1,'contenido':base64.b64encode(b'sintetico').decode()}

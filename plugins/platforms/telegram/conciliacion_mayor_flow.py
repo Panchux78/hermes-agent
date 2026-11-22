@@ -22,7 +22,8 @@ from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
 log = logging.getLogger(__name__)
 TITLE = 'Conciliación con el mayor'
 FIELDS = {'fecha': 'Fecha', 'referencia': 'Comprobante', 'detalle': 'Detalle', 'debe': 'Debe',
-          'haber': 'Haber', 'importe': 'Importe con signo', 'saldo': 'Saldo', 'identidad': 'CUIT o proveedor',
+          'haber': 'Haber', 'importe': 'Importe con signo', 'saldo': 'Saldo', 'saldo_deudor': 'Saldo deudor',
+          'saldo_acreedor': 'Saldo acreedor', 'identidad': 'CUIT o proveedor', 'contraparte': 'Contraparte (sujeto)',
           'medio': 'Medio de pago', 'emision': 'Fecha de emisión', 'cuenta': 'Cuenta', 'moneda': 'Moneda', 'no_usar': 'No usar'}
 
 
@@ -176,9 +177,22 @@ class ConciliacionMayorFlow:
         elif action == 'field' and state.stage == 'field' and parts[2] in FIELDS:
             state.mapping[state.column_index], state.stage = parts[2], 'columns'
             await self._show_columns(target, state)
+        elif action == 'account' and state.stage == 'columns':
+            # Diario de cobranzas o pagos: sólo se ofrecen las cuentas que leyó el worker.
+            index = int(parts[2])
+            cuentas = state.preview.get('cuentas') or []
+            if not 0 <= index < len(cuentas):
+                raise ValueError('cuenta_no_ofrecida')
+            state.datos['cuenta_diario'] = cuentas[index]['codigo']
+            await self._show_columns(target, state)
         elif action == 'mapped' and state.stage == 'columns':
-            await asyncio.to_thread(self._request, state.user, 'columnas', {'id': state.id, 'opciones':
-                {'mapeo': state.mapping, 'hoja': state.preview['hoja'], 'formato': state.datos.get('formato','ar')}})
+            opciones = {'mapeo': state.mapping, 'hoja': state.preview['hoja'], 'formato': state.datos.get('formato','ar')}
+            if state.preview.get('cuentas'):
+                if not state.datos.get('cuenta_diario'):
+                    await self._say(target, state, 'Elegí primero la cuenta del banco en el diario.')
+                    return
+                opciones['cuenta_diario'] = state.datos['cuenta_diario']
+            await asyncio.to_thread(self._request, state.user, 'columnas', {'id': state.id, 'opciones': opciones})
             self._start_poll(adapter, target, state, key, chat_id, thread_id)
         elif action == 'format' and state.stage == 'columns' and parts[2] in ('ar','us'):
             state.datos['formato'] = parts[2]
@@ -297,9 +311,15 @@ class ConciliacionMayorFlow:
             text.append(state.preview['motivo'])
         entries = []
         for c in state.columns:
-            label = FIELDS[state.mapping.get(c['indice'], 'no_usar')]
+            label = FIELDS.get(state.mapping.get(c['indice'], 'no_usar'), 'No usar')
             text.append(f'{c["encabezado"]}: {label}. Muestras: '+ ' / '.join(c['muestras'])[:180])
             entries.append(('📋', c['encabezado'][:35]+' → '+label, 'column:'+c['indice']))
+        cuentas = state.preview.get('cuentas') or []
+        if cuentas:
+            elegida = state.datos.get('cuenta_diario')
+            text.append('Cuenta del banco en el diario: ' + (elegida or 'sin elegir') + '. Cada asiento con esa cuenta es un movimiento.')
+            entries.extend([('🏦', ('✓ ' if c['codigo'] == elegida else '') + f"{c['codigo']} {c.get('nombre') or ''}"[:45],
+                             f'account:{i}') for i, c in enumerate(cuentas[:12])])
         entries.extend([('📑',s[:50],f'sheet:{i}') for i,s in enumerate(state.preview['hojas']) if s!=state.preview['hoja']])
         entries.extend([('🔢','Coma decimal (1.234,56)','format:ar'),('🔢','Punto decimal (1,234.56)','format:us')])
         entries.append(('✅','Guardar columnas y conciliar','mapped'))
