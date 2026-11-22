@@ -28,7 +28,10 @@ def fingerprint(actor, kind, mid, payload):
         or (kind=='callback' and (type(mid) is not int or mid<=0))
         or (kind=='mensaje' and mid is not None) or not isinstance(payload,bytes) or not 0<len(payload)<=512):
         return None
-    return sha256(f'v1:{actor}:{kind}:{mid}:'.encode()+payload).hexdigest()
+    # En un privado, Telegram asigna un message_id distinto a cada cuenta.
+    # El cliente sí exige su ID al pulsar el botón; para enlazar ambos
+    # extremos se usa el wire opaco completo (con nonce cuando corresponde).
+    return sha256(f'v2:{actor}:{kind}:'.encode()+payload).hexdigest()
 
 
 def arm(actor, kind, mid, payload, *, directory=None):

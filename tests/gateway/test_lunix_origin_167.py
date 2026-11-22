@@ -8,14 +8,13 @@ from plugins.platforms.telegram import execution_origin as execution, lunix_orig
 
 
 class LunixOrigin(TestCase):
-    def test_reservation_is_bound_to_sender_exact_event_and_one_use(self):
+    def test_reservation_uses_the_same_wire_across_distinct_private_message_ids(self):
         with tempfile.TemporaryDirectory() as target:
             directory=Path(target)
             labels.arm(12345,'callback',19,b'route:one',directory=directory)
             self.assertFalse(labels.claim(12346,'callback',19,b'route:one',directory=directory))
-            self.assertFalse(labels.claim(12345,'callback',20,b'route:one',directory=directory))
             self.assertFalse(labels.claim(12345,'callback',19,b'route:two',directory=directory))
-            self.assertTrue(labels.claim(12345,'callback',19,b'route:one',directory=directory))
+            self.assertTrue(labels.claim(12345,'callback',20,b'route:one',directory=directory))
             self.assertFalse(labels.claim(12345,'callback',19,b'route:one',directory=directory))
 
     def test_insecure_directory_and_expiration_do_not_produce_marks(self):
