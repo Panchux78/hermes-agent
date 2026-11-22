@@ -18,8 +18,10 @@ from tests.gateway.documentos_falsos import instalar as instalar_documentos
 
 def test_canonical_access_decrypts_only_inside_postgresql():
     sql = credentials.access_sql(8, '20987654321', 'synthetic-client', '20123456783')
-    assert 'console.fn_acceso_descifrar(a.contrasena) AS password' in sql
-    assert 'a.contrasena AS password' not in sql
+    assert "console.fn_acceso_fiscal_contexto(8,'ARCA',titular)" in sql
+    assert 'r.activo AND c.id_contribuyente=8' in sql
+    assert "access->>'representado_cuit'=representado" in sql
+    assert 'a.contrasena' not in sql
 
 
 def test_login_submission_diagnostics_exclude_values(tmp_path):

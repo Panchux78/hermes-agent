@@ -56,19 +56,22 @@ def access_sql(contributor_id, cuit, slug, holder_cuit):
     # a representative from a name or silently replace the selected identity.
     return f"""WITH candidates AS (
       SELECT btrim(h.cuit) AS usuario, a.usuario AS login_usuario,
-             console.fn_acceso_descifrar(a.contrasena) AS password,
-             btrim(c.cuit) AS representado, c.slug
+             btrim(c.cuit) AS representado, c.slug, h.id_contribuyente AS titular
       FROM public.tbl_representaciones r
       JOIN public.tbl_entidades e ON e.id_entidad=r.id_entidad AND e.activo AND e.nombre='ARCA'
       JOIN public.tbl_contribuyentes c ON c.id_contribuyente=r.id_contribuyente_representado AND c.activo
       JOIN public.tbl_contribuyentes h ON h.id_contribuyente=r.id_contribuyente_representante AND h.activo
       JOIN public.tbl_accesos a ON a.id_entidad=e.id_entidad AND a.id_contribuyente=h.id_contribuyente AND a.activo
       WHERE r.activo AND c.id_contribuyente={contributor_id}
-    ) SELECT json_build_object('usuario',usuario,'password',password,'representado',representado)::text
+    ), selected AS MATERIALIZED (
+      SELECT usuario,representado,console.fn_acceso_fiscal_contexto({contributor_id},'ARCA',titular) AS access
       FROM candidates WHERE (SELECT count(*) FROM candidates)=1
       AND representado='{cuit}' AND slug='{slug}' AND usuario='{holder_cuit}'
       AND (login_usuario IS NULL OR btrim(login_usuario)=usuario)
-      AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user);
+      AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user)
+    ) SELECT json_build_object('usuario',usuario,'password',access->>'password','representado',representado)::text
+      FROM selected WHERE access->>'cuit'=usuario AND access->>'representado_cuit'=representado
+        AND nullif(access->>'password','') IS NOT NULL;
     """
 
 

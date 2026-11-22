@@ -7,6 +7,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from telegram.error import TimedOut
 from plugins.platforms.telegram import portal_iva_ddjj_flow as ddjj
 from plugins.platforms.telegram.portal_iva_flow import PortalIvaFlow, FlowState
 from plugins.platforms.telegram.menu_buttons import ARCA_CONSULTAS, aligned_menu_label
@@ -78,6 +79,22 @@ def test_ejecutor_ausente_registra_rechazo(tmp_path):
         await flow.start(None,q,'1',None,'7','ddjj-iva')
         assert not flow.states
         assert flow._reject.await_args.kwargs['operation']=='ddjj-iva'
+    asyncio.run(scenario())
+
+
+def test_inicio_ddjj_entrega_selector_si_vence_el_acuse_del_boton(tmp_path):
+    async def scenario():
+        (tmp_path/'portal_iva_ddjj.py').touch()
+        flow=PortalIvaFlow(executor=tmp_path/'portal_iva.py')
+        flow._scope=lambda:NS(require_actor=Mock(),require_permission=Mock())
+        flow._reject=AsyncMock();flow._send=AsyncMock()
+        q=NS(answer=AsyncMock(side_effect=TimedOut()),message=NS(message_id=1))
+        await flow.start(None,q,'1',None,'7','ddjj-iva')
+        q.answer.assert_awaited_once()
+        flow._send.assert_awaited_once()
+        flow._reject.assert_not_awaited()
+        assert flow.states['1::7'].stage=='client'
+        assert not flow.tasks
     asyncio.run(scenario())
 
 

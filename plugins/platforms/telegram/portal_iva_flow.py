@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import TimedOut
 
 from hermes_constants import get_hermes_home
 
@@ -432,7 +433,11 @@ class PortalIvaFlow:
             progress_label=("Generando CSV de período nuevo…" if operation == "generar" else "Buscando presentación…"),
             created_at=time.monotonic(),
         )
-        await query.answer({"mis-retenciones": "Mis Retenciones", "mis-comprobantes": "Mis Comprobantes"}.get(operation, "Portal IVA"))
+        try:
+            await query.answer({"mis-retenciones": "Mis Retenciones", "mis-comprobantes": "Mis Comprobantes"}.get(operation, "Portal IVA"))
+        except TimedOut:
+            # El acuse del botón no es el inicio fiscal. Mandar la pregunta una sola vez.
+            logger.warning("[PORTAL-IVA] callback ack timed out stage=contributor_prompt operation=%s", operation)
         prompt = CONTRIBUTOR_PROMPT
         if operation == "descargar-lote":
             prompt += "\n\n" + _UNVERIFIED_KEY_HELP

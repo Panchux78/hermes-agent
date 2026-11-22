@@ -623,8 +623,11 @@ class FiscalQueryFlow:
                 )
             else:
                 await self.send(chat_id, unavailable_message('SCT', str(error)))
-        except ValueError:
-            await self.send(chat_id, 'SCT no pudo verificar el acceso o el CAPTCHA. Iniciá una consulta nueva.')
+        except ValueError as error:
+            if str(error) == 'canonical_access_changed_or_ambiguous' and process is None:
+                await self.send(chat_id, 'SCT no encontró un acceso ARCA habilitado y único para el titular seleccionado. No se consultó ARCA. Revisá Accesos en el panel.')
+            else:
+                await self.send(chat_id, 'SCT no pudo verificar el acceso o el CAPTCHA. Iniciá una consulta nueva.')
         except OSError:
             await self.send(chat_id, 'SCT no pudo completar la consulta por un error local. No se entregó un archivo incompleto.')
         except Exception:
