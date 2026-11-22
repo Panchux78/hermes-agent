@@ -11,11 +11,18 @@ from plugins.platforms.telegram.menu_buttons import menu_label
 log=logging.getLogger(__name__)
 
 def resumen_padron(row):
-    head='Padrón ACT/Dom · '+row['nombre']+' · '+row['periodo']
-    if row['estado']!='terminada':return head+'\n'+row['progreso']
     r=row.get('resultado') or {}
+    # #192 (22/11/2026): el Excel es el papel de trabajo de IVA e IIBB; el aviso cuenta sólo lo de IVA.
+    papel=r.get('papel')=='Borrador IVA e IIBB'
+    head=('Borrador IVA e IIBB' if papel else 'Padrón ACT/Dom')+' · '+row['periodo']+' · '+row['nombre']
+    if row['estado']!='terminada':return head+'\n'+row['progreso']
+    if papel:
+        n,e=r.get('compras_clasificadas',0),r.get('excepciones_iva',0)
+        texto=f"\n{n} {'compra clasificada' if n==1 else 'compras clasificadas'} y {e} {'excepción' if e==1 else 'excepciones'} para IVA."
+        if r.get('faltantes'):texto+='\nFalta: '+'; '.join(r['faltantes'][:4])+'. Queda marcado FALTA en el papel.'
+        return head+texto+'\nRevisalo y corregí en las columnas amarillas. También queda en Documentos y Operaciones.'
     return (head+f"\n{r.get('compras',0)} compras · {r.get('ventas',0)} ventas · {r.get('excepciones',0)} excepciones."
-        '\nRevisá la hoja Excepciones. Es referencia del padrón, no clasificación fiscal ni jurisdicción definitiva de IIBB. También queda en Documentos y Operaciones.')
+        '\nRevisá la hoja Excepciones. También queda en Documentos y Operaciones.')
 
 class PadronActDomFlow(ComarbDeduccionesFlow):
     callback_prefix='pa'

@@ -1994,3 +1994,19 @@ def test_terminal_batch_payload_carries_public_code_and_text():
     flow._register_terminal_batch(321, [{"id": 1}], ["2026-05"], "cancelado", "cancelado_por_usuario")
     caso = json.loads(base64.b64decode(captured[1].split("decode('", 1)[1].split("'", 1)[0]))["casos"][0]
     assert caso["motivo_texto"] == "El lote fue cancelado."
+
+
+def test_192_preparar_deja_un_respaldo_y_no_entrega_libros(tmp_path):
+    # #192 (Pancho, 22/11/2026): se entrega un solo archivo, el Borrador IVA e IIBB; los libros
+    # quedan en un único ZIP de respaldo que se registra en el historial y no se manda.
+    import hashlib
+    flow=PortalIvaFlow(clients_root=tmp_path)
+    folder=tmp_path/'estudios'/'1'/'20123456789'/'2026'/'08'/'arca';folder.mkdir(parents=True)
+    path=folder/'cliente-respaldo-libros-iva-2026-08.zip';path.write_bytes(b'PK\x03\x04 respaldo')
+    result={'archivos':[{'libro':'respaldo','respaldo_name':path.name,'respaldo_path':str(path),
+        'respaldo_ruta_clientes':str(path.relative_to(tmp_path)),'respaldo_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+        'filas':{'ventas':597,'compras':71}}]}
+    out=flow._deliverables('cliente','20123456789','2026-08',result,'generar')
+    assert [(p.name,rows,label) for p,rows,label in out]==[(path.name,597,'ventas'),(path.name,71,'compras')]
+    with pytest.raises(RuntimeError):
+        flow._deliverables('cliente','20123456789','2026-08',dict(archivos=[dict(result['archivos'][0],respaldo_name='otro.csv')]),'generar')

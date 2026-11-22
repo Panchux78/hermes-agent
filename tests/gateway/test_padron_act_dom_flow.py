@@ -17,7 +17,12 @@ class ContratoPadron(TestCase):
         self.assertEqual(parse_period('09/2026','pa').visible,('09/2026',))
         with self.assertRaises(ValueError):parse_period('2026-09','pa')
         text=resumen_padron(dict(nombre='Sintética',periodo='09/2026',estado='terminada',resultado=dict(compras=20,ventas=10,excepciones=2)))
-        self.assertIn('20 compras',text);self.assertIn('2 excepciones',text);self.assertIn('no clasificación fiscal',text)
+        self.assertIn('20 compras',text);self.assertIn('2 excepciones',text);self.assertNotIn('no clasificación fiscal',text)
+        # #192 (pedido 3 de Pancho, 22/11/2026): el aviso cuenta compras clasificadas y excepciones de IVA, sin las de ventas.
+        text=resumen_padron(dict(nombre='Sintética',periodo='10/2026',estado='terminada',resultado=dict(
+            papel='Borrador IVA e IIBB',compras=71,compras_clasificadas=68,excepciones_iva=3,excepciones_ventas=548,excepciones=3)))
+        self.assertTrue(text.startswith('Borrador IVA e IIBB · 10/2026 · Sintética'))
+        self.assertIn('68 compras clasificadas y 3 excepciones para IVA',text);self.assertNotIn('548',text)
 
 class FlujoPadron(IsolatedAsyncioTestCase):
     async def test_selector_ambiguo_no_salta_a_periodo(self):

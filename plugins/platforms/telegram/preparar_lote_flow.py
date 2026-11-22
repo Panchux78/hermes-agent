@@ -99,7 +99,11 @@ class PrepararLoteEntregas:
                 continue
             archivos = [a for a in (row.get('archivos') or []) if isinstance(a, dict)]
             csv = [a for a in archivos if str(a.get('nombre', '')).lower().endswith('.csv')] or archivos
-            await bot.send_message(chat_id=chat, text=f'{head}\nPeríodo preparado en ARCA. Te mando los libros; también quedan en Documentos. Revisá la clasificación de compras en Padrón ACT/Dom antes de liquidar.')
+            # #192 (22/11/2026): se entrega un solo archivo, el Borrador IVA e IIBB, que llega aparte.
+            # Los libros quedan como respaldo; sólo una corrida anterior al cambio trae libros sueltos.
+            await bot.send_message(chat_id=chat, text=f'{head}\nPeríodo preparado en ARCA. ' + (
+                'Te mando los libros; también quedan en Documentos.' if csv else
+                'Ahora se arma el Borrador IVA e IIBB con los libros y te llega por acá.'))
             for a in csv:
                 try:
                     path = archivo_guardado(None, self.flow.clients_root, a['ruta'], a.get('sha256'))

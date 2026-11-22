@@ -1130,6 +1130,16 @@ class PortalIvaFlow:
         if not isinstance(files, list):
             raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
         output: list[tuple[Path, int, str]] = []
+        if operation == 'generar' and len(files) == 1 and isinstance(files[0], dict) and files[0].get('libro') == 'respaldo':
+            # #192 (22/11/2026): los libros de Preparar son archivos de trabajo del Borrador IVA e IIBB,
+            # conservados en un único ZIP de respaldo. Se registran en el historial, no se entregan.
+            item = files[0]
+            name = str(item.get('respaldo_name', ''))
+            if not name or Path(name).name != name or Path(name).suffix.lower() != '.zip':
+                raise RuntimeError('PORTAL_IVA_DELIVERY_PATH_INVALID')
+            path = self._saved(item.get('respaldo_path'), item.get('respaldo_ruta_clientes'), item.get('respaldo_sha256'))
+            filas = item.get('filas') if isinstance(item.get('filas'), dict) else {}
+            return [(path, int(filas.get('ventas') or 0), 'ventas'), (path, int(filas.get('compras') or 0), 'compras')]
         expected = set(_LIBROS if operation == 'descargar-presentados' else ('ventas', 'compras'))
         if (operation == 'descargar-presentados' and result.get('importaciones_bienes_estado') == 'sin_solapa'
                 and result.get('importaciones_ausencia_verificada') is True):
@@ -1870,7 +1880,9 @@ class PortalIvaFlow:
             await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
             source_deliverables = self._deliverables(slug, cuit, period, result, state.operation)
             f2083 = self._f2083_deliverable(result.get("f2083"))
-            deliverables = source_deliverables + ([f2083] if f2083 else [])
+            respaldo = state.operation == 'generar' and any(
+                isinstance(i, dict) and i.get('libro') == 'respaldo' for i in result.get('archivos') or [])
+            deliverables = ([] if respaldo else source_deliverables) + ([f2083] if f2083 else [])
             if state.cancelled:
                 return
             staging, deliverables = self._stage_delivery_files(deliverables)
@@ -1878,7 +1890,8 @@ class PortalIvaFlow:
                 return
             state.stage = "delivering"
             has_imports = any(label == 'importaciones_bienes' for _, _, label in source_deliverables)
-            await self._edit_progress(state, ("Portal IVA completado. Entregando Ventas, Compras e Importaciones de bienes…" if has_imports else "Portal IVA completado. Entregando Ventas y Compras…"))
+            await self._edit_progress(state, ("Portal IVA completado. El Borrador IVA e IIBB se arma con los libros y te llega por acá." if respaldo else
+                                              "Portal IVA completado. Entregando Ventas, Compras e Importaciones de bienes…" if has_imports else "Portal IVA completado. Entregando Ventas y Compras…"))
             for path, rows, label in deliverables:
                 delivery = await adapter.send_document(
                     chat_id=str(chat_id), file_path=str(path), file_name=path.name,
@@ -1928,6 +1941,8 @@ class PortalIvaFlow:
                     history_finished.add(history_items[label])
                 await self.history.close(history_run)
             completion = self._completion_message(deliverables)
+            if respaldo:
+                completion += '\nLos libros quedaron como respaldo. El Borrador IVA e IIBB se arma con ellos y te llega por acá.'
             if state.operation=='generar' and isinstance(result.get('clasificacion_compras'),dict):
                 apertura = result.get('apertura_iva') if isinstance(result.get('apertura_iva'), dict) else {}
                 if apertura.get('estado') == 'verificada':
