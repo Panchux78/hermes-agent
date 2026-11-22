@@ -73,7 +73,8 @@ class ContributorOffer:
         button_factory=None,
         markup_factory=None,
     ) -> InlineKeyboardMarkup:
-        if not re.fullmatch(r"[a-z]{2}", callback_prefix) or not nonce:
+        # Most flows use two letters; Apócrifos uses the registered `apo` prefix.
+        if not re.fullmatch(r"[a-z]{2,3}", callback_prefix) or not nonce:
             raise ValueError("contributor_callback_invalid")
         button_factory = button_factory or InlineKeyboardButton
         markup_factory = markup_factory or InlineKeyboardMarkup

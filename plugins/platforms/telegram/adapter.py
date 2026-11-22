@@ -15,6 +15,7 @@ import signal
 import subprocess
 import threading
 import time
+from traceback import walk_tb
 from contextvars import ContextVar
 from datetime import datetime, timezone, UTC
 from weakref import WeakValueDictionary
@@ -3310,16 +3311,32 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         app.add_error_handler(self._handle_application_error)
 
     async def _handle_application_error(self, update, context) -> None:
-        """Acknowledge callbacks even when an unexpected PTB error escapes."""
+        """Log the call stack without exception messages, input or credentials."""
         error = getattr(context, "error", None)
+        tb = getattr(error, "__traceback__", None)
+        trace = "".join(
+            f'\n  File "{os.path.basename(frame.f_code.co_filename)}", line {line}, in {frame.f_code.co_name}'
+            for frame, line in walk_tb(tb)
+        )
         logger.error(
-            "[%s] unhandled Telegram update error type=%s",
+            "[%s] unhandled Telegram update error type=%s%s",
             self.name, type(error).__name__ if error is not None else "unknown",
+            "\nTraceback (most recent call last):" + trace if trace else "",
         )
         query = getattr(update, "callback_query", None)
-        if query is None:
-            return
         message = "No pude completar esta acción por un error técnico. El diagnóstico quedó registrado."
+        if query is None:
+            msg = getattr(update, "message", None)
+            sender = getattr(msg, "from_user", None)
+            if (getattr(msg, "text", None) and getattr(getattr(msg, "chat", None), "type", None) == "private"
+                    and sender is not None and not getattr(sender, "is_bot", False)
+                    and getattr(msg, "chat_id", None) == sender.id):
+                try:
+                    if self._is_user_authorized_from_message(msg):
+                        await msg.reply_text(message)
+                except Exception:
+                    logger.info("[%s] failed to notify private user after application error", self.name)
+            return
         try:
             await query.answer(text="No pude completar esta acción.")
         except Exception:

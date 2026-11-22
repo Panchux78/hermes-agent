@@ -42,6 +42,44 @@ async def test_canal_privado_y_periodo_estandar():
 
 
 @pytest.mark.asyncio
+async def test_nombre_parcial_con_varias_coincidencias_pide_elegir_y_confirma_octubre(monkeypatch):
+    from plugins.platforms.telegram import contributor_selector
+
+    monkeypatch.setattr(contributor_selector, 'InlineKeyboardButton',
+                        lambda text, callback_data: SimpleNamespace(text=text, callback_data=callback_data))
+    monkeypatch.setattr(contributor_selector, 'InlineKeyboardMarkup', lambda rows: SimpleNamespace(inline_keyboard=rows))
+    flow = ApocrifosFlow()
+    adapter = SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()))
+    click = SimpleNamespace(answer=AsyncMock())
+    scope = MagicMock()
+    candidates = [
+        {'id': 7, 'nombre': 'Mediana Norte', 'cuit': '20000000001'},
+        {'id': 8, 'nombre': 'Mediana Sur', 'cuit': '20000000002'},
+    ]
+    scope.search.return_value = candidates
+    scope.by_id.return_value = [candidates[1]]
+    flow._scope = lambda: scope
+    flow._write = MagicMock(return_value=[{'id_revision': 220}])
+    assert await flow.callback(adapter, click, 'apo:uno', 42, None, '42')
+    msg = SimpleNamespace(chat_id=42, from_user=SimpleNamespace(id=42), text='med', message_id=88, reply_text=AsyncMock())
+    assert await flow.text(adapter, msg, update_id=12)
+    scope.search.assert_called_once_with('42', 'med')
+    state = next(iter(flow.states.values()))
+    choices = msg.reply_text.await_args.kwargs['reply_markup'].inline_keyboard
+    assert [row[0].callback_data for row in choices] == [f'apo:select:{state.nonce}:{i}' for i in (7, 8)] + [f'apo:cancel:{state.nonce}']
+    assert flow._write.call_count == 0
+    assert await flow.callback(adapter, click, choices[1][0].callback_data, 42, None, '42')
+    scope.by_id.assert_called_once_with('42', 8)
+    assert 'MM/AAAA' in adapter._bot.send_message.await_args.kwargs['text']
+    msg.text, msg.message_id = '10/2026', 89
+    assert await flow.text(adapter, msg, update_id=13)
+    assert flow._write.call_count == 0
+    assert await flow.callback(adapter, click, f'apo:period:yes:{state.period_candidate.nonce}', 42, None, '42')
+    assert "42,'pedir',NULL,8,'10/2026','update:13/mensaje:89'" in flow._write.call_args.args[0]
+    assert 'Revisión pedida' in msg.reply_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('vigente', [True, False])
 async def test_entrega_mismo_archivo_y_reautoriza(vigente):
     with TemporaryDirectory() as name:

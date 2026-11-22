@@ -677,6 +677,35 @@ class TestRegisterHandlers:
 
         asyncio.run(scenario())
 
+    @pytest.mark.parametrize("chat_type,allowed,notified", [
+        ("private", True, True), ("private", False, False), ("group", True, False),
+    ])
+    def test_unhandled_text_logs_safe_traceback(self, caplog, chat_type, allowed, notified):
+        def fail_for_test():
+            raise ValueError("detalle-privado-de-la-excepcion")
+
+        async def scenario():
+            adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+            adapter._is_user_authorized_from_message = MagicMock(return_value=allowed)
+            msg = SimpleNamespace(chat_id=7, chat=SimpleNamespace(type=chat_type),
+                                  text="texto-privado-del-chat", from_user=SimpleNamespace(id=7),
+                                  reply_text=AsyncMock())
+            with pytest.raises(ValueError) as failure:
+                fail_for_test()
+            await adapter._handle_application_error(SimpleNamespace(message=msg),
+                                                    SimpleNamespace(error=failure.value))
+            assert 'type=ValueError' in caplog.text
+            assert 'Traceback (most recent call last)' in caplog.text
+            assert 'test_gateway_platform_event_hook.py' in caplog.text and 'fail_for_test' in caplog.text
+            assert 'detalle-privado-de-la-excepcion' not in caplog.text
+            assert 'texto-privado-del-chat' not in caplog.text
+            if notified:
+                assert 'error técnico' in msg.reply_text.await_args.args[0]
+            else:
+                msg.reply_text.assert_not_awaited()
+
+        asyncio.run(scenario())
+
     def test_transient_init_rebuild_uses_shared_registration(self, monkeypatch):
         """The real connect retry path must call the shared registration method
         for the rebuilt PTB Application, not duplicate only the core handlers."""
