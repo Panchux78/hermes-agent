@@ -12,6 +12,7 @@ from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Inp
 from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow
 from plugins.platforms.telegram.contabot_access import catalog_connection
 from plugins.platforms.telegram.contabot_compartido import cargar
+from plugins.platforms.telegram.execution_origin import environment as with_origin
 from plugins.platforms.telegram.fiscal_scope import AccountNotLinked, FiscalScope
 
 log=logging.getLogger(__name__)
@@ -63,6 +64,8 @@ class FacturacionFlow:
              f"NULL,{actor},{jid if jid else 'NULL'},'{action}','{raw}'::jsonb)::text;")
         connection=catalog_connection if action in {'crear','captcha','cancelar'} else self.query_connection
         command,environment=connection()
+        if action in {'crear','captcha','cancelar'}:
+            environment=with_origin(environment)
         result=subprocess.run([*command,'-XqAt','-v','ON_ERROR_STOP=1'],input=sql,env=environment,
                               text=True,capture_output=True,timeout=15)
         if result.returncode:
