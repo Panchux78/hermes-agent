@@ -1,7 +1,12 @@
 """ARCA Padrón ACT/Dom: selectores comunes, cola fiscal y entrega desde Documentos."""
 import asyncio
+import json
 import logging
 import time
+import uuid
+from urllib.parse import quote
+from urllib.request import ProxyHandler,Request,build_opener
+from urllib.error import HTTPError
 from telegram import InlineKeyboardButton,InlineKeyboardMarkup
 from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow,DeduccionesScope
 from plugins.platforms.telegram.documentos_contabot import archivo_guardado
@@ -20,9 +25,33 @@ def resumen_padron(row):
         n,e=r.get('compras_clasificadas',0),r.get('excepciones_iva',0)
         texto=f"\n{n} {'compra clasificada' if n==1 else 'compras clasificadas'} y {e} {'excepción' if e==1 else 'excepciones'} para IVA."
         if r.get('faltantes'):texto+='\nFalta: '+'; '.join(r['faltantes'][:4])+'. Queda marcado FALTA en el papel.'
-        return head+texto+'\nRevisalo y corregí en las columnas amarillas. También queda en Documentos y Operaciones.'
+        return (head+texto+'\nRevisalo y corregí en las columnas amarillas. También queda en Documentos y Operaciones.'
+                '\nPara devolverlo corregido, respondé a este mensaje adjuntando el Excel.')
     return (head+f"\n{r.get('compras',0)} compras · {r.get('ventas',0)} ventas · {r.get('excepciones',0)} excepciones."
         '\nRevisá la hoja Excepciones. También queda en Documentos y Operaciones.')
+
+MAX_EXCEL=20*1024*1024
+
+
+def resumen_devolucion(r):
+    """Texto de la carga del Excel corregido (#192): lo que se tomó o qué celdas corregir."""
+    if r.get('estado')=='aceptada':
+        cuenta={'excluidas':0,'correcciones':0,'agregadas':0,'modificadas':0}
+        datos=registrados=0
+        for hoja,v in (r.get('resumen') or {}).items():
+            if hoja=='BASES LIQ':datos+=v.get('datos',0)
+            elif hoja=='AJUSTES':registrados+=v.get('registrados',0)
+            else:
+                for k in cuenta:cuenta[k]+=v.get(k,0)
+        partes=[f'{n} {k}' for k,n in cuenta.items() if n]+([f'{datos} datos externos'] if datos else [])+([f'{registrados} ajustes globales'] if registrados else [])
+        return ('Borrador IVA e IIBB · Excel corregido recibido\nSe tomaron tus cambios: '+(', '.join(partes) or 'sin cambios')
+                +'.\nArmando el Borrador nuevo con ellos; te llega por acá.')
+    errores=r.get('errores') or []
+    lineas=[f"• {e.get('hoja') or 'Archivo'}"+(f" · fila {e['fila']}" if e.get('fila') else '')+(f" · {e['columna']}" if e.get('columna') else '')+f": {e.get('error')}"
+            for e in errores[:15]]
+    return ('Borrador IVA e IIBB · No se tomó ningún cambio.\nCorregí estas celdas y volvé a mandarlo respondiendo al mensaje del Borrador:\n'
+            +'\n'.join(lineas)+(f'\nY {len(errores)-15} más.' if len(errores)>15 else ''))
+
 
 class PadronActDomFlow(ComarbDeduccionesFlow):
     callback_prefix='pa'
@@ -78,6 +107,47 @@ class PadronActDomFlow(ComarbDeduccionesFlow):
                 await asyncio.sleep(3)
         except Exception as exc:log.warning('padron progreso no disponible consulta=%s clase=%s',jid,type(exc).__name__)
         finally:self.watchers.pop(jid,None)
+
+    console_api_url='http://127.0.0.1:8000'
+
+    def _enviar_devolucion(self,ticket,nombre,data):
+        request=Request(self.console_api_url+'/api/internal/papel/devolucion',data=data,method='POST',
+            headers={'X-Papel-Ticket':str(uuid.UUID(ticket)),'X-Archivo-Nombre':quote(nombre),'Content-Type':'application/octet-stream'})
+        try:
+            with build_opener(ProxyHandler({})).open(request,timeout=120) as response:
+                return json.loads(response.read(2_000_000))
+        except HTTPError as exc:
+            try:detail=json.loads(exc.read(4096)).get('detail')
+            except Exception:detail=None
+            return {'estado':'error','detalle':detail if isinstance(detail,str) else None,'status':exc.code}
+
+    async def document(self,adapter,msg):
+        """#192: respuesta al mensaje del Borrador con el Excel corregido. Cualquier otro documento sigue de largo."""
+        reply=getattr(msg,'reply_to_message',None);user=getattr(msg,'from_user',None);doc=getattr(msg,'document',None)
+        if reply is None or user is None or doc is None or str(msg.chat_id)!=str(user.id):return False
+        actor=FiscalScope._telegram_id(user.id)
+        try:rows=await asyncio.to_thread(self._write,f"SELECT console.fn_papel_devolucion_ticket({actor},{int(reply.message_id)})::text;")
+        except Exception:return False
+        if len(rows)!=1 or not isinstance(rows[0],dict):return False
+        t=rows[0]
+        if t.get('estado')=='sin_permiso':
+            await msg.reply_text('Tu usuario no puede cargar correcciones del Borrador IVA e IIBB.');return True
+        if t.get('estado')!='ok':
+            await msg.reply_text('Ese mensaje no tiene un Borrador IVA e IIBB terminado para corregir.');return True
+        if not (doc.file_name or '').casefold().endswith('.xlsx') or not 0<(doc.file_size or 0)<=MAX_EXCEL:
+            await msg.reply_text('Adjuntá el Borrador corregido en Excel (.xlsx), de hasta 20 MB.');return True
+        try:
+            data=bytes(await (await doc.get_file()).download_as_bytearray(read_timeout=30))
+            r=await asyncio.to_thread(self._enviar_devolucion,t['ticket'],doc.file_name,data)
+        except Exception as exc:
+            log.warning('devolucion telegram no completada clase=%s',type(exc).__name__)
+            await msg.reply_text('No pude leer el Excel. No se tomó ningún cambio; volvé a intentarlo respondiendo al mensaje del Borrador.');return True
+        if r.get('estado') in ('aceptada','rechazada'):
+            await msg.reply_text(resumen_devolucion(r))
+        else:
+            await msg.reply_text((r.get('detalle') if r.get('status') in (409,413,422) and r.get('detalle') else
+                                  'No pude cargar el Excel corregido. No se tomó ningún cambio.'))
+        return True
 
     async def poll(self,adapter):
         rows=await asyncio.to_thread(self._query,'SELECT row_to_json(x)::text FROM console.fn_padron_act_dom_entregas() x;')

@@ -7329,6 +7329,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         facturacion = getattr(self, '_facturacion_flow', None)
         if msg.document and facturacion is not None and await facturacion.document(msg):
             return
+        # #192: respuesta al mensaje del Borrador IVA e IIBB con el Excel corregido (sólo si es esa respuesta).
+        padron_flow = getattr(self, '_padron_act_dom_flow', None)
+        if msg.document and padron_flow is not None and await padron_flow.document(self, msg):
+            return
         if msg.document and await self._pdf_security_flow.document(self, msg):
             return
 

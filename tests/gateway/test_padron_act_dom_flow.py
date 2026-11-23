@@ -57,3 +57,55 @@ class FlujoPadron(IsolatedAsyncioTestCase):
         f=PadronActDomFlow();adapter=SimpleNamespace(send_document=AsyncMock(),_bot=SimpleNamespace(send_message=AsyncMock()))
         with patch.object(f,'_query',return_value=[dict(telegram_id=990000002,id_consulta=7)]),patch.object(f,'_write',return_value=[None]):await f.poll(adapter)
         adapter.send_document.assert_not_awaited()
+
+
+class DevolucionTelegram(IsolatedAsyncioTestCase):
+    """#192: la contadora responde al mensaje del Borrador con el Excel corregido."""
+    def mensaje(self,nombre='corregido.xlsx',size=1000,reply=55):
+        archivo=SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(b'PK\x03\x04datos')))
+        doc=SimpleNamespace(file_name=nombre,file_size=size,get_file=AsyncMock(return_value=archivo))
+        return SimpleNamespace(chat_id=990000002,from_user=SimpleNamespace(id=990000002),document=doc,
+                               reply_to_message=SimpleNamespace(message_id=reply) if reply else None,reply_text=AsyncMock())
+
+    async def test_otro_documento_sigue_de_largo(self):
+        f=PadronActDomFlow()
+        self.assertFalse(await f.document(None,self.mensaje(reply=None)))
+        with patch.object(f,'_write',return_value=[None]):
+            self.assertFalse(await f.document(None,self.mensaje()))
+
+    async def test_excel_aceptado_y_borrador_nuevo_por_telegram(self):
+        f=PadronActDomFlow();msg=self.mensaje()
+        ok=dict(estado='aceptada',id_consulta=9,resumen={'COMPRAS':dict(correcciones=3,agregadas=2),'AJUSTES':dict(registrados=1)})
+        with patch.object(f,'_write',return_value=[dict(estado='ok',ticket='2b0f6d1a-6c2e-4a43-9d5b-0a2f4f1c9e11',id_consulta=7)]) as w, \
+             patch.object(f,'_enviar_devolucion',return_value=ok) as enviar:
+            self.assertTrue(await f.document(None,msg))
+        self.assertIn('fn_papel_devolucion_ticket(990000002,55)',w.call_args.args[0])
+        self.assertEqual(enviar.call_args.args[2],b'PK\x03\x04datos')
+        texto=msg.reply_text.await_args.args[0]
+        self.assertIn('3 correcciones',texto);self.assertIn('2 agregadas',texto);self.assertIn('1 ajustes globales',texto)
+        self.assertIn('te llega por acá',texto)
+
+    async def test_rechazo_dice_que_celdas_corregir(self):
+        f=PadronActDomFlow();msg=self.mensaje()
+        mal=dict(estado='rechazada',errores=[dict(hoja='COMPRAS',fila=12,columna='Corrección contador · clasificación',error='«x» no es una clasificación')])
+        with patch.object(f,'_write',return_value=[dict(estado='ok',ticket='2b0f6d1a-6c2e-4a43-9d5b-0a2f4f1c9e11',id_consulta=7)]), \
+             patch.object(f,'_enviar_devolucion',return_value=mal):
+            await f.document(None,msg)
+        texto=msg.reply_text.await_args.args[0]
+        self.assertIn('No se tomó ningún cambio',texto);self.assertIn('COMPRAS · fila 12',texto)
+
+    async def test_no_xlsx_o_sin_permiso_no_se_envia(self):
+        f=PadronActDomFlow()
+        with patch.object(f,'_write',return_value=[dict(estado='ok',ticket='2b0f6d1a-6c2e-4a43-9d5b-0a2f4f1c9e11',id_consulta=7)]), \
+             patch.object(f,'_enviar_devolucion') as enviar:
+            msg=self.mensaje(nombre='corregido.pdf');await f.document(None,msg)
+            self.assertIn('Excel (.xlsx)',msg.reply_text.await_args.args[0])
+        enviar.assert_not_called()
+        with patch.object(f,'_write',return_value=[dict(estado='sin_permiso')]):
+            msg=self.mensaje();await f.document(None,msg)
+            self.assertIn('no puede cargar',msg.reply_text.await_args.args[0])
+
+    def test_el_borrador_dice_como_devolverlo(self):
+        text=resumen_padron(dict(nombre='Sintética',periodo='10/2026',estado='terminada',resultado=dict(
+            papel='Borrador IVA e IIBB',compras_clasificadas=1,excepciones_iva=0)))
+        self.assertIn('respondé a este mensaje adjuntando el Excel',text)
