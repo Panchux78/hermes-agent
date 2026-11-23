@@ -2,13 +2,14 @@
 import asyncio
 from io import BytesIO
 import logging
+import re
 from time import monotonic
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 
 from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow
 from plugins.platforms.telegram.contabot_compartido import cargar
-from plugins.platforms.telegram.fiscal_scope import AccountNotLinked, FiscalScope, _literal
+from plugins.platforms.telegram.fiscal_scope import AccountNotLinked, FiscalScope
 
 log=logging.getLogger(__name__)
 MAX_FILE=8*1024*1024
@@ -31,10 +32,12 @@ class FacturacionFlow:
 
     def _scope(self,actor,cuits):
         # Exact CUIT search (digits validated by the common motor); reuse actor/carriage guards.
-        values=','.join('('+_literal(c)+')' for c in cuits)
+        if not cuits or len(cuits)>2000 or not all(isinstance(c,str) and re.fullmatch(r'[0-9]{11}',c) for c in cuits):
+            raise ValueError('No pude verificar los CUIT de la planilla.')
+        values=','.join(f"'{c}'" for c in cuits)
         rows=self._query(f"""SELECT json_build_object('cuit',q.doc,'nombre',s.nombre_legal,
           'id_estudio',s.id_estudio,'acceso_verificado',b.id_acceso IS NOT NULL)::text
-          FROM (VALUES {values}) q(doc)
+          FROM unnest(ARRAY[{values}]::text[]) q(doc)
           CROSS JOIN LATERAL console.fn_buscar_contribuyente_fiscal({actor},'ARCA',q.doc,NULL) s
           LEFT JOIN LATERAL console.fn_mis_retenciones_binding_telegram({actor},s.id_contribuyente) b ON TRUE
           WHERE s.cuit=q.doc;""")

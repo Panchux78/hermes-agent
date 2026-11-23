@@ -7,6 +7,15 @@ from plugins.platforms.telegram.facturacion_flow import FacturacionFlow
 
 
 class FacturacionTests(IsolatedAsyncioTestCase):
+    def test_scope_acota_longitud_del_lote_maximo_y_rechaza_no_cuit(self):
+        flow=FacturacionFlow(None)
+        with patch.object(flow,'_query',return_value=[]) as q:
+            assert flow._scope(44,tuple(f'{20_000_000_000+i:011d}' for i in range(2000)))=={}
+            assert len(q.call_args.args[0])<32_000
+            with self.assertRaises(ValueError):
+                flow._scope(44,('no es CUIT',))
+            assert q.call_count==1
+
     def fake_doc(self,user=44,chat=44):
         archivo=V(file_name='modelo.xlsx',file_size=12,
                   get_file=AsyncMock(return_value=V(download_as_bytearray=AsyncMock(return_value=bytearray(b'X')))))
