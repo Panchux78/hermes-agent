@@ -16,7 +16,6 @@ import uuid
 from urllib.request import ProxyHandler, Request, build_opener
 from urllib.parse import urlparse
 
-from openpyxl import Workbook
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from plugins.platforms.telegram.contributor_selector import ContributorOffer, CONTRIBUTOR_PROMPT, MULTIPLE_CONTRIBUTORS_TEXT
@@ -302,6 +301,8 @@ class ConstanciasFlow:
 
     @staticmethod
     def _book(rows: list[dict]) -> Path:
+        from contabot_excel import Workbook
+
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "Constancias"

@@ -8,7 +8,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
-from plugins.platforms.telegram.fiscal_runtime import browser_environment, require_fiscal_runtime, unavailable_message
+from plugins.platforms.telegram.fiscal_runtime import browser_environment, excel_library_path, require_fiscal_runtime, unavailable_message
 from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, verify_representation
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
 from plugins.platforms.telegram.ccma_diagnostics import Diagnostics
@@ -132,7 +132,8 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         env = {'HOME': str(Path.home()), 'PATH': os.environ.get('PATH','/usr/bin:/bin'), 'LANG':'C.UTF-8',
                'CCMA_SOURCE_FILE': str(source), 'CCMA_WORKBOOK_FILE': str(workbook),
                'CCMA_PERIOD_LABEL': f'{period_from}–{period_to}', 'CCMA_SOURCE_SHA256': digest,
-               'CCMA_GENERATED_AT': datetime.now(timezone.utc).isoformat()}
+               'CCMA_GENERATED_AT': datetime.now(timezone.utc).isoformat(),
+               'PYTHONPATH': excel_library_path()}
         process = await asyncio.create_subprocess_exec(str(python), str(builder), env=env,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
         flow._sct_dispatch_processes[state_key] = process

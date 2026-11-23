@@ -44,6 +44,12 @@ def browser_environment(home, *, python=None):
     return origin_environment(environment)
 
 
+def excel_library_path():
+    """Export only the installed ContaBot helper directory, never the full environment."""
+    import contabot_excel
+    return str(Path(contabot_excel.__file__).resolve().parent)
+
+
 async def _read_bounded(stream):
     chunks = bytearray()
     overflow = False

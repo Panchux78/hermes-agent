@@ -19,7 +19,7 @@ from typing import Dict, Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
-from plugins.platforms.telegram.fiscal_runtime import browser_environment, require_fiscal_runtime, unavailable_message
+from plugins.platforms.telegram.fiscal_runtime import browser_environment, excel_library_path, require_fiscal_runtime, unavailable_message
 from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, verify_representation
 from plugins.platforms.telegram.fiscal_scope import ACCOUNT_NOT_LINKED_MESSAGE, AccountNotLinked, InvalidCuit
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
@@ -580,6 +580,8 @@ class FiscalQueryFlow:
             await terminate_owned_group(process)
             process = None
 
+            builder_env = {"HOME": str(_Path.home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                           "LANG": os.environ.get("LANG", "C.UTF-8"), "PYTHONPATH": excel_library_path()}
             process = await asyncio.create_subprocess_exec(
                 str(python),
                 "-B",
@@ -589,7 +591,7 @@ class FiscalQueryFlow:
                 "--period-label",
                 period_label,
                 cwd=str(skill_dir),
-                env={"HOME": str(_Path.home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": os.environ.get("LANG", "C.UTF-8")},
+                env=builder_env,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,

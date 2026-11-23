@@ -13,7 +13,6 @@ from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from openpyxl import Workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -213,6 +212,8 @@ def main() -> None:
         })
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    from contabot_excel import Workbook
+
     workbook = Workbook()
     workbook.remove(workbook.active)
     workbook.calculation.fullCalcOnLoad = True
