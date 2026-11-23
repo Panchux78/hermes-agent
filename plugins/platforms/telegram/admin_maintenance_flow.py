@@ -39,7 +39,10 @@ class CandidateState:
 class AdminMaintenanceFlow:
     """Private, technical-user-only candidate/confirm workflows."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, arca_root: Path | None = None) -> None:
+        root = arca_root or (Path(os.environ["CONTABOT_PROJECT_DIR"]) if os.environ.get("CONTABOT_PROJECT_DIR") else None)
+        self._arca_rebuild = root / _ARCA_REBUILD.relative_to(_CONTABOT) if root else _ARCA_REBUILD
+        self._arca_compare = root / _ARCA_COMPARE.relative_to(_CONTABOT) if root else _ARCA_COMPARE
         self._tasks: dict[str, asyncio.Task] = {}
         self._operations: dict[str, tuple[str, datetime]] = {}
         self._progress_messages: dict[str, Any] = {}
@@ -212,8 +215,11 @@ class AdminMaintenanceFlow:
             report = run_dir / "comparacion.json"
             async def progress_cb(done, total):
                 await self._progress(adapter, chat_id, progress_message_id, f"ARCA: {done} de {total} impuestos procesados.", thread_id=thread_id)
-            await self._run(sys.executable, str(_ARCA_REBUILD), str(candidate), progress=progress_cb)
-            comparison = await self._run(sys.executable, str(_ARCA_COMPARE), str(_ARCA_CURRENT), str(candidate), str(report))
+            current_hash = self._sha256(_ARCA_CURRENT)
+            await self._run(sys.executable, str(self._arca_rebuild), "--augment", str(_ARCA_CURRENT), str(candidate), progress=progress_cb)
+            comparison = await self._run(sys.executable, str(self._arca_compare), str(_ARCA_CURRENT), str(candidate), str(report))
+            if self._sha256(_ARCA_CURRENT) != current_hash:
+                raise RuntimeError("administrative_current_changed")
             diffs = comparison["diffs"]
             changed = any(diffs[part][field] for part in diffs for field in diffs[part])
             if not changed:
@@ -222,7 +228,7 @@ class AdminMaintenanceFlow:
                 return
             nonce = uuid.uuid4().hex[:16]
             self._candidates[self._key(chat_id, thread_id, user_id)] = CandidateState(
-                "arca", nonce, candidate, report, self._sha256(candidate), self._sha256(_ARCA_CURRENT), datetime.now(timezone.utc)
+                "arca", nonce, candidate, report, self._sha256(candidate), current_hash, datetime.now(timezone.utc)
             )
             summary = {
                 "altas": sum(diffs[part]["added"] for part in diffs),

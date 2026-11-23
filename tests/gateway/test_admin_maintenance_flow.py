@@ -112,13 +112,16 @@ def test_arca_candidate_progress_edits_the_original_message(monkeypatch, tmp_pat
         monkeypatch.setattr(
             "plugins.platforms.telegram.admin_maintenance_flow._ARCA_CURRENT", current
         )
-        flow = AdminMaintenanceFlow()
+        release = tmp_path / "release"
+        flow = AdminMaintenanceFlow(arca_root=release)
         run_dir = tmp_path / "run"
         monkeypatch.setattr(flow, "_private_run_dir", lambda: (run_dir.mkdir(), run_dir)[1])
 
         async def fake_run(*command, **_kwargs):
             if command[1].endswith("reconstruir_mapa_impuestos_arca.py"):
-                Path(command[2]).write_text('{"impuestos":["new"]}', encoding="utf-8")
+                assert Path(command[1]).is_relative_to(release)
+                assert command[2:4] == ("--augment", str(current))
+                Path(command[4]).write_text('{"impuestos":["new"]}', encoding="utf-8")
                 return {}
             Path(command[4]).write_text("{}", encoding="utf-8")
             return {"diffs": {"iva": {"added": 1, "removed": 0, "modified": 0}}}
