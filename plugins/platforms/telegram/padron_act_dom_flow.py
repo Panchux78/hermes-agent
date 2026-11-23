@@ -111,6 +111,9 @@ class PadronActDomFlow(ComarbDeduccionesFlow):
     console_api_url='http://127.0.0.1:8000'
 
     def _enviar_devolucion(self,ticket,nombre,data):
+        from urllib.parse import urlparse
+        if urlparse(self.console_api_url).hostname not in ('127.0.0.1','localhost','::1'):
+            raise ValueError('devolucion_console_api_url_debe_ser_loopback')
         request=Request(self.console_api_url+'/api/internal/papel/devolucion',data=data,method='POST',
             headers={'X-Papel-Ticket':str(uuid.UUID(ticket)),'X-Archivo-Nombre':quote(nombre),'Content-Type':'application/octet-stream'})
         try:
