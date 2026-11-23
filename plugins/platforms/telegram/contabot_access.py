@@ -20,6 +20,22 @@ def configured() -> bool:
     return all((os.getenv(name) or "").strip() for name in _ENV.values())
 
 
+def catalog_connection():
+    """Existing limited catalog role, also used for the authorized job functions."""
+    if not configured():
+        raise RuntimeError('contabot_catalog_not_configured')
+    pgpass = Path(os.environ[_ENV['pgpass']])
+    info = pgpass.lstat()
+    if (not pgpass.is_absolute() or pgpass.resolve()!=pgpass or not pgpass.is_file() or
+            info.st_uid!=os.geteuid() or info.st_mode&0o077):
+        raise RuntimeError('contabot_catalog_permissions_invalid')
+    env={k:v for k,v in os.environ.items() if not k.startswith('PG')}
+    env.update(PGPASSFILE=str(pgpass),PGCONNECT_TIMEOUT='5',PGAPPNAME='contabot-telegram-catalog')
+    command=['psql','-X','-w','-h',os.environ[_ENV['host']],'-p',os.environ[_ENV['port']],
+             '-U',os.environ[_ENV['user']],'-d',os.environ[_ENV['database']]]
+    return command,env
+
+
 def telegram_user_enabled(user_id: str, *, timeout_seconds: float = 2.0) -> bool | None:
     """Return the live table verdict; ``None`` means this deployment is not configured.
 

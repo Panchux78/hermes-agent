@@ -10,6 +10,7 @@ from time import monotonic
 from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 
 from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeduccionesFlow
+from plugins.platforms.telegram.contabot_access import catalog_connection
 from plugins.platforms.telegram.contabot_compartido import cargar
 from plugins.platforms.telegram.fiscal_scope import AccountNotLinked, FiscalScope
 
@@ -60,7 +61,8 @@ class FacturacionFlow:
         raw=json.dumps(data or {},ensure_ascii=True).replace("'","''")
         sql=('SET standard_conforming_strings=on; SELECT console.fn_facturacion_previa_usuario('
              f"NULL,{actor},{jid if jid else 'NULL'},'{action}','{raw}'::jsonb)::text;")
-        command,environment=self.query_connection()
+        connection=catalog_connection if action in {'crear','captcha','cancelar'} else self.query_connection
+        command,environment=connection()
         result=subprocess.run([*command,'-XqAt','-v','ON_ERROR_STOP=1'],input=sql,env=environment,
                               text=True,capture_output=True,timeout=15)
         if result.returncode:

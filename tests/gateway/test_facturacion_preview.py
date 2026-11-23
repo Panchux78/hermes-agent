@@ -59,3 +59,13 @@ class FacturacionTests(IsolatedAsyncioTestCase):
             write.assert_called_once_with(44,18,'captcha',{'nonce':'a'*16,'solucion':'ABCD'})
         assert msg.delete.await_count==2
         assert not flow.challenges
+
+    def test_cola_no_intenta_escribir_con_el_rol_solo_lectura(self):
+        flow=FacturacionFlow(lambda:(['lector'],{}))
+        module='plugins.platforms.telegram.facturacion_flow'
+        with patch(module+'.catalog_connection',return_value=(['escritor'],{})),patch(
+                module+'.subprocess.run',return_value=V(returncode=0,stdout='null')) as run:
+            for action in ('crear','captcha','cancelar','estado','imagen'):
+                flow._job(44,None if action=='crear' else 20,action)
+            assert [c.args[0][0] for c in run.call_args_list]==['escritor']*3+['lector']*2
+            assert all('console.fn_facturacion_previa_usuario' in c.kwargs['input'] for c in run.call_args_list)
