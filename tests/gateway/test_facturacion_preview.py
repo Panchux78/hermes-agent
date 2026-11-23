@@ -33,7 +33,8 @@ class FacturacionTests(IsolatedAsyncioTestCase):
         res={'comprobantes':[{'estado':'por_verificar'},{'estado':'bloqueada'}],
              'observaciones':[{'fila':4},{'fila':4}],'emitidos':0}
         with patch.object(flow,'_actor',return_value=44) as actor,patch(
-                'plugins.platforms.telegram.facturacion_flow.cargar') as cargar:
+                'plugins.platforms.telegram.facturacion_flow.cargar') as cargar,patch(
+                'plugins.platforms.telegram.facturacion_flow.InputFile',side_effect=lambda _,filename:V(filename=filename)):
             cargar.return_value.revisar.return_value=res
             cargar.return_value.control_excel.return_value=b'excel'
             assert await flow.document(message)
@@ -43,3 +44,18 @@ class FacturacionTests(IsolatedAsyncioTestCase):
         assert '1 fila para corregir' in kwargs['caption']
         assert 'No se emitió nada.' in kwargs['caption']
         assert not flow.pending
+
+    async def test_captcha_solo_responde_a_la_imagen_del_pedido_y_no_sale_al_agente(self):
+        flow=FacturacionFlow(None)
+        flow.challenges[('44','44')]=(18,'a'*16,20,monotonic()+30)
+        flow.challenge_messages[('44','44',19)]=monotonic()+100
+        msg=V(from_user=V(id=44),chat_id=44,reply_to_message=V(message_id=19),text='ABCD',
+              reply_text=AsyncMock(),delete=AsyncMock())
+        with patch.object(flow,'_job',return_value={'ok':True}) as write:
+            assert await flow.captcha_text(msg)
+            write.assert_not_called()
+            msg.reply_to_message.message_id=20
+            assert await flow.captcha_text(msg)
+            write.assert_called_once_with(44,18,'captcha',{'nonce':'a'*16,'solucion':'ABCD'})
+        assert msg.delete.await_count==2
+        assert not flow.challenges

@@ -6939,6 +6939,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         if await self.consume_vault_code_reply(msg):  # a one-time code: deleted, handed over, never a turn
             return
+        facturacion = getattr(self, '_facturacion_flow', None)
+        if facturacion is not None and await facturacion.captcha_text(msg):
+            return
         if msg.text in {"☰ Menú", menu_label("☰", "Menú")}:
             facturacion = getattr(self, '_facturacion_flow', None)
             if facturacion is not None:
