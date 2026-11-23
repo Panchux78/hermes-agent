@@ -52,6 +52,7 @@ MENU_ALIGNMENT_PADDING = {
     ("arca_consultar", "Mis Comprobantes"): (8, 2),
     ("arca_consultar", "Padrón ACT/Dom"): (9, 2),
     ("arca_consultar", "Proveedores apócrifos"): (6, 2),
+    ("arca_preparar", "Facturación electrónica"): (2, 0),
     ("vencimientos_formato", "Excel"): (14, 0),
     ("vencimientos_formato", "ICS para Google Calendar"): (0, 0),
     ("bancos", "Resumen bancario → Excel"): (7, 2),

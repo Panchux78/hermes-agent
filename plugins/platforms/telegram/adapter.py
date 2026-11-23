@@ -507,6 +507,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         from plugins.platforms.telegram.sifere_actividades_flow import SifereActividadesFlow
         from plugins.platforms.telegram.padron_act_dom_flow import PadronActDomFlow
         from plugins.platforms.telegram.apocrifos_flow import ApocrifosFlow
+        from plugins.platforms.telegram.facturacion_flow import FacturacionFlow
         from plugins.platforms.telegram.vencimientos_avisos import VencimientosAvisos
         from plugins.platforms.telegram.agip_deducciones_flow import AgipDeduccionesFlow
         from plugins.platforms.telegram.cruce_iva_flow import CruceIvaFlow
@@ -578,6 +579,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             query_connection=lookup_connection, write_connection=verification_connection)
         self._apocrifos_flow = ApocrifosFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
+        self._facturacion_flow = FacturacionFlow(lookup_connection)
         self._agip_deducciones_flow = AgipDeduccionesFlow(
             query_connection=lookup_connection, write_connection=verification_connection)
         from plugins.platforms.telegram.provinciales_iibb import PROVINCIAS, ProvincialDeduccionesFlow
@@ -1046,7 +1048,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             back_page = "arca"
         elif page == "arca_preparar":
             rows = [
-                [InlineKeyboardButton(menu_label("🧾", "Preparar período nuevo"), callback_data="om:arca_preparar_nuevo")],
+                [InlineKeyboardButton(aligned_menu_label(page,"🧾", "Preparar período nuevo"), callback_data="om:arca_preparar_nuevo")],
+                [InlineKeyboardButton(aligned_menu_label(page,"📄", "Facturación electrónica"), callback_data="fe:start")],
             ]
             back_label = menu_label("‹", "ARCA")
             back_page = "arca"
@@ -5075,6 +5078,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._accept_update()
         data = query.data or ""
         cb = self._callback_ctx(query)
+        facturacion = getattr(self, '_facturacion_flow', None)
+        if data.startswith('fe:'):
+            if facturacion is not None and await self._callback_authorized(query,cb,'No estás autorizado para revisar facturación.'):
+                await facturacion.callback(query,data,cb)
+            return
+        if facturacion is not None and data.startswith('om:'):
+            facturacion.cancel(cb['chat_id'],query.from_user.id)
         apoc = getattr(self, '_apocrifos_flow', None)
         if data.startswith('apo:'):
             if not await self._callback_authorized(query, cb, 'No estás autorizado para pedir una revisión.'):
@@ -6930,6 +6940,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if await self.consume_vault_code_reply(msg):  # a one-time code: deleted, handed over, never a turn
             return
         if msg.text in {"☰ Menú", menu_label("☰", "Menú")}:
+            facturacion = getattr(self, '_facturacion_flow', None)
+            if facturacion is not None:
+                facturacion.cancel(msg.chat_id,msg.from_user.id)
             apoc = getattr(self, '_apocrifos_flow', None)
             if apoc is not None:
                 apoc.cancel_pending(msg.chat_id, getattr(msg, 'message_thread_id', None), str(msg.from_user.id))
@@ -7309,6 +7322,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
+            return
+        facturacion = getattr(self, '_facturacion_flow', None)
+        if msg.document and facturacion is not None and await facturacion.document(msg):
             return
         if msg.document and await self._pdf_security_flow.document(self, msg):
             return
