@@ -853,12 +853,19 @@ def test_captcha_is_sent_and_reply_resumes_same_process(tmp_path):
             f'PORTAL_IVA_CAPTCHA:{{"nonce":"{nonce}","path":"{captcha}"}}\n'.encode()
         )
         stderr = asyncio.StreamReader()
+        # Como un proceso real: wait() termina recién cuando el ejecutor sale, no mientras espera el captcha.
+        exited = asyncio.Event()
+
+        async def wait():
+            await exited.wait()
+            return 0
+
         proc = SimpleNamespace(
             stdout=stdout,
             stderr=stderr,
             stdin=FakeStdin(),
             returncode=0,
-            wait=AsyncMock(return_value=0),
+            wait=wait,
         )
         adapter = FakeAdapter()
         state = FlowState(
@@ -884,10 +891,16 @@ def test_captcha_is_sent_and_reply_resumes_same_process(tmp_path):
         adapter._bot.send_photo.assert_awaited_once()
         assert state.progress_message.edits == []
         assert await flow.text(adapter, _message("AbC123")) is True
+        # El ejecutor recibe la respuesta y recién después sigue, escribe su resultado y sale.
+        for _ in range(100):
+            if proc.stdin.data:
+                break
+            await asyncio.sleep(0)
 
         stdout.feed_data(b'{"ok":true,"etapa":"completado"}\n')
         stdout.feed_eof()
         stderr.feed_eof()
+        exited.set()
         raw, captured_stderr = await communication
 
         assert raw == b'{"ok":true,"etapa":"completado"}\n'
@@ -2010,3 +2023,45 @@ def test_192_preparar_deja_un_respaldo_y_no_entrega_libros(tmp_path):
     assert [(p.name,rows,label) for p,rows,label in out]==[(path.name,597,'ventas'),(path.name,71,'compras')]
     with pytest.raises(RuntimeError):
         flow._deliverables('cliente','20123456789','2026-08',dict(archivos=[dict(result['archivos'][0],respaldo_name='otro.csv')]),'generar')
+
+
+def test_177_proceso_que_termina_esperando_el_captcha_entrega_su_resultado(tmp_path):
+    """#177 (turno 1906), falla 1 de Codex3: el ejecutor corta por tiempo mientras ARCA pide captcha y entrega
+    el Excel con lo ya leído. Telegram no espera el vencimiento del captcha: lee el resultado del proceso."""
+    async def scenario():
+        nonce = "a" * 16
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        captcha = run_dir / f"captcha-{nonce}.png"
+        captcha.write_bytes(b"valid-image-bytes")
+        captcha.chmod(0o600)
+        script = tmp_path / "ejecutor.py"
+        script.write_text(
+            "import json,sys,time\n"
+            f"print('PORTAL_IVA_CAPTCHA:'+json.dumps({{'nonce':'{nonce}','path':'{captcha}'}}),file=sys.stderr,flush=True)\n"
+            "time.sleep(1)\n"
+            "print(json.dumps({'ok':True,'parcial':True}),flush=True)\n")
+        import sys as _sys
+        proc = await asyncio.create_subprocess_exec(
+            _sys.executable, str(script), stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        adapter = FakeAdapter()
+        state = FlowState(user_id="7", nonce="b" * 10, stage="running", progress_message=FakeMessage())
+        flow = PortalIvaFlow(captcha_root=tmp_path)
+        flow.states[flow._key("10", None, "7")] = state
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        raw, _ = await asyncio.wait_for(
+            flow._communicate_with_progress(proc, state, adapter=adapter, chat_id="10", thread_id=None),
+            timeout=30)
+        assert json.loads(raw) == {"ok": True, "parcial": True}
+        assert loop.time() - started < 30
+        adapter._bot.send_photo.assert_awaited_once()
+        assert state.stage == "running"
+        assert state.captcha_response is None and state.captcha_nonce is None
+        assert "terminó antes de que se respondiera el captcha" in state.progress_message.edits[-1][0]
+        # Una respuesta tardía ya no se escribe al proceso terminado.
+        assert await flow.text(adapter, _message("AbC123")) is True
+        assert "ya está en ejecución" in adapter._bot.send_message.await_args.kwargs["text"]
+
+    asyncio.run(scenario())

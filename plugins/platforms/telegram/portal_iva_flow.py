@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -1012,7 +1013,27 @@ class PortalIvaFlow:
                 if thread_id is not None:
                     kwargs["message_thread_id"] = thread_id
                 await adapter._bot.send_photo(**kwargs)
-            solution = await asyncio.wait_for(state.captcha_response, timeout=_CAPTCHA_TIMEOUT_SECONDS)
+            # #177 (turno 1906): el ejecutor puede terminar mientras espera la respuesta (por ejemplo, su corte
+            # por tiempo llega durante el ingreso a ARCA y entrega el Excel con lo ya leído). Se espera lo
+            # primero que ocurra: la respuesta o el fin del proceso. Si el proceso terminó, el captcha queda sin
+            # efecto y se sigue leyendo su salida; el resultado decide si hubo Excel o error.
+            waiter = getattr(proc, "wait", None)
+            exit_wait = asyncio.ensure_future(waiter()) if inspect.iscoroutinefunction(waiter) else None
+            try:
+                pending = {state.captcha_response} | ({exit_wait} if exit_wait is not None else set())
+                done, _ = await asyncio.wait(pending, timeout=_CAPTCHA_TIMEOUT_SECONDS,
+                                             return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                if exit_wait is not None and not exit_wait.done():
+                    exit_wait.cancel()
+            if exit_wait is not None and exit_wait in done:
+                state.stage = "running"
+                state.progress_label = "La consulta terminó antes de que se respondiera el captcha; registrando el resultado…"
+                await self._edit_progress(state, state.progress_label, keyboard=self._cancel_keyboard(state.nonce))
+                return
+            if state.captcha_response not in done:
+                raise TimeoutError()
+            solution = state.captcha_response.result()
             if state.cancelled or solution is None:
                 raise RuntimeError("PORTAL_IVA_CANCELLED")
             answer = json.dumps({"nonce": nonce, "solution": solution}, separators=(",", ":")) + "\n"
