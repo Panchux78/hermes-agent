@@ -228,9 +228,9 @@ async def run(flow, adapter, chat, thread, key, state):
         if proc.returncode != 0 or result.get('ok') is not True:
             raise RuntimeError('DDJJ_EJECUCION_NO_COMPLETADA')
         cases, source = validate_result(flow, state, result)
-        if verified.get('representative_id') == verified.get('relation_representative_id', verified.get('representative_id')):
-            # Sólo se marca verificada la representación que se usó; con la clave propia del contribuyente
-            # (#177, turno 1900) la representación encontrada por la búsqueda puede ser otra.
+        if verified.get('relation_id'):
+            # Se marca verificada la representación del titular cuya clave se usó. Con la clave propia del
+            # contribuyente sin representación cargada (#177, turno 1900) no hay ninguna que marcar.
             await verify_representation(state.user_id, verified, 'ARCA', str(result.get('representado_verificado', '')))
         if source is not None:
             await flow.history.attach_run(run_handle, contributor_id=state.contributor_id, output=source,

@@ -83,16 +83,20 @@ def test_mis_retenciones_no_exige_responsable_inscripto():
 
 
 
-def test_ddjj_elige_la_clave_con_la_regla_general():
-    """#177 (turno 1900): DDJJ de IVA usa fn_ddjj_iva_binding_telegram; el titular sale de la clave elegida."""
+def test_ddjj_busca_con_la_regla_general_y_no_con_la_busqueda_de_una_sola_representacion():
+    """#177 (turno 1900): DDJJ de IVA no usa fn_buscar_contribuyente_fiscal (deja afuera al de dos accesos)."""
     seen = []
 
     def query(sql):
         seen.append(sql)
-        return []
-    FiscalScope(query, "ARCA", "ddjj").by_id("7", 12)
-    assert "fn_ddjj_iva_binding_telegram" in seen[0] and "fn_portal_iva_lote_binding_telegram" not in seen[0]
-    assert "coalesce(b.id_representante,s.id_representante)" in seen[0]
-    assert "'relation_representative_id',s.id_representante" in seen[0]
+        return [{"id": 12, "nombre": "Sintético", "cuit": "20123456786", "slug": "s", "study_id": 1,
+                 "relation_id": None, "relation_revision": None, "verified": False,
+                 "representative_id": 12, "holder_cuit": "20123456786", "access_id": 9}]
+    rows = FiscalScope(query, "ARCA", "ddjj").by_id("7", 12)
+    assert "fn_ddjj_iva_buscar_telegram(7,NULL,12)" in seen[0]
+    assert "fn_buscar_contribuyente_fiscal" not in seen[0] and "fn_portal_iva_lote_binding_telegram" not in seen[0]
+    assert rows[0]["access_id"] == 9 and rows[0]["relation_id"] is None
+    FiscalScope(query, "ARCA", "ddjj").search("7", "sintetico")
+    assert "fn_ddjj_iva_buscar_telegram(7,convert_from(decode(" in seen[1] and ",NULL)" in seen[1]
     FiscalScope(query, "ARCA").by_id("7", 12)
-    assert "relation_representative_id" not in seen[1]
+    assert "fn_buscar_contribuyente_fiscal" in seen[2] and "fn_ddjj_iva_buscar_telegram" not in seen[2]

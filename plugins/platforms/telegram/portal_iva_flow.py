@@ -294,7 +294,9 @@ class PortalIvaFlow:
             # Para Mis Retenciones y Mis Comprobantes no cuenta la condición frente al IVA: sólo el acceso a ARCA.
             return "No tiene un acceso ARCA comprobado y único para consultar. " + como_comprobar("ARCA")
         try:
-            reason = await asyncio.to_thread(self._iva_reason, item_id, telegram_id, operation)
+            # Sólo DDJJ de IVA pide su propio motivo; los flujos de Libros IVA llaman igual que antes.
+            extra = (operation,) if operation == "ddjj-iva" else ()
+            reason = await asyncio.to_thread(self._iva_reason, item_id, telegram_id, *extra)
         except Exception:
             return "No pude verificar la condición IVA en la base. No inicié la consulta."
         return _IVA_INELIGIBLE.get(reason, "El contribuyente no está habilitado para Libros IVA.")
