@@ -105,6 +105,8 @@ def test_menu_orden_y_progreso():
     assert 'percepciones aduaneras' in PortalIvaFlow._progress_text('ddjj:09/2026:aduaneras')
     assert ddjj.progress('ddjj:99/2026:aduaneras') is None
     assert 'Esperando para volver a ingresar' in ddjj.progress('ddjj:09/2026:reconexion')
+    # #177 (turno 1900): la misma etapa de Mis Aplicaciones Web que muestra el panel.
+    assert ddjj.progress('ddjj:09/2026:maw') == '09/2026 · Leyendo Mis Aplicaciones Web…'
     assert 'períodos pendientes' in PortalIvaFlow._progress_text('ddjj:09/2026:reconexion')
 
 
@@ -133,6 +135,7 @@ def test_historial_archivo_antes_items_y_fallo_entrega(tmp_path,monkeypatch,deli
         flow._edit_progress=AsyncMock();flow._send=AsyncMock()
         adapter=NS(send_document=AsyncMock(return_value=NS(success=delivery_ok,message_id='123' if delivery_ok else None)))
         monkeypatch.setattr(ddjj,'command',lambda *a:['synthetic'])
+        monkeypatch.setattr(ddjj,'tiempos',lambda flow:NS(reserva_para=lambda n:1920,espera_para=lambda n:1800))
         monkeypatch.setattr(ddjj,'verify_representation',AsyncMock())
         monkeypatch.setattr(ddjj.asyncio,'create_subprocess_exec',AsyncMock(return_value=NS(returncode=0)))
         await ddjj.run(flow,adapter,'1',None,'key',s)
@@ -169,6 +172,7 @@ def test_cancelacion_timeout_terminan_proceso_y_liberan_locks(tmp_path,monkeypat
             events.append('terminated');p.returncode=-15
         flow._terminate_process=terminate
         monkeypatch.setattr(ddjj,'command',lambda *a:['synthetic'])
+        monkeypatch.setattr(ddjj,'tiempos',lambda flow:NS(reserva_para=lambda n:1920,espera_para=lambda n:1800))
         monkeypatch.setattr(ddjj.asyncio,'create_subprocess_exec',AsyncMock(return_value=proc))
         adapter=NS(send_document=AsyncMock())
         if failure is asyncio.CancelledError:
@@ -185,6 +189,27 @@ def test_cancelacion_timeout_terminan_proceso_y_liberan_locks(tmp_path,monkeypat
     asyncio.run(scenario())
 
 
-def test_presupuesto_escala_con_los_meses_como_el_ejecutor():
-    # #177/1852 (A): 36 meses con SCT no exceden el tiempo; mismo cálculo que portal_iva_ddjj_recovery.presupuesto_para.
-    assert [ddjj.presupuesto(['x'] * n) for n in (1, 12, 13, 24, 36)] == [1500, 1500, 1575, 2400, 3300]
+def _recovery_real():
+    import os
+    root = os.environ.get('CONTABOT_CHECKOUT')
+    path = Path(root) / 'scripts/portal-iva/portal_iva_ddjj_recovery.py' if root else None
+    if path is None or not path.is_file():
+        pytest.skip('CONTABOT_CHECKOUT no disponible')
+    return path
+
+
+def test_tiempos_son_los_del_ejecutor_y_no_una_copia(tmp_path):
+    # #177 (turno 1900): Telegram carga la función de ContaBot que usan el ejecutor y el panel.
+    real = _recovery_real()
+    (tmp_path / 'portal_iva_ddjj_recovery.py').write_bytes(real.read_bytes())
+    flow = PortalIvaFlow(executor=tmp_path / 'portal_iva.py')
+    medida = ddjj.tiempos(flow)
+    assert [medida.presupuesto_para(n) for n in (1, 12, 13, 24, 36)] == [1500, 1500, 1575, 2400, 3300]
+    assert [medida.espera_para(n) for n in (12, 36)] == [1800, 3600]
+    assert [medida.reserva_para(n) for n in (12, 36)] == [1920, 3720]
+    assert not hasattr(ddjj, 'presupuesto')
+
+
+def test_sin_modulo_de_tiempos_no_abre_arca(tmp_path):
+    with pytest.raises(RuntimeError, match='DDJJ_EJECUTOR_NO_DISPONIBLE'):
+        ddjj.tiempos(PortalIvaFlow(executor=tmp_path / 'portal_iva.py'))

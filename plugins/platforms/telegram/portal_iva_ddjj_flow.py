@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import re
 import shutil
 from pathlib import Path
@@ -22,11 +23,16 @@ def periods(text):
     return list(parse_period(text, 'ddjj-iva').months)
 
 
-def presupuesto(periodos):
-    """Mismo presupuesto que el ejecutor (portal_iva_ddjj_recovery.presupuesto_para, #177/1852): 1.500 s hasta
-    12 meses; 75 s más por mes, con tope de 3.300. Telegram espera ese presupuesto más 300 s de margen."""
-    n = len(periodos)
-    return 1500 if n <= 12 else min(3300, 1500 + 75 * (n - 12))
+def tiempos(flow):
+    """Tiempos de la consulta desde ContaBot (#177, turno 1900): la misma función que usan el ejecutor y el panel
+    (portal_iva_ddjj_recovery: espera_para y reserva_para), no una copia de su fórmula."""
+    path = flow.executor.with_name('portal_iva_ddjj_recovery.py') if flow.executor else None
+    if path is None or not path.is_file():
+        raise RuntimeError('DDJJ_EJECUTOR_NO_DISPONIBLE')
+    spec = importlib.util.spec_from_file_location('contabot_portal_iva_ddjj_tiempos', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def command(flow, state):
@@ -47,6 +53,7 @@ def command(flow, state):
 
 def progress(stage):
     labels = {'reconexion':'ARCA perdió la sesión. Esperando para volver a ingresar y continuar con los períodos pendientes',
+              'maw': 'Leyendo Mis Aplicaciones Web',
               'debito_credito': 'Leyendo débito y crédito fiscal', 'retenciones': 'Leyendo retenciones',
               'impositivas': 'Leyendo percepciones impositivas', 'aduaneras': 'Leyendo percepciones aduaneras',
               'saldos': 'Leyendo administración de saldos', 'determinacion': 'Leyendo determinación del impuesto'}
@@ -126,7 +133,7 @@ def validate_result(flow, state, result):
 
 async def checked_subject(flow, state):
     await asyncio.to_thread(flow._scope().require_permission, state.user_id, 'operaciones.ejecutar')
-    verified = await asyncio.to_thread(flow._by_id, state.contributor_id, state.user_id)
+    verified = await asyncio.to_thread(flow._by_id, state.contributor_id, state.user_id, 'ddjj-iva')
     binding = state.scope_item or {}
     fields = ('id', 'slug', 'cuit', 'study_id', 'relation_id', 'relation_revision', 'access_id', 'representative_id')
     if len(verified) != 1 or not verified[0].get('access_id') or any(verified[0].get(k) != binding.get(k) for k in fields):
@@ -200,8 +207,11 @@ async def run(flow, adapter, chat, thread, key, state):
     try:
         if flow.history is None:
             raise RuntimeError('DDJJ_HISTORIAL_NO_DISPONIBLE')
+        medida = tiempos(flow)
+        meses = len(state.ddjj_periods)
         run_handle = await flow.history.start(telegram_id=int(state.user_id), operation=OPERATION,
-            key_material=f'ddjj:{chat}:{thread}:{state.nonce}', reference=f'{state.slug}-{state.ddjj_periods[0]}', lease_seconds=presupuesto(state.ddjj_periods) + 420)
+            key_material=f'ddjj:{chat}:{thread}:{state.nonce}', reference=f'{state.slug}-{state.ddjj_periods[0]}',
+            lease_seconds=medida.reserva_para(meses))
         prepared = await flow.history.prepare_items(run_handle, state.ddjj_periods)
         items = {p: int(i['id_item']) for p, i in zip(state.ddjj_periods, prepared, strict=True)}
         verified = await checked_subject(flow, state)
@@ -213,12 +223,15 @@ async def run(flow, adapter, chat, thread, key, state):
         flow.processes[key] = proc
         consulted = True
         raw, _ = await asyncio.wait_for(flow._communicate_with_progress(proc, state, adapter=adapter,
-            chat_id=chat, thread_id=thread), timeout=presupuesto(state.ddjj_periods) + 300)
+            chat_id=chat, thread_id=thread), timeout=medida.espera_para(meses))
         result = flow._parse_result(raw)
         if proc.returncode != 0 or result.get('ok') is not True:
             raise RuntimeError('DDJJ_EJECUCION_NO_COMPLETADA')
         cases, source = validate_result(flow, state, result)
-        await verify_representation(state.user_id, verified, 'ARCA', str(result.get('representado_verificado', '')))
+        if verified.get('representative_id') == verified.get('relation_representative_id', verified.get('representative_id')):
+            # Sólo se marca verificada la representación que se usó; con la clave propia del contribuyente
+            # (#177, turno 1900) la representación encontrada por la búsqueda puede ser otra.
+            await verify_representation(state.user_id, verified, 'ARCA', str(result.get('representado_verificado', '')))
         if source is not None:
             await flow.history.attach_run(run_handle, contributor_id=state.contributor_id, output=source,
                 output_relative=str(source.relative_to(flow.clients_root)), libro='ddjj_iva')

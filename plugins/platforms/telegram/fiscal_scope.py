@@ -48,7 +48,7 @@ class FiscalScope:
     """Resolve only contributors visible to one Telegram actor."""
 
     def __init__(self, query: Callable[[str], list[Any]], entity: str, binding: str = "portal_iva") -> None:
-        if binding not in ("portal_iva", "mis_retenciones"):
+        if binding not in ("portal_iva", "mis_retenciones", "ddjj"):
             raise ValueError("fiscal_scope_binding_invalid")
         self.query = query
         self.entity = entity
@@ -95,19 +95,29 @@ class FiscalScope:
         return self._resolve(actor, "NULL", str(contributor_id))
 
     def _resolve(self, actor: int, term_sql: str, contributor_sql: str) -> list[dict[str, Any]]:
+        # DDJJ de IVA (#177, turno 1900): la clave sale de la regla general de ContaBot (fn_ddjj_iva_binding_telegram),
+        # que puede ser la propia aunque la búsqueda haya encontrado la representación de un tercero. El titular y
+        # su CUIT son los de esa clave; la representación encontrada queda en relation_representative_id.
+        ddjj = self.binding == "ddjj"
+        function = {"mis_retenciones": "fn_mis_retenciones_binding_telegram",
+                    "ddjj": "fn_ddjj_iva_binding_telegram"}.get(self.binding, "fn_portal_iva_lote_binding_telegram")
+        holder = ("'representative_id',coalesce(b.id_representante,s.id_representante),"
+                  "'holder_cuit',coalesce(b.cuit_titular,s.cuit_representante),"
+                  "'relation_representative_id',s.id_representante" if ddjj else
+                  "'representative_id',s.id_representante,'holder_cuit',s.cuit_representante")
         rows = self.query(f"""
           SELECT json_build_object(
             'id',s.id_contribuyente,'nombre',s.nombre_legal,'cuit',s.cuit,'slug',s.slug,
             'study_id',s.id_estudio,'relation_id',s.id_representacion,
             'relation_revision',s.revision_representacion,
             'verified',s.fecha_verificacion IS NOT NULL,
-            'representative_id',s.id_representante,'holder_cuit',s.cuit_representante,
+            {holder},
             'access_id',b.id_acceso{",'iva',b.iva" if self.binding == "mis_retenciones" else ""}
           )::text
           FROM console.fn_buscar_contribuyente_fiscal(
             {actor},{_literal(self.entity)},{term_sql},{contributor_sql}
           ) s
-          LEFT JOIN LATERAL console.{"fn_mis_retenciones_binding_telegram" if self.binding == "mis_retenciones" else "fn_portal_iva_lote_binding_telegram"}(
+          LEFT JOIN LATERAL console.{function}(
             {actor},s.id_contribuyente
           ) b ON {"TRUE" if self.entity == "ARCA" else "FALSE"};
         """)

@@ -81,3 +81,18 @@ def test_mis_retenciones_no_exige_responsable_inscripto():
     with pytest.raises(ValueError):
         FiscalScope(query, "ARCA", "otra")
 
+
+
+def test_ddjj_elige_la_clave_con_la_regla_general():
+    """#177 (turno 1900): DDJJ de IVA usa fn_ddjj_iva_binding_telegram; el titular sale de la clave elegida."""
+    seen = []
+
+    def query(sql):
+        seen.append(sql)
+        return []
+    FiscalScope(query, "ARCA", "ddjj").by_id("7", 12)
+    assert "fn_ddjj_iva_binding_telegram" in seen[0] and "fn_portal_iva_lote_binding_telegram" not in seen[0]
+    assert "coalesce(b.id_representante,s.id_representante)" in seen[0]
+    assert "'relation_representative_id',s.id_representante" in seen[0]
+    FiscalScope(query, "ARCA").by_id("7", 12)
+    assert "relation_representative_id" not in seen[1]

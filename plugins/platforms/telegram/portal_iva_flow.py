@@ -97,6 +97,8 @@ _IVA_INELIGIBLE = {
     "sin_consultar": "Todavía no se consultó la condición frente al IVA en ARCA. Hacé esa consulta primero.",
     "consulta_vencida": "La consulta de la condición IVA tiene más de 30 días. Actualizala en ARCA antes de pedir los Libros IVA.",
     "clave_sin_verificar": "La clave ARCA no está comprobada o la representación no es única. " + como_comprobar("ARCA"),
+    "varias_claves": ("Tiene más de una clave ARCA verificada de representantes y ninguna propia, y ContaBot no elige entre "
+                      "ellas. Revisá Accesos en la ficha del panel."),
     "no_autorizado": "No se puede consultar ese contribuyente con tu acceso actual.",
 }
 
@@ -259,13 +261,15 @@ class PortalIvaFlow:
 
     def _scope(self, operation: str | None = None) -> FiscalScope:
         # Mis Comprobantes (#158) usa la misma elegibilidad que Mis Retenciones: acceso ARCA, sin exigir RI.
-        return FiscalScope(self._query, "ARCA", "mis_retenciones" if operation in ("mis-retenciones", "mis-comprobantes") else "portal_iva")
+        # DDJJ de IVA (#177, turno 1900) elige la clave con la regla general de ContaBot, como el panel.
+        return FiscalScope(self._query, "ARCA", "mis_retenciones" if operation in ("mis-retenciones", "mis-comprobantes")
+                           else "ddjj" if operation == "ddjj-iva" else "portal_iva")
 
     @staticmethod
     def _alcance(state: Any) -> tuple[str, ...]:
         """Sólo Mis Retenciones y Mis Comprobantes piden su propio alcance; los flujos de Libros IVA no cambian."""
         operation = getattr(state, "operation", None)
-        return (operation,) if operation in ("mis-retenciones", "mis-comprobantes") else ()
+        return (operation,) if operation in ("mis-retenciones", "mis-comprobantes", "ddjj-iva") else ()
 
     def _search(self, term: str, telegram_id: Any, operation: str | None = None) -> list[dict[str, Any]]:
         return self._scope(operation).search(telegram_id, term)
@@ -273,10 +277,11 @@ class PortalIvaFlow:
     def _by_id(self, item_id: int, telegram_id: Any, operation: str | None = None) -> list[dict[str, Any]]:
         return self._scope(operation).by_id(telegram_id, item_id)
 
-    def _iva_reason(self, item_id: int, telegram_id: Any) -> str:
+    def _iva_reason(self, item_id: int, telegram_id: Any, operation: str | None = None) -> str:
         actor = FiscalScope._telegram_id(telegram_id)
+        function = "fn_ddjj_iva_motivo_telegram" if operation == "ddjj-iva" else "fn_portal_iva_lote_motivo_telegram"
         rows = self._query(
-            "SELECT json_build_object('reason',console.fn_portal_iva_lote_motivo_telegram("
+            f"SELECT json_build_object('reason',console.{function}("
             f"{actor},{int(item_id)}))::text;"
         )
         if len(rows) != 1 or not isinstance(rows[0], dict):
@@ -289,7 +294,7 @@ class PortalIvaFlow:
             # Para Mis Retenciones y Mis Comprobantes no cuenta la condición frente al IVA: sólo el acceso a ARCA.
             return "No tiene un acceso ARCA comprobado y único para consultar. " + como_comprobar("ARCA")
         try:
-            reason = await asyncio.to_thread(self._iva_reason, item_id, telegram_id)
+            reason = await asyncio.to_thread(self._iva_reason, item_id, telegram_id, operation)
         except Exception:
             return "No pude verificar la condición IVA en la base. No inicié la consulta."
         return _IVA_INELIGIBLE.get(reason, "El contribuyente no está habilitado para Libros IVA.")
