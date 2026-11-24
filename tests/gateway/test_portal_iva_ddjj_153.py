@@ -183,3 +183,8 @@ def test_cancelacion_timeout_terminan_proceso_y_liberan_locks(tmp_path,monkeypat
         history.attach_run.assert_not_awaited()
         history.close.assert_awaited_once()
     asyncio.run(scenario())
+
+
+def test_presupuesto_escala_con_los_meses_como_el_ejecutor():
+    # #177/1852 (A): 36 meses con SCT no exceden el tiempo; mismo cálculo que portal_iva_ddjj_recovery.presupuesto_para.
+    assert [ddjj.presupuesto(['x'] * n) for n in (1, 12, 13, 24, 36)] == [1500, 1500, 1575, 2400, 3300]

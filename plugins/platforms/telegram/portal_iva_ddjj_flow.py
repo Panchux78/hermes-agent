@@ -22,6 +22,13 @@ def periods(text):
     return list(parse_period(text, 'ddjj-iva').months)
 
 
+def presupuesto(periodos):
+    """Mismo presupuesto que el ejecutor (portal_iva_ddjj_recovery.presupuesto_para, #177/1852): 1.500 s hasta
+    12 meses; 75 s más por mes, con tope de 3.300. Telegram espera ese presupuesto más 300 s de margen."""
+    n = len(periodos)
+    return 1500 if n <= 12 else min(3300, 1500 + 75 * (n - 12))
+
+
 def command(flow, state):
     executor = flow.executor.with_name('portal_iva_ddjj.py')
     if not flow.available() or not executor.is_file():
@@ -194,7 +201,7 @@ async def run(flow, adapter, chat, thread, key, state):
         if flow.history is None:
             raise RuntimeError('DDJJ_HISTORIAL_NO_DISPONIBLE')
         run_handle = await flow.history.start(telegram_id=int(state.user_id), operation=OPERATION,
-            key_material=f'ddjj:{chat}:{thread}:{state.nonce}', reference=f'{state.slug}-{state.ddjj_periods[0]}', lease_seconds=1920)
+            key_material=f'ddjj:{chat}:{thread}:{state.nonce}', reference=f'{state.slug}-{state.ddjj_periods[0]}', lease_seconds=presupuesto(state.ddjj_periods) + 420)
         prepared = await flow.history.prepare_items(run_handle, state.ddjj_periods)
         items = {p: int(i['id_item']) for p, i in zip(state.ddjj_periods, prepared, strict=True)}
         verified = await checked_subject(flow, state)
@@ -206,7 +213,7 @@ async def run(flow, adapter, chat, thread, key, state):
         flow.processes[key] = proc
         consulted = True
         raw, _ = await asyncio.wait_for(flow._communicate_with_progress(proc, state, adapter=adapter,
-            chat_id=chat, thread_id=thread), timeout=1800)
+            chat_id=chat, thread_id=thread), timeout=presupuesto(state.ddjj_periods) + 300)
         result = flow._parse_result(raw)
         if proc.returncode != 0 or result.get('ok') is not True:
             raise RuntimeError('DDJJ_EJECUCION_NO_COMPLETADA')
