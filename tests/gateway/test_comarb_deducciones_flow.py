@@ -223,6 +223,23 @@ def test_resumen_separa_regimenes_y_nunca_es_cero_sin_aclarar():
     assert "posible duplicado" in text
 
 
+def test_180_sircip_sin_consultar_y_error_real_se_muestran_distintos():
+    name = 'SIRCIP · Percepciones'
+    motivo = ('ContaBot todavía no lee SIRCIP. El total no incluye estas percepciones. '
+              'Revisalas en SIFERE WEB › Módulo DDJJ › Carga de Deducciones antes de presentar.')
+    estados = {r: {'estado':'sin_datos_verificado'} for r in flow_module.REGIMENES}
+    estados['SIRTAC'] = {'estado':'no_verificado','motivo':'SIFERE no respondió.'}
+    estados[name] = {'estado':'no_verificado','observacion':'sin_consultar','motivo':motivo,'filas':None,'importe':None}
+    row = {'nombre_legal':'Cliente sintético','periodo':'12/2026','estado':'terminada','resultado':{'estados':estados}}
+    text = resumen(row)
+    assert f'• {name}: Sin consultar. {motivo}' in text
+    assert '• SIRTAC: no se pudo consultar. SIFERE no respondió.' in text
+    assert 'Terminada con faltantes.' in text
+    assert '$ 0' not in text
+    estados[name] = {'estado':'no_verificado','motivo':'Error de origen.'}
+    assert f'• {name}: no se pudo consultar. Error de origen.' in resumen(row)
+
+
 def test_entrega_reclama_antes_de_enviar_y_revalida_acceso(tmp_path):
     async def scenario():
         excel = tmp_path / "estudios/1/30000000011/2026/09/comarb/x-deducciones-iibb-2026-09.xlsx"

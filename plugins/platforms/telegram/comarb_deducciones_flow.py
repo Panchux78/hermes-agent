@@ -126,6 +126,8 @@ def resumen(row: dict[str, Any]) -> str:
             continue
         elif sin_cvu_pendiente(regimen, e):
             line = f"• {name}: {SIN_CVU_DETALLE}"
+        elif regimen == 'SIRCIP · Percepciones' and e.get("estado") == "no_verificado" and e.get("observacion") == "sin_consultar":
+            line = f"• {name}: Sin consultar. {e.get('motivo') or ''}".rstrip()
         else:
             line = None
         aviso = next((a.split(": ", 1)[1] for a in avisos if a.startswith(regimen + ":")), None)
