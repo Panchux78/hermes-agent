@@ -220,7 +220,9 @@ from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, t
 from plugins.platforms.telegram.telegram_clarify_multi import handle_multi_token, multi_prompt_extras, resolve_clarify_choice
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from gateway.approval_actor import picker_refusal, update_prompt_refusal
-from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note, refuse_tap
+from plugins.platforms.telegram.callback_answer import (
+    TOAST_LIMIT as _TOAST_LIMIT, BestEffortCallbackQuery, answer_callback, answer_or_note, refuse_tap,
+)
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, bot_api_urls, build_ptb_requests, discover_fallback_ips,
     parse_fallback_ip_env, proxy_target_hosts, telegram_verify)
@@ -5075,6 +5077,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         query = update.callback_query
         if not query:
             return
+        # Every menu and its subflows get the same ACK boundary. Message edits,
+        # authorization and operation errors are still handled normally.
+        query = BestEffortCallbackQuery(query)
         self._accept_update()
         data = query.data or ""
         cb = self._callback_ctx(query)

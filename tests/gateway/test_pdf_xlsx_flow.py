@@ -399,7 +399,10 @@ def test_authorized_callback_starts_visual_pdf_xlsx_flow():
             answer=AsyncMock(),
         )
         await adapter._handle_callback_query(SimpleNamespace(callback_query=query), SimpleNamespace())
-        flow.callback.assert_awaited_once_with(adapter, query, "px:start", 123, None, "99")
+        forwarded = flow.callback.await_args.args[1]
+        flow.callback.assert_awaited_once_with(adapter, forwarded, "px:start", 123, None, "99")
+        assert forwarded.message is query.message
+        assert forwarded.from_user is query.from_user
 
     asyncio.run(scenario())
 

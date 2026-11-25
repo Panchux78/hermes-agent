@@ -11,7 +11,9 @@ after the toast), and the tap produced no feedback at all.
 ``False`` instead of raising. ``answer_or_note`` covers taps on a menu that has already expired —
 the one case where the toast was the only thing the user would have seen, and "Picker expired —
 use /model again." is still a usable next step as a normal message, posted in the chat and forum
-topic the card lives in. Every other error keeps raising: a broken answer must stay visible.
+topic the card lives in. At dispatch, ``BestEffortCallbackQuery`` also isolates connection
+errors from the acknowledgment itself, without treating them as expired taps or hiding any
+failure of the action.
 """
 
 import logging
@@ -48,7 +50,7 @@ def is_stale_query_error(exc: BaseException) -> bool:
 
 
 async def answer_callback(query: Any, text: Optional[str] = None, *, show_alert: bool = False) -> bool:
-    """Ack a button tap; ``False`` when Telegram refused it because the query expired."""
+    """Ack a tap; return ``False`` only when it expired, the case that needs a chat note."""
     try:
         if text is None:
             await query.answer()
@@ -88,3 +90,41 @@ async def refuse_tap(query: Any, requester: Optional[str]) -> bool:
 
     await answer_callback(query, refusal_text(requester)[:TOAST_LIMIT], show_alert=True)
     return True
+
+
+def _is_answer_transport_error(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    try:
+        from telegram.error import BadRequest, NetworkError
+    except ImportError:
+        return False
+    # PTB also subclasses BadRequest from NetworkError; a rejected request is
+    # not a lost HTTP acknowledgment.
+    return isinstance(exc, NetworkError) and not isinstance(exc, BadRequest)
+
+
+class BestEffortCallbackQuery:
+    """Delegate everything except the one Bot API request acknowledging a tap."""
+
+    __slots__ = ("_query",)
+
+    def __init__(self, query: Any) -> None:
+        self._query = query
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._query, name)
+
+    async def answer(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return await self._query.answer(*args, **kwargs)
+        except Exception as exc:
+            if not _is_answer_transport_error(exc):
+                raise
+            # A failed acknowledgment must neither change the action result
+            # nor expose payload, chat IDs, tokens or exception text.
+            logger.warning(
+                "[Telegram] answer_callback_query transport failure type=%s; continuing callback",
+                type(exc).__name__,
+            )
+            return False
