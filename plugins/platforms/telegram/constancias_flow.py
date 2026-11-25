@@ -22,7 +22,7 @@ from plugins.platforms.telegram.contributor_selector import ContributorOffer, CO
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.fiscal_scope import validate_search_term
 from plugins.platforms.telegram.vencimientos_flow import VencimientosFlow
-from plugins.platforms.telegram.constancia_pdf import ConstanciaPdfSession
+from plugins.platforms.telegram.constancia_pdf import CaptchaRechazado, ConstanciaPdfSession, LecturaAutomatica
 
 logger = logging.getLogger(__name__)
 
@@ -216,16 +216,14 @@ class ConstanciasFlow:
             await asyncio.shield(pending)
             raise
 
-    async def _pdf(self, adapter, state: State, key: str, chat_id, thread_id) -> None:
-        session = ConstanciaPdfSession()
-        output = None
-        archived = None
+    async def _human_captcha(self, adapter, state: State, chat_id, thread_id, image: bytes) -> str:
+        """Último recurso (#216): la imagen vigente a la persona, sólo con los automáticos agotados."""
+        state.captcha_response = asyncio.get_running_loop().create_future()
+        state.stage = "captcha"
         try:
-            image = await self._browser_call(session.start)
-            state.captcha_response = asyncio.get_running_loop().create_future()
-            state.stage = "captcha"
             photo = {"chat_id": chat_id, "photo": BytesIO(image),
-                     "caption": "ARCA pide un CAPTCHA para la constancia PDF. Respondé con los 6 caracteres de esta imagen.",
+                     "caption": "ARCA pide un CAPTCHA para la constancia PDF y no pude resolverlo solo. "
+                                "Respondé con los 6 caracteres de esta imagen.",
                      "reply_markup": self._cancel_keyboard(state.nonce)}
             if thread_id is not None:
                 photo["message_thread_id"] = thread_id
@@ -233,12 +231,54 @@ class ConstanciasFlow:
             await self._pdf_notice(adapter, state, chat_id, thread_id,
                                    "Esperando el CAPTCHA de la constancia PDF…",
                                    self._cancel_keyboard(state.nonce))
-            solution = await asyncio.wait_for(state.captcha_response, timeout=120)
+            return await asyncio.wait_for(state.captcha_response, timeout=120)
+        finally:
+            state.captcha_response = None
             state.stage = "pdf_running"
-            await self._pdf_notice(adapter, state, chat_id, thread_id,
-                                   "Generando la constancia PDF…",
-                                   self._cancel_keyboard(state.nonce))
-            document = await self._browser_call(session.submit, state.cuit, solution)
+
+    async def _pdf_document(self, adapter, state: State, session: ConstanciaPdfSession,
+                            auto: LecturaAutomatica, chat_id, thread_id) -> bytes:
+        """Resuelve el CAPTCHA del formulario público y devuelve el PDF.
+
+        Automático primero: ddddocr lee la imagen; si la lectura no tiene formato válido se pide otro
+        desafío sin enviar nada, y si ARCA contesta «código de seguridad inválido» también. Hasta 3
+        envíos y 8 desafíos automáticos; después, la persona, con el mismo control de rechazo.
+        """
+        image = await self._browser_call(session.start)
+        humanos = 0
+        while True:
+            solution = None
+            if auto.quedan():
+                solution = await asyncio.to_thread(auto.leer, image)
+                if solution is None and auto.quedan():
+                    image = await self._browser_call(session.renew)
+                    continue
+            if solution is None:
+                if not auto.humanos_permitidos(humanos):
+                    raise RuntimeError("constancia_captcha_agotado")
+                humanos += 1
+                auto.derivar()
+                solution = await self._human_captcha(adapter, state, chat_id, thread_id, image)
+                await self._pdf_notice(adapter, state, chat_id, thread_id, "Generando la constancia PDF…",
+                                       self._cancel_keyboard(state.nonce))
+            try:
+                document = await self._browser_call(session.submit, state.cuit, solution)
+            except CaptchaRechazado:
+                auto.resultado("rechazado")
+                image = await self._browser_call(session.renew)
+                continue
+            auto.resultado("aceptado")
+            auto.cierre("resuelto_solo" if auto.ultimo == "auto" else "resuelto_humano")
+            return document
+
+    async def _pdf(self, adapter, state: State, key: str, chat_id, thread_id) -> None:
+        session = ConstanciaPdfSession()
+        auto = await asyncio.to_thread(LecturaAutomatica)
+        output = None
+        archived = None
+        try:
+            state.stage = "pdf_running"
+            document = await self._pdf_document(adapter, state, session, auto, chat_id, thread_id)
             state.stage = "archiving"
             await self._pdf_notice(adapter, state, chat_id, thread_id,
                                    "Guardando la constancia en Documentos…")
@@ -261,10 +301,12 @@ class ConstanciasFlow:
             else:
                 await self._pdf_notice(adapter, state, chat_id, thread_id, "Constancia PDF enviada y guardada en Documentos. La consulta IVA ya estaba terminada.")
         except asyncio.CancelledError:
+            auto.cierre("cancelado")
             await self._pdf_notice(adapter, state, chat_id, thread_id,
                 "Solicitud de PDF cancelada. La consulta IVA se conserva."
                 if archived is None else "La constancia quedó en Documentos; se canceló la entrega por Telegram.")
         except Exception as exc:
+            auto.cierre(str(exc) if str(exc).startswith("constancia_") else type(exc).__name__)
             logger.warning("constancia_pdf_failed stage=%s error=%s", state.stage, type(exc).__name__)
             await self._pdf_notice(adapter, state, chat_id, thread_id,
                 "No pude obtener o guardar la constancia PDF. La consulta IVA se conserva; probá nuevamente más tarde."
@@ -276,7 +318,10 @@ class ConstanciasFlow:
             try:
                 await asyncio.to_thread(session.close)
             finally:
-                self.states.pop(key, None)
+                try:
+                    await asyncio.to_thread(auto.cerrar)
+                finally:
+                    self.states.pop(key, None)
 
     @staticmethod
     def _candidate_keyboard(rows: list[dict], nonce: str) -> InlineKeyboardMarkup:
@@ -467,7 +512,7 @@ class ConstanciasFlow:
             state.stage = "pdf_running"
             state.progress_message = query.message
             try:
-                await query.edit_message_text("Preparando el CAPTCHA de la constancia PDF…",
+                await query.edit_message_text("Generando la constancia PDF…",
                                               reply_markup=self._cancel_keyboard(state.nonce))
             except Exception as exc:
                 logger.warning("constancia_pdf_start_edit_failed error=%s", type(exc).__name__)
