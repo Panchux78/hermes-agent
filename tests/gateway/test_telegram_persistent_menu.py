@@ -375,6 +375,14 @@ def test_operational_menu_has_no_placeholder_actions(monkeypatch):
 
 def test_help_menu_offers_real_information_and_free_query_actions(monkeypatch):
     import plugins.platforms.telegram.adapter as adapter_module
+    from types import SimpleNamespace
+    from plugins.platforms.telegram import contabot_compartido
+
+    def ayuda(nombre):
+        assert nombre == "contabot_ayuda"
+        return SimpleNamespace(texto=lambda tema: f"Texto compartido: {tema}")
+
+    monkeypatch.setattr(contabot_compartido, "cargar", ayuda)
 
     monkeypatch.setattr(
         adapter_module,
@@ -391,8 +399,8 @@ def test_help_menu_offers_real_information_and_free_query_actions(monkeypatch):
             {"text": "✕  Cerrar", "callback_data": "om:close"},
         ],
     ]
-    assert "Escribí tu consulta en el chat." in TelegramAdapter._menu_panel_title("consulta")
-    assert "Convierte resúmenes bancarios" in TelegramAdapter._menu_panel_title("que_hace")
+    assert TelegramAdapter._menu_panel_title("consulta") == "Texto compartido: consulta"
+    assert TelegramAdapter._menu_panel_title("que_hace") == "Texto compartido: que_hace"
 
 
 def test_portal_iva_callback_requires_existing_telegram_authorization():

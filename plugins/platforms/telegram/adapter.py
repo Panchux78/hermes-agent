@@ -961,19 +961,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 "Protegé o desbloqueá archivos PDF. Estas opciones no generan Excel."
             ),
             "ayuda": "¿Con qué necesitás ayuda?",
-            "que_hace": (
-                "Qué hace ContaBot\n\n"
-                "• Consulta DDJJ de IIBB en AGIP.\n"
-                "• Consulta y prepara información de Portal IVA en ARCA.\n"
-                "• Convierte resúmenes bancarios compatibles a Excel.\n"
-                "• Procesa lotes de resúmenes bancarios.\n"
-                "• Cruza los Excel bancarios con los Libros IVA.\n"
-                "• Protege y desbloquea archivos PDF.\n\n"
-                "Las presentaciones fiscales todavía no están habilitadas."
-            ),
-            "consulta": "Hacer una consulta\n\nEscribí tu consulta en el chat.",
             "administracion": "Administración — acceso restringido",
         }
+        if page in {"que_hace", "consulta"}:
+            from plugins.platforms.telegram.contabot_compartido import cargar
+            try:
+                return cargar("contabot_ayuda").texto(page)
+            except RuntimeError:
+                return "La ayuda de ContaBot no está disponible en este momento."
         from plugins.platforms.telegram.provinciales_iibb import PAGINAS, titulo_pagina
         return titulo_pagina(page) if page in PAGINAS else titles.get(page, titles["main"])
 
