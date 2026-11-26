@@ -10,7 +10,16 @@ import pytest
 
 from plugins.platforms.telegram.constancias_flow import ConstanciasFlow, State
 from plugins.platforms.telegram.constancia_pdf import CaptchaRechazado, ConstanciaPdfSession, FORM, LecturaAutomatica
-from plugins.platforms.telegram.constancia_pdf import _arca_browser
+from plugins.platforms.telegram.constancia_pdf import _arca_browser, archivar_pdf
+
+
+@pytest.mark.parametrize('origin', ['https://127.0.0.1:8000','http://example.test:8000',
+    'http://127.0.0.1:8000/ajeno','http://otro@127.0.0.1:8000','http://127.0.0.1:8000/?otro=1'])
+def test_archivo_oficial_solo_se_envia_al_ingreso_local(origin):
+    with patch('constancia_pdf_motor.build_opener') as opener:
+        with pytest.raises(ValueError,match='loopback'):
+            archivar_pdf(origin,'ticket-sintetico',b'%PDF-')
+    opener.assert_not_called()
 
 
 def test_public_pdf_uses_shared_arca_browser_and_closes_profile():
@@ -198,7 +207,7 @@ def _pdf_setup():
 def _run_auto_pdf(auto, submit_effects, renew_images=(b"png2", b"png3", b"png4", b"png5", b"png6", b"png7", b"png8")):
     async def run():
         flow, adapter, bot, state, key = _pdf_setup()
-        with patch("plugins.platforms.telegram.constancias_flow.LecturaAutomatica", return_value=auto), \
+        with patch("plugins.platforms.telegram.constancia_pdf.LecturaAutomatica", return_value=auto), \
              patch.object(ConstanciaPdfSession, "start", return_value=b"png1"), \
              patch.object(ConstanciaPdfSession, "renew", side_effect=list(renew_images)) as renew, \
              patch.object(ConstanciaPdfSession, "submit", side_effect=submit_effects) as submit, \
@@ -240,7 +249,7 @@ def test_pdf_asks_the_person_only_after_automatic_attempts_are_exhausted():
         auto = FakeAuto(["aaa111", "bbb222", "ccc333"])
         flow, adapter, bot, state, key = _pdf_setup()
         rejected = CaptchaRechazado("constancia_captcha_rechazado")
-        with patch("plugins.platforms.telegram.constancias_flow.LecturaAutomatica", return_value=auto), \
+        with patch("plugins.platforms.telegram.constancia_pdf.LecturaAutomatica", return_value=auto), \
              patch.object(ConstanciaPdfSession, "start", return_value=b"png1"), \
              patch.object(ConstanciaPdfSession, "renew", side_effect=[b"png2", b"png3", b"png4"]), \
              patch.object(ConstanciaPdfSession, "submit", side_effect=[rejected, rejected, rejected, b"%PDF-1.4\n%%EOF"]) as submit, \
@@ -271,7 +280,7 @@ def test_pdf_exhausted_person_attempt_ends_without_more_requests():
         bot.send_message = AsyncMock()
         state.progress_message.edit_text = AsyncMock()
         rejected = CaptchaRechazado("constancia_captcha_rechazado")
-        with patch("plugins.platforms.telegram.constancias_flow.LecturaAutomatica", return_value=auto), \
+        with patch("plugins.platforms.telegram.constancia_pdf.LecturaAutomatica", return_value=auto), \
              patch.object(ConstanciaPdfSession, "start", return_value=b"png1"), \
              patch.object(ConstanciaPdfSession, "renew", side_effect=[b"png2", b"png3", b"png4", b"png5"]), \
              patch.object(ConstanciaPdfSession, "submit", side_effect=[rejected] * 4), \
@@ -302,7 +311,7 @@ def test_pdf_without_local_reader_asks_the_person_with_the_current_captcha():
                       progress_message=progress)
         key = flow._key(55, None, 12345)
         flow.states[key] = state
-        with patch("plugins.platforms.telegram.constancias_flow.LecturaAutomatica",
+        with patch("plugins.platforms.telegram.constancia_pdf.LecturaAutomatica",
                    return_value=FakeAuto(disponible=False)), \
              patch.object(ConstanciaPdfSession, "start", return_value=b"png"), \
              patch.object(ConstanciaPdfSession, "submit", return_value=b"%PDF-1.4\n%%EOF") as submit, \
@@ -355,7 +364,7 @@ def test_pdf_failure_falls_back_to_new_message_if_progress_cannot_be_edited():
                       job_id=44, cuit="20123456789", progress_message=progress)
         key = flow._key(55, None, 12345)
         flow.states[key] = state
-        with patch("plugins.platforms.telegram.constancias_flow.LecturaAutomatica", return_value=FakeAuto()), \
+        with patch("plugins.platforms.telegram.constancia_pdf.LecturaAutomatica", return_value=FakeAuto()), \
              patch.object(ConstanciaPdfSession, "start", side_effect=RuntimeError("browser failed")), \
              patch.object(ConstanciaPdfSession, "close"):
             await flow._pdf(adapter, state, key, 55, None)
