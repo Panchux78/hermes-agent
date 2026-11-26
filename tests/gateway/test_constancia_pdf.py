@@ -16,7 +16,7 @@ from plugins.platforms.telegram.constancia_pdf import _arca_browser, archivar_pd
 @pytest.mark.parametrize('origin', ['https://127.0.0.1:8000','http://example.test:8000',
     'http://127.0.0.1:8000/ajeno','http://otro@127.0.0.1:8000','http://127.0.0.1:8000/?otro=1'])
 def test_archivo_oficial_solo_se_envia_al_ingreso_local(origin):
-    with patch('constancia_pdf_motor.build_opener') as opener:
+    with patch('constancia_pdf_ingreso_local.build_opener') as opener:
         with pytest.raises(ValueError,match='loopback'):
             archivar_pdf(origin,'ticket-sintetico',b'%PDF-')
     opener.assert_not_called()
