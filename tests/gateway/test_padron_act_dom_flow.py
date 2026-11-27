@@ -141,6 +141,13 @@ class PadronExternoTelegram(IsolatedAsyncioTestCase):
         self.assertEqual(enviar.call_args.args[2],b'PK\x03\x04externo')
         self.assertNotIn(key,f.states)
 
+    def test_ingreso_externo_rechaza_toda_url_no_loopback(self):
+        f=PadronActDomFlow();ticket='2b0f6d1a-6c2e-4a43-9d5b-0a2f4f1c9e11'
+        for url in ('https://127.0.0.1:8000','http://localhost:8000','http://127.0.0.1','http://127.0.0.1:8000/api',
+                    'http://127.0.0.1:8000?destino=otro','http://usuario@127.0.0.1:8000'):
+            with self.subTest(url=url),self.assertRaises(ValueError):
+                f.console_api_url=url;f._enviar_externo(ticket,'cuits.xlsx',b'PK')
+
     async def test_entrega_externa_reautoriza_y_conserva_archivo(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);p=root/'estudios/1/externo.xlsx';p.parent.mkdir(parents=True);p.write_bytes(b'xlsx-externo')

@@ -122,7 +122,9 @@ class PadronActDomFlow(ComarbDeduccionesFlow):
 
     def _enviar_externo(self,ticket,nombre,data):
         from urllib.parse import urlparse
-        if urlparse(self.console_api_url).hostname not in ('127.0.0.1','localhost','::1'):
+        parsed=urlparse(self.console_api_url)
+        if (parsed.scheme!='http' or parsed.hostname not in ('127.0.0.1','::1') or parsed.port is None
+                or parsed.path not in ('','/') or parsed.query or parsed.fragment or parsed.username or parsed.password):
             raise ValueError('padron_externo_console_api_url_debe_ser_loopback')
         request=Request(self.console_api_url+'/api/internal/padron-act-dom/externo',data=data,method='POST',
             headers={'X-Padron-Ticket':str(uuid.UUID(ticket)),'X-Archivo-Nombre':quote(nombre),'Content-Type':'application/octet-stream'})
