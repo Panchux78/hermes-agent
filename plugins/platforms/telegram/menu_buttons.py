@@ -15,6 +15,7 @@ ARCA_CONSULTAS = (
     ('🧮', 'Mis Retenciones', 'pi:mr'),
     ('📑', 'Mis Comprobantes', 'pi:mc'),
     ('🪪', 'Padrón ACT/Dom', 'pa:uno'),
+    ('📤', 'Padrón desde Excel', 'pa:externo'),
     ('🔎', 'Proveedores apócrifos', 'apo:uno'),
 )
 

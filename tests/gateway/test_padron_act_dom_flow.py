@@ -48,7 +48,7 @@ class FlujoPadron(IsolatedAsyncioTestCase):
             a=dict(ruta=str(p.relative_to(root)),nombre=p.name,sha256=hashlib.sha256(p.read_bytes()).hexdigest())
             row=dict(nombre='Sintética',periodo='09/2026',estado='terminada',resultado=dict(compras=1,ventas=2,excepciones=0),archivo=a)
             f=PadronActDomFlow(clients_root=root);adapter=SimpleNamespace(send_document=AsyncMock(return_value=SimpleNamespace(success=True,message_id='12')),_bot=SimpleNamespace(send_message=AsyncMock()))
-            with patch.object(f,'_query',side_effect=[[dict(telegram_id=990000002,id_consulta=7)],[row]]),patch.object(f,'_write',side_effect=[[row],[True]]) as write:
+            with patch.object(f,'_query',side_effect=[[dict(telegram_id=990000002,id_consulta=7)],[row],[]]),patch.object(f,'_write',side_effect=[[row],[True]]) as write:
                 await f.poll(adapter)
             self.assertEqual(adapter.send_document.await_args.kwargs['file_name'],p.name)
             self.assertIn("'enviada',12",write.call_args.args[0])
@@ -109,3 +109,46 @@ class DevolucionTelegram(IsolatedAsyncioTestCase):
         text=resumen_padron(dict(nombre='Sintética',periodo='10/2026',estado='terminada',resultado=dict(
             papel='Borrador IVA e IIBB',compras_clasificadas=1,excepciones_iva=0)))
         self.assertIn('respondé a este mensaje adjuntando el Excel',text)
+
+
+class PadronExternoTelegram(IsolatedAsyncioTestCase):
+    def mensaje(self):
+        archivo=SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(b'PK\x03\x04externo')))
+        doc=SimpleNamespace(file_name='cuits.xlsx',file_size=1000,get_file=AsyncMock(return_value=archivo))
+        return SimpleNamespace(chat_id=990000002,from_user=SimpleNamespace(id=990000002),document=doc,
+                               reply_to_message=None,reply_text=AsyncMock())
+
+    async def test_menu_externo_una_sola_cuenta_pide_excel(self):
+        from plugins.platforms.telegram.padron_act_dom_flow import resumen_externo
+        f=PadronActDomFlow();query=SimpleNamespace(answer=AsyncMock())
+        adapter=SimpleNamespace(_bot=SimpleNamespace(send_message=AsyncMock()))
+        scope=SimpleNamespace(require_actor=lambda *_:None,require_permission=lambda *_:None)
+        with patch.object(f,'_scope',return_value=scope),patch.object(f,'_write',return_value=[dict(id_estudio=1,nombre='Sintético')]):
+            self.assertTrue(await f.callback(adapter,query,'pa:externo',990000002,None,990000002))
+        self.assertIn('Adjuntá un Excel',adapter._bot.send_message.await_args.kwargs['text'])
+        text=resumen_externo(dict(nombre='Sintético',estado='terminada',resultado=dict(filas=3,verificados=2,invalidos=1,sin_respuesta=0)))
+        self.assertIn('3 filas',text);self.assertIn('Observaciones',text)
+
+    async def test_excel_externo_usa_ticket_y_misma_vigilancia(self):
+        f=PadronActDomFlow();msg=self.mensaje();state=State('990000002','nonce','excel_externo','externo');state.estudio_externo=1
+        key=f._key(990000002,None,990000002);f.states[key]=state
+        with patch.object(f,'_write',return_value=['2b0f6d1a-6c2e-4a43-9d5b-0a2f4f1c9e11']) as w, \
+             patch.object(f,'_enviar_externo',return_value={'id_consulta':8}) as enviar, \
+             patch.object(f,'_watch_padron',new_callable=AsyncMock):
+            self.assertTrue(await f.document(None,msg))
+            await f.watchers[8]
+        self.assertIn('fn_padron_externo_ticket',w.call_args.args[0])
+        self.assertEqual(enviar.call_args.args[2],b'PK\x03\x04externo')
+        self.assertNotIn(key,f.states)
+
+    async def test_entrega_externa_reautoriza_y_conserva_archivo(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);p=root/'estudios/1/externo.xlsx';p.parent.mkdir(parents=True);p.write_bytes(b'xlsx-externo')
+            a=dict(ruta=str(p.relative_to(root)),nombre=p.name,sha256=hashlib.sha256(p.read_bytes()).hexdigest())
+            row=dict(nombre='Sintético',periodo='Lista externa',estado='terminada',resultado=dict(filas=1,verificados=1),archivo=a)
+            f=PadronActDomFlow(clients_root=root);adapter=SimpleNamespace(send_document=AsyncMock(return_value=SimpleNamespace(success=True,message_id='13')),_bot=SimpleNamespace(send_message=AsyncMock()))
+            with patch.object(f,'_query',side_effect=[[],[dict(telegram_id=990000002,id_consulta=8)],[row]]), \
+                 patch.object(f,'_write',side_effect=[[row],[True]]) as write:
+                await f.poll(adapter)
+            self.assertEqual(adapter.send_document.await_args.kwargs['file_name'],p.name)
+            self.assertIn('fn_padron_externo_entrega',write.call_args.args[0])
