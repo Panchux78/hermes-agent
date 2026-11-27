@@ -3,6 +3,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from plugins.platforms.telegram.execution_origin import incoming
 
 spec = spec_from_file_location('facturacion_flow_candidato', Path(__file__).resolve().parents[2] /
                                'plugins/platforms/telegram/facturacion_flow.py')
@@ -27,16 +28,20 @@ async def _probar(monkeypatch):
                            MAX_PREVIA=30, solicitar_previa=solicitar)
     monkeypatch.setattr(flow, "cargar",lambda _:fake)
     monkeypatch.setattr(bot, "_actor",lambda user:int(user))
-    monkeypatch.setattr(bot, "_job",lambda actor,job,accion,data: calls.append((actor,accion,data)) or {"id_pedido":7})
+    monkeypatch.setattr(bot, "_job",lambda actor,job,accion,data,*,origen_mensaje:
+                        calls.append((actor,accion,data,origen_mensaje)) or {"id_pedido":7})
     monkeypatch.setattr(bot, "_wait_job",AsyncMock())
-    message = SimpleNamespace(chat_id=42,from_user=SimpleNamespace(id=42),reply_document=AsyncMock(),
+    message = SimpleNamespace(chat_id=42,message_id=31,from_user=SimpleNamespace(id=42),reply_document=AsyncMock(),
                              reply_text=AsyncMock())
     file = SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(b'file')))
     message.document=SimpleNamespace(file_name='test.xlsx',file_size=4,get_file=AsyncMock(return_value=file))
     query=SimpleNamespace(from_user=message.from_user,message=message,answer=AsyncMock(),edit_message_text=AsyncMock())
     metadata={"chat_id":"42","chat_type":"private"}
     await bot.callback(query,"fe:start",metadata)
-    assert await bot.document(message)
+    upload=SimpleNamespace(update_id=100,effective_message=message,callback_query=None,effective_chat=None)
+    async def received(update, context):
+        return await bot.document(update.effective_message)
+    assert await incoming(received)(upload,None)
     assert calls==[]
     sent=message.reply_document.await_args.kwargs
     assert "Neto, IVA y total" in sent["caption"]
@@ -49,4 +54,4 @@ async def _probar(monkeypatch):
     await bot.callback(query,confirmation,metadata)
     await bot.jobs[("42","42")][1]
     await bot.callback(query,confirmation,metadata)
-    assert calls==[(42,"crear",{"casos":[{"fila":4}]})]
+    assert calls==[(42,"crear",{"casos":[{"fila":4}]},("telegram","","update:100/mensaje:31","42"))]

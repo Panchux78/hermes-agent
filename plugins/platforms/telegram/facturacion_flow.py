@@ -14,6 +14,7 @@ from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeducciones
 from plugins.platforms.telegram.contabot_access import catalog_connection
 from plugins.platforms.telegram.contabot_compartido import cargar
 from plugins.platforms.telegram.execution_origin import environment as with_origin
+from plugins.platforms.telegram.execution_origin import origen_del_mensaje
 from plugins.platforms.telegram.fiscal_scope import AccountNotLinked, FiscalScope
 
 log=logging.getLogger(__name__)
@@ -57,7 +58,7 @@ class FacturacionFlow:
             safe[row['cuit']]=row
         return safe
 
-    def _job(self,actor,jid,action,data=None):
+    def _job(self,actor,jid,action,data=None,*,origen_mensaje=None):
         assert type(actor) is int and actor>0 and (jid is None or type(jid) is int and jid>0)
         assert action in {'crear','estado','imagen','captcha','cancelar'}
         raw=json.dumps(data or {},ensure_ascii=True).replace("'","''")
@@ -66,7 +67,7 @@ class FacturacionFlow:
         connection=catalog_connection if action in {'crear','captcha','cancelar'} else self.query_connection
         command,environment=connection()
         if action in {'crear','captcha','cancelar'}:
-            environment=with_origin(environment)
+            environment=with_origin(environment,origen_mensaje=origen_mensaje)
         result=subprocess.run([*command,'-XqAt','-v','ON_ERROR_STOP=1'],input=sql,env=environment,
                               text=True,capture_output=True,timeout=15)
         if result.returncode:
@@ -110,10 +111,11 @@ class FacturacionFlow:
                 await query.answer('Ya hay una verificación en curso.')
                 return
             self.busy.add(key)
-            _,_,result,candidates=preview
+            _,_,result,candidates,origen=preview
             try:
                 jid=await asyncio.to_thread(shared.solicitar_previa,result,candidates,
-                    lambda cases:self._job(actor,None,'crear',{'casos':cases}))
+                    lambda cases:self._job(actor,None,'crear',{'casos':cases},
+                                           origen_mensaje=origen))
                 self.cancel(*key)
                 await query.answer('Verificación iniciada. No se emite nada.')
                 task=asyncio.create_task(self._wait_job(query.message,key,actor,jid,shared,result),
@@ -195,7 +197,7 @@ class FacturacionFlow:
                 self.cancel(*key)
                 nonce=secrets.token_urlsafe(9) if 0<len(candidates)<=shared.MAX_PREVIA else None
                 if nonce:
-                    self.previews[key]=(nonce,monotonic()+300,result,candidates)
+                    self.previews[key]=(nonce,monotonic()+300,result,candidates,origen_del_mensaje(actor))
                 try:
                     await self._result(msg,shared,result,preview=nonce,
                                        excede=len(candidates)>shared.MAX_PREVIA)

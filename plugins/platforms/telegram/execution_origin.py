@@ -7,9 +7,18 @@ import re
 _origin = ContextVar('contabot_execution_origin', default=None)
 
 
-def environment(base=None):
+def origen_del_mensaje(actor: int):
+    """Sólo se conserva un mensaje recibido por PTB de la persona que lo confirma."""
+    origin = _origin.get()
+    if (origin and origin[0] == 'telegram' and origin[3] == str(actor)
+            and re.fullmatch(r'update:[0-9]{1,20}/mensaje:[0-9]{1,20}', origin[2])):
+        return origin
+    return None
+
+
+def environment(base=None, *, origen_mensaje=None):
     env = dict(os.environ if base is None else base)
-    origin = _origin.get() or ('prueba', env.get('CONTABOT_PRUEBA_REFERENCIA', 'ejecucion_tecnica'), '', '-')
+    origin = origen_mensaje or _origin.get() or ('prueba', env.get('CONTABOT_PRUEBA_REFERENCIA', 'ejecucion_tecnica'), '', '-')
     canal, proceso, entrada, actor = origin
     if canal not in ('telegram', 'prueba','automatico') or not re.fullmatch(r'[a-zA-Z0-9_.:/-]{1,120}', proceso or 'persona') or not re.fullmatch(r'[a-zA-Z0-9_.:/-]{0,160}', entrada) or not re.fullmatch(r'[0-9]{1,20}|-',str(actor)):
         raise ValueError('procedencia_no_valida')
