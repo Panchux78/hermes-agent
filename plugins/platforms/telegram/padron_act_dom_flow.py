@@ -25,8 +25,14 @@ def resumen_padron(row):
         n,e=r.get('compras_clasificadas',0),r.get('excepciones_iva',0)
         texto=f"\n{n} {'compra clasificada' if n==1 else 'compras clasificadas'} y {e} {'excepción' if e==1 else 'excepciones'} para IVA."
         if r.get('faltantes'):texto+='\nFalta: '+'; '.join(r['faltantes'][:4])+'. Queda marcado FALTA en el papel.'
-        return (head+texto+'\nRevisalo y corregí en las columnas amarillas. También queda en Documentos y Operaciones.'
-                '\nPara devolverlo corregido, respondé a este mensaje adjuntando el Excel.')
+        cola=('\nRevisalo y corregí en las columnas amarillas. También queda en Documentos y Operaciones.'
+              '\nPara devolverlo corregido, respondé a este mensaje adjuntando el Excel.'
+              +('\nPara cargar el detalle de ventas del cliente, respondé a este mensaje adjuntando su Excel (.xlsx).' if r.get('reparto') else ''))
+        # El pie de un documento de Telegram admite 1.024 caracteres: primero se acorta el reparto y después lo que falta.
+        rep=resumen_reparto(r)
+        if len(head+texto+rep+cola)>1000:rep=rep.split('\n• ')[0].split('\nTodavía')[0]
+        if len(head+texto+rep+cola)>1000:texto=texto[:max(0,1000-len(head+rep+cola)-1)]+'…'
+        return head+texto+rep+cola
     return (head+f"\n{r.get('compras',0)} compras · {r.get('ventas',0)} ventas · {r.get('excepciones',0)} excepciones."
         '\nRevisá la hoja Excepciones. También queda en Documentos y Operaciones.')
 
@@ -42,8 +48,43 @@ def resumen_externo(row):
 MAX_EXCEL=20*1024*1024
 
 
+def _pesos(v):
+    try:n=float(v)
+    except (TypeError,ValueError):return str(v)
+    return f'{n:,.2f}'.replace(',','X').replace('.',',').replace('X','.')
+
+
+def resumen_reparto(r):
+    """#240: reparto de ventas por actividad y Excel de importación de SIFERE del Borrador."""
+    rep=r.get('reparto')
+    if not rep:return ''
+    if not rep.get('detalle'):
+        return '\nReparto por actividad: falta el detalle de ventas del mes; todas las ventas quedaron en la actividad principal.'
+    n=rep.get('con_reparto',0)
+    texto=f"\nReparto por actividad: {n} {'venta repartida' if n==1 else 'ventas repartidas'} con el detalle del cliente."
+    for a,v in (rep.get('totales') or {}).items():texto+=f'\n• {a}: $ {_pesos(v)}'
+    s=rep.get('sin_reparto',0)
+    if s:texto+=f"\n{s} {'venta sin reparto' if s==1 else 'ventas sin reparto'}: están en la hoja EXCEPCIONES."
+    sif=r.get('sifere') or {}
+    if sif.get('listo'):texto+='\nTe mando también el Excel para importar en SIFERE. No se importó ni se presentó nada.'
+    elif sif.get('pendientes'):texto+='\nTodavía no hay Excel para importar en SIFERE: '+'; '.join(str(p) for p in sif['pendientes'][:3])
+    return texto
+
+
 def resumen_devolucion(r):
     """Texto de la carga del Excel corregido (#192): lo que se tomó o qué celdas corregir."""
+    if r.get('tipo')=='detalle_ventas':
+        # #240: lo cargado es el detalle de ventas del cliente, leído con el reparto de su ficha.
+        if r.get('estado')=='aceptada':
+            d=r.get('detalle') or {};n=d.get('comprobantes',0)
+            partes=[f'• {a}: $ {_pesos(v)}' for a,v in (d.get('actividades') or {}).items()]
+            return (f"Borrador IVA e IIBB · Detalle de ventas recibido\n{n} {'comprobante' if n==1 else 'comprobantes'} repartidos por actividad:\n"
+                    +'\n'.join(partes)+'\nArmando el Borrador nuevo con ese reparto; te llega por acá.')
+        errores=r.get('errores') or []
+        lineas=[f"• {e.get('hoja') or 'Archivo'}"+(f" · fila {e['fila']}" if e.get('fila') else '')+(f" · {e['columna']}" if e.get('columna') else '')+f": {e.get('error')}"
+                for e in errores[:15]]
+        return ('Borrador IVA e IIBB · No se tomó el detalle de ventas.\nNo coincide con el formato que quedó en la ficha del cliente:\n'
+                +'\n'.join(lineas)+(f'\nY {len(errores)-15} más.' if len(errores)>15 else ''))
     if r.get('estado')=='aceptada':
         cuenta={'excluidas':0,'correcciones':0,'agregadas':0,'modificadas':0}
         datos=registrados=0
@@ -252,6 +293,17 @@ class PadronActDomFlow(ComarbDeduccionesFlow):
                     delivery=await adapter.send_document(chat_id=str(actor),file_path=str(path),file_name=a['nombre'],caption=resumen_padron(row))
                     if not delivery.success:raise RuntimeError('telegram_no_confirmo')
                     message_id=getattr(delivery,'message_id',None)
+                    # #240: el Excel de importación de actividades de SIFERE que salió de este Borrador.
+                    sif=(row.get('resultado') or {}).get('sifere') or {}
+                    if sif.get('listo') and sif.get('ruta') and sif.get('sha256'):
+                        try:
+                            extra=archivo_guardado(None,self.clients_root,sif['ruta'],str(sif['sha256']).strip())
+                            sent=await adapter.send_document(chat_id=str(actor),file_path=str(extra),file_name=sif.get('nombre') or 'sifere-actividades.xlsx',
+                                caption='Actividades para SIFERE · '+row['periodo']+' · '+row['nombre']+'\nExcel para importar en SIFERE Web. ContaBot no importó ni presentó nada.')
+                            if not sent.success:raise RuntimeError('telegram_no_confirmo')
+                        except Exception as exc:
+                            log.warning('padron sifere no enviado consulta=%s clase=%s',jid,type(exc).__name__)
+                            await adapter._bot.send_message(chat_id=actor,text='El Excel para importar en SIFERE quedó en Documentos del panel; no pude enviarlo por acá.')
                 else:
                     sent=await adapter._bot.send_message(chat_id=actor,text=resumen_padron(row));message_id=sent.message_id
                 value=str(int(message_id)) if message_id is not None else 'NULL'

@@ -105,6 +105,58 @@ class DevolucionTelegram(IsolatedAsyncioTestCase):
             msg=self.mensaje();await f.document(None,msg)
             self.assertIn('no puede cargar',msg.reply_text.await_args.args[0])
 
+    async def test_detalle_de_ventas_del_cliente_240(self):
+        """#240: con reparto en la ficha, el Excel que responde al Borrador puede ser el detalle de ventas del cliente."""
+        f=PadronActDomFlow();msg=self.mensaje(nombre='detalle octubre.xlsx')
+        ok=dict(estado='aceptada',tipo='detalle_ventas',id_consulta=9,detalle=dict(comprobantes=7049,actividades={'293090':'16520100.36','453291':'170176915.20'}))
+        with patch.object(f,'_write',return_value=[dict(estado='ok',ticket='2b0f6d1a-6c2e-4a43-9d5b-0a2f4f1c9e11',id_consulta=7)]), \
+             patch.object(f,'_enviar_devolucion',return_value=ok):
+            self.assertTrue(await f.document(None,msg))
+        texto=msg.reply_text.await_args.args[0]
+        self.assertIn('Detalle de ventas recibido',texto);self.assertIn('7049 comprobantes',texto)
+        self.assertIn('• 293090: $ 16.520.100,36',texto);self.assertIn('te llega por acá',texto)
+        mal=dict(estado='rechazada',tipo='detalle_ventas',errores=[dict(hoja='VENTAS',fila=0,columna='tipoprecio',error='Falta la columna «tipoprecio» del formato que quedó en la ficha.')])
+        msg=self.mensaje()
+        with patch.object(f,'_write',return_value=[dict(estado='ok',ticket='2b0f6d1a-6c2e-4a43-9d5b-0a2f4f1c9e11',id_consulta=7)]), \
+             patch.object(f,'_enviar_devolucion',return_value=mal):
+            await f.document(None,msg)
+        texto=msg.reply_text.await_args.args[0]
+        self.assertIn('No se tomó el detalle de ventas',texto);self.assertIn('VENTAS · tipoprecio',texto)
+
+    async def test_entrega_tambien_el_excel_de_sifere_240(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);p=root/'estudios/1/sintetica/sintetica-borrador-iva-iibb-2026-10-v01.xlsx';p.parent.mkdir(parents=True);p.write_bytes(b'borrador')
+            s=root/'estudios/1/sintetica/sintetica-sifere-actividades-2026-10-v01.xlsx';s.write_bytes(b'sifere')
+            a=dict(ruta=str(p.relative_to(root)),nombre=p.name,sha256=hashlib.sha256(p.read_bytes()).hexdigest())
+            res=dict(papel='Borrador IVA e IIBB',compras_clasificadas=1,excepciones_iva=0,
+                     reparto=dict(detalle=True,con_reparto=3,sin_reparto=0,totales={'293090':'400.00'}),
+                     sifere=dict(listo=True,pendientes=[],ruta=str(s.relative_to(root)),nombre=s.name,sha256=hashlib.sha256(s.read_bytes()).hexdigest()))
+            row=dict(nombre='Sintética',periodo='10/2026',estado='terminada',resultado=res,archivo=a)
+            f=PadronActDomFlow(clients_root=root);adapter=SimpleNamespace(send_document=AsyncMock(return_value=SimpleNamespace(success=True,message_id='12')),_bot=SimpleNamespace(send_message=AsyncMock()))
+            with patch.object(f,'_query',side_effect=[[dict(telegram_id=990000002,id_consulta=7)],[row],[]]),patch.object(f,'_write',side_effect=[[row],[True]]) as write:
+                await f.poll(adapter)
+            nombres=[c.kwargs['file_name'] for c in adapter.send_document.await_args_list]
+            self.assertEqual(nombres,[p.name,s.name])
+            self.assertIn('3 ventas repartidas',adapter.send_document.await_args_list[0].kwargs['caption'])
+            self.assertIn('no importó ni presentó nada',adapter.send_document.await_args_list[1].kwargs['caption'])
+            self.assertIn("'enviada',12",write.call_args.args[0])  # el mensaje del Borrador sigue siendo el que se responde
+
+    def test_el_borrador_con_reparto_avisa_lo_que_falta_240(self):
+        row=dict(nombre='Sintética',periodo='10/2026',estado='terminada',progreso='',resultado=dict(papel='Borrador IVA e IIBB',
+            reparto=dict(detalle=False),sifere=dict(listo=False,pendientes=['Falta cargar el detalle de ventas por actividad del período.'])))
+        texto=resumen_padron(row)
+        self.assertIn('falta el detalle de ventas del mes',texto);self.assertIn('adjuntando su Excel (.xlsx)',texto)
+        self.assertLess(len(texto),1024)  # límite del pie de un documento en Telegram
+
+    def test_el_pie_del_borrador_entra_en_telegram_240(self):
+        largo='Dato faltante de una jurisdicción con un nombre largo y un motivo extenso que ocupa mucho lugar en el pie del documento '*2
+        row=dict(nombre='Sintética',periodo='10/2026',estado='terminada',progreso='',resultado=dict(papel='Borrador IVA e IIBB',faltantes=[largo]*4,
+            reparto=dict(detalle=True,con_reparto=7049,sin_reparto=2,totales={'293090':'16520100.36','453100':'64342534.05','453291':'170176911.95'}),
+            sifere=dict(listo=False,pendientes=['2 ventas sin reparto ni actividad indicada (hoja EXCEPCIONES).'])))
+        texto=resumen_padron(row)
+        self.assertLessEqual(len(texto),1024)
+        self.assertIn('7049 ventas repartidas',texto);self.assertIn('adjuntando su Excel (.xlsx)',texto)
+
     def test_el_borrador_dice_como_devolverlo(self):
         text=resumen_padron(dict(nombre='Sintética',periodo='10/2026',estado='terminada',resultado=dict(
             papel='Borrador IVA e IIBB',compras_clasificadas=1,excepciones_iva=0)))
