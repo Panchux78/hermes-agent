@@ -4,6 +4,7 @@ from io import BytesIO
 import json
 import logging
 import re
+import secrets
 import subprocess
 from time import monotonic
 
@@ -24,7 +25,7 @@ class FacturacionFlow:
         self.query_connection=query_connection
         self.pending={}
         self.busy=set()
-        self.verify=set()
+        self.previews={}
         self.jobs={}
         self.challenges={}
         self.challenge_messages={}
@@ -73,16 +74,16 @@ class FacturacionFlow:
         return json.loads(result.stdout.strip() or 'null')
 
     @staticmethod
-    def _menu(active=False,queued=None):
+    def _menu(active=False,queued=None,preview=None):
         options=[[InlineKeyboardButton('Descargar modelo',callback_data='fe:modelo')]]
-        if not queued:
-            options.append([InlineKeyboardButton('Verificar en ARCA',callback_data='fe:prepare')])
+        if preview:
+            options.append([InlineKeyboardButton('Verificar en ARCA',callback_data=f'fe:confirm:{preview}')])
         options.append([InlineKeyboardButton('Cancelar',callback_data=f'fe:cancel:{queued}' if queued else 'fe:cancel')] if active
                        else [InlineKeyboardButton('‹ Preparar',callback_data='om:arca_preparar')])
         return InlineKeyboardMarkup(options)
 
     def cancel(self,chat,user):
-        key=(str(chat),str(user));self.pending.pop(key,None);self.verify.discard(key)
+        key=(str(chat),str(user));self.pending.pop(key,None);self.previews.pop(key,None)
 
     async def callback(self,query,data,cb):
         chat=str(cb['chat_id']); user=str(query.from_user.id)
@@ -90,7 +91,7 @@ class FacturacionFlow:
             await query.answer('Usá el chat privado con ContaBot.')
             return
         try:
-            await asyncio.to_thread(self._actor,user)
+            actor=await asyncio.to_thread(self._actor,user)
             shared=cargar('contabot_facturacion')
         except (AccountNotLinked,PermissionError):
             await query.answer('Tu cuenta no tiene permiso para revisar comprobantes.')
@@ -100,6 +101,31 @@ class FacturacionFlow:
             await query.answer('La revisión de facturación no está disponible.')
             return
         key=(chat,user)
+        if data.startswith('fe:confirm:'):
+            preview=self.previews.get(key)
+            if not preview or preview[1]<=monotonic() or data!=f'fe:confirm:{preview[0]}':
+                await query.answer('Esta vista previa ya no está vigente. Volvé a cargar el Excel.')
+                return
+            if key in self.busy or key in self.jobs:
+                await query.answer('Ya hay una verificación en curso.')
+                return
+            self.busy.add(key)
+            _,_,result,candidates=preview
+            try:
+                jid=await asyncio.to_thread(shared.solicitar_previa,result,candidates,
+                    lambda cases:self._job(actor,None,'crear',{'casos':cases}))
+                self.cancel(*key)
+                await query.answer('Verificación iniciada. No se emite nada.')
+                task=asyncio.create_task(self._wait_job(query.message,key,actor,jid,shared,result),
+                                         name=f'facturacion-previa-{jid}')
+                self.jobs[key]=(jid,task)
+            except Exception:
+                # No repetir por una respuesta ambigua: revisar Operaciones.
+                self.cancel(*key)
+                await query.answer('No pude confirmar el inicio. Revisá Operaciones. No se emitió nada.')
+            finally:
+                self.busy.discard(key)
+            return
         if data.startswith('fe:cancel:'):
             job=self.jobs.get(key)
             if job and data==f'fe:cancel:{job[0]}':
@@ -124,18 +150,13 @@ class FacturacionFlow:
                 return
             now=monotonic()
             self.pending={k:v for k,v in self.pending.items() if now<v}
-            self.verify.intersection_update(self.pending)
+            self.previews={k:v for k,v in self.previews.items() if now<v[1]}
+            self.cancel(*key)
             self.pending[key]=now+300
             await query.answer()
-            if data=='fe:prepare':
-                self.verify.add(key)
-                await query.edit_message_text('Facturación electrónica · Verificar en ARCA\n\n'
-                    'Adjuntá el Excel con hasta 30 comprobantes. Completá Comprobantes e Ítems. '
-                    'La verificación se detiene en el resumen de Comprobantes en Línea: no emite ni pide CAE.',reply_markup=self._menu(True))
-            else:
-                self.verify.discard(key)
-                await query.edit_message_text('Facturación electrónica · Revisar Excel\n\n'
-                    'Adjuntá el Excel con los comprobantes. Esta revisión no ingresa a ARCA ni emite.',reply_markup=self._menu(True))
+            await query.edit_message_text('Facturación electrónica · Revisar Excel\n\n'
+                'Adjuntá el Excel. Primero te mando una vista previa con neto, IVA y total, sin entrar a ARCA. '
+                'Después podés verificar hasta el resumen. No se emite nada.',reply_markup=self._menu(True))
         else:
             await query.answer()
 
@@ -165,24 +186,22 @@ class FacturacionFlow:
             f=await doc.get_file()
             raw=bytes(await f.download_as_bytearray(read_timeout=20))
             shared=cargar('contabot_facturacion')
-            preparing=key in self.verify
-            if preparing:
-                result,candidates=await asyncio.to_thread(shared.revisar,raw,lambda ids:self._scope(actor,ids),preparar=True)
-            else:
-                result=await asyncio.to_thread(shared.revisar,raw,lambda ids:self._scope(actor,ids))
+            result,candidates=await asyncio.to_thread(shared.revisar,raw,lambda ids:self._scope(actor,ids),
+                                                       preparar=True)
             if self.pending.get(key)==deadline:
                 await asyncio.to_thread(self._actor,user.id)
                 if self.pending.get(key)!=deadline:
                     return True
-                jid=await asyncio.to_thread(shared.solicitar_previa,result,candidates,
-                    lambda cases:self._job(actor,None,'crear',{'casos':cases})) if preparing else None
-                if jid:
-                    task=asyncio.create_task(self._wait_job(msg,key,actor,jid,shared,result),name=f'facturacion-previa-{jid}')
-                    self.jobs[key]=(jid,task)
-                    self.cancel(*key)
-                    return True
-                await self._result(msg,shared,result)
                 self.cancel(*key)
+                nonce=secrets.token_urlsafe(9) if 0<len(candidates)<=shared.MAX_PREVIA else None
+                if nonce:
+                    self.previews[key]=(nonce,monotonic()+300,result,candidates)
+                try:
+                    await self._result(msg,shared,result,preview=nonce,
+                                       excede=len(candidates)>shared.MAX_PREVIA)
+                except Exception:
+                    self.previews.pop(key,None)
+                    raise
         except ValueError as exc:
             await msg.reply_text(str(exc),reply_markup=self._menu(True))
         except (AccountNotLinked,PermissionError):
@@ -195,7 +214,7 @@ class FacturacionFlow:
             self.busy.discard(key)
         return True
 
-    async def _result(self,msg,shared,result,operation=None):
+    async def _result(self,msg,shared,result,operation=None,*,preview=None,excede=False):
         output=await asyncio.to_thread(shared.control_excel,result)
         pending=sum(r['estado']=='por_verificar' for r in result['comprobantes'])
         ok=sum(r['estado']=='resumen_arca' for r in result['comprobantes'])
@@ -203,9 +222,12 @@ class FacturacionFlow:
         obs=len({r['fila'] for r in result['observaciones']})
         summary=f'{ok} con resumen verificado' if operation else f'{pending} para verificar en ARCA'
         ref=f'\nReferencia en Operaciones: {operation}.' if operation else ''
+        titulo='Revisión' if operation else 'Vista previa · Neto, IVA y total en el Excel'
+        if excede:
+            ref+='\nPara verificar en ARCA, cargá hasta 30 comprobantes por Excel.'
         await msg.reply_document(InputFile(BytesIO(output),filename='control-facturacion.xlsx'),
-            caption=f'Facturación electrónica · Revisión\n{summary} · {blocked} no disponibles · {obs} {"fila" if obs==1 else "filas"} para corregir.\nNo se emitió nada.{ref}',
-            reply_markup=self._menu())
+            caption=f'Facturación electrónica · {titulo}\n{summary} · {blocked} no disponibles · {obs} {"fila" if obs==1 else "filas"} para corregir.\nNo se emitió nada.{ref}',
+            reply_markup=self._menu(active=bool(preview),preview=preview))
 
     async def _wait_job(self,msg,key,actor,jid,shared,revision):
         last=None;sent=set();until=monotonic()+24*60

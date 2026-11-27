@@ -1,0 +1,52 @@
+import asyncio
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+spec = spec_from_file_location('facturacion_flow_candidato', Path(__file__).resolve().parents[2] /
+                               'plugins/platforms/telegram/facturacion_flow.py')
+flow = module_from_spec(spec)
+spec.loader.exec_module(flow)
+
+
+def test_no_encola_hasta_confirmar_vista_previa_y_nonce_no_se_repite(monkeypatch):
+    asyncio.run(_probar(monkeypatch))
+
+
+async def _probar(monkeypatch):
+    bot = flow.FacturacionFlow(lambda: None)
+    bloque = {"comprobantes": [{"estado": "por_verificar", "neto":"100.00","iva":"21.00","total":"121.00"}],
+              "observaciones": [], "emitidos": 0}
+    candidatos = [(dict(fila=4,total="121.00"), {})]
+    calls = []
+    def solicitar(resultado, lista, encolar):
+        assert resultado is bloque and lista is candidatos
+        return encolar([{"fila":4}])["id_pedido"]
+    fake = SimpleNamespace(revisar=lambda *a,**k: (bloque,candidatos), control_excel=lambda _: b'x',
+                           MAX_PREVIA=30, solicitar_previa=solicitar)
+    monkeypatch.setattr(flow, "cargar",lambda _:fake)
+    monkeypatch.setattr(bot, "_actor",lambda user:int(user))
+    monkeypatch.setattr(bot, "_job",lambda actor,job,accion,data: calls.append((actor,accion,data)) or {"id_pedido":7})
+    monkeypatch.setattr(bot, "_wait_job",AsyncMock())
+    message = SimpleNamespace(chat_id=42,from_user=SimpleNamespace(id=42),reply_document=AsyncMock(),
+                             reply_text=AsyncMock())
+    file = SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(b'file')))
+    message.document=SimpleNamespace(file_name='test.xlsx',file_size=4,get_file=AsyncMock(return_value=file))
+    query=SimpleNamespace(from_user=message.from_user,message=message,answer=AsyncMock(),edit_message_text=AsyncMock())
+    metadata={"chat_id":"42","chat_type":"private"}
+    await bot.callback(query,"fe:start",metadata)
+    assert await bot.document(message)
+    assert calls==[]
+    sent=message.reply_document.await_args.kwargs
+    assert "Neto, IVA y total" in sent["caption"]
+    previews = bot.previews.get(("42","42"))
+    assert previews is not None
+    confirmation=f"fe:confirm:{previews[0]}"
+    assert sent["reply_markup"] is not None
+    await bot.callback(query,"fe:confirm:incorrecto",metadata)
+    assert calls==[]
+    await bot.callback(query,confirmation,metadata)
+    await bot.jobs[("42","42")][1]
+    await bot.callback(query,confirmation,metadata)
+    assert calls==[(42,"crear",{"casos":[{"fila":4}]})]
