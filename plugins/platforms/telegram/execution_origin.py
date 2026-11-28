@@ -5,6 +5,7 @@ import os
 import re
 
 _origin = ContextVar('contabot_execution_origin', default=None)
+_callback_mid = ContextVar('contabot_execution_callback_message', default=None)
 
 
 def origen_del_mensaje(actor: int):
@@ -13,6 +14,17 @@ def origen_del_mensaje(actor: int):
     if (origin and origin[0] == 'telegram' and origin[3] == str(actor)
             and re.fullmatch(r'update:[0-9]{1,20}/mensaje:[0-9]{1,20}', origin[2])):
         return origin
+    return None
+
+
+def origen_callback_confirmado(actor: int):
+    """Vincula el update de un botón al mensaje concreto del chat privado."""
+    origin = _origin.get()
+    message_id = _callback_mid.get()
+    if (origin and origin[0] == 'telegram' and origin[3] == str(actor)
+            and type(message_id) is int and message_id > 0
+            and re.fullmatch(r'update:[0-9]{1,20}/callback', origin[2])):
+        return origin[0], origin[1], origin[2].split('/')[0] + f'/mensaje:{message_id}', origin[3]
     return None
 
 
@@ -51,8 +63,12 @@ def incoming(callback):
                 except ImportError:
                     pass  # Instalaciones sin control Lunix conservan la procedencia habitual.
         token = _origin.set(origin)
+        callback_token = _callback_mid.set(getattr(message, 'message_id', None)
+                                           if query and actor and chat_id == actor.id else None)
         try:return await callback(update, context)
-        finally:_origin.reset(token)
+        finally:
+            _callback_mid.reset(callback_token)
+            _origin.reset(token)
     return wrapped
 
 

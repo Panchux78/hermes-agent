@@ -35,7 +35,8 @@ class FacturacionTests(IsolatedAsyncioTestCase):
         with patch.object(flow,'_actor',return_value=44) as actor,patch(
                 'plugins.platforms.telegram.facturacion_flow.cargar') as cargar,patch(
                 'plugins.platforms.telegram.facturacion_flow.InputFile',side_effect=lambda _,filename:V(filename=filename)):
-            cargar.return_value.revisar.return_value=res
+            cargar.return_value.revisar.return_value=(res,[({}, {})])
+            cargar.return_value.MAX_PREVIA=30
             cargar.return_value.control_excel.return_value=b'excel'
             assert await flow.document(message)
         assert actor.call_count==2
