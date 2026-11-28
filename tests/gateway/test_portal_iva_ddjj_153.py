@@ -148,6 +148,38 @@ def test_historial_archivo_antes_items_y_fallo_entrega(tmp_path,monkeypatch,deli
     asyncio.run(scenario())
 
 
+def test_representacion_ausente_una_respuesta_en_el_chat_solicitante(tmp_path,monkeypatch):
+    async def scenario():
+        selection = state()
+        selection.scope_item['holder_cuit'] = '20123456783'
+        history = NS(start=AsyncMock(return_value=NS(run_id=247)),
+                     prepare_items=AsyncMock(return_value=[{'id_item':i} for i in (1,2,3)]),
+                     close=AsyncMock(), attach_run=AsyncMock(), finish_item=AsyncMock())
+        flow = PortalIvaFlow(clients_root=tmp_path,history=history)
+        flow._scope = lambda: NS(require_permission=Mock())
+        flow._by_id = Mock(return_value=[selection.scope_item])
+        flow._acquire_execution_lock = Mock()
+        flow._release_execution_lock = Mock()
+        result = dict(ok=False, operacion=ddjj.OPERATION, motivo='ARCA_REPRESENTACION_AUSENTE',
+                      cuit=selection.cuit,cuit_titular=selection.scope_item['holder_cuit'])
+        flow._communicate_with_progress = AsyncMock(return_value=(json.dumps(result).encode(),b''))
+        flow._send, flow._edit_progress = AsyncMock(), AsyncMock()
+        adapter = NS(send_document=AsyncMock())
+        start = AsyncMock(return_value=NS(returncode=1))
+        monkeypatch.setattr(ddjj.asyncio, 'create_subprocess_exec', start)
+        monkeypatch.setattr(ddjj,'command',lambda *_:['synthetic'])
+        monkeypatch.setattr(ddjj,'tiempos',lambda _:NS(reserva_para=lambda n:1920,espera_para=lambda n:1800))
+        await ddjj.run(flow,adapter,'chat-qa','hilo-qa','key',selection)
+        expected = 'No figura 20123456786 entre los representados de 20123456783 en ARCA: posible error en la representación'
+        flow._send.assert_awaited_once_with(adapter,'chat-qa',expected,'hilo-qa')
+        assert all(expected not in call.args for call in flow._edit_progress.await_args_list)
+        start.assert_awaited_once()
+        history.close.assert_awaited_once()
+        history.attach_run.assert_not_awaited()
+        adapter.send_document.assert_not_awaited()
+    asyncio.run(scenario())
+
+
 def test_nada_completado_no_archivo_ni_ceros(tmp_path):
     data=payload()
     data['periodos'][0]={'periodo':'2026-07','estado':'fallido','motivo_texto':'No se pudo leer.'}
