@@ -15,7 +15,7 @@ from plugins.platforms.telegram.fiscal_query_flow import FiscalQueryFlow
 def flow(monkeypatch, tmp_path):
     # These tests isolate menu/dispatch; real preflight has its own subprocess suite.
     monkeypatch.setattr('plugins.platforms.telegram.fiscal_query_flow.require_fiscal_runtime', AsyncMock())
-    monkeypatch.setattr('plugins.platforms.telegram.fiscal_query_flow.verify_representation', AsyncMock())
+    monkeypatch.setattr('plugins.platforms.telegram.fiscal_query_flow.require_delivery_scope', AsyncMock())
     monkeypatch.setenv('CONTABOT_CLIENTES_ROOT', str(tmp_path/'clientes'))
     row = {
         'id': 3, 'nombre': 'Cliente de prueba', 'cuit': '20123456786', 'slug': 'cliente-prueba',

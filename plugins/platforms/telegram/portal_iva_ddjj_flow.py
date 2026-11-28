@@ -10,7 +10,8 @@ from zipfile import ZipFile, BadZipFile
 from xml.etree import ElementTree
 from telegram.error import TelegramError
 
-from plugins.platforms.telegram.fiscal_credentials import verify_representation
+from plugins.platforms.telegram.fiscal_scope import aviso_del_ejecutor
+from plugins.platforms.telegram.fiscal_credentials import require_delivery_scope
 from plugins.platforms.telegram.contabot_deployment import checked_python
 
 from plugins.platforms.telegram.period_input import SPECS, parse_period, propose_period, route_period_callback, sender
@@ -193,6 +194,7 @@ async def run(flow, adapter, chat, thread, key, state):
     locks = []; items = {}; finished = set()
     effects = [{'codigo': 'consultar', 'realizado': True}, {'codigo': 'preparar', 'realizado': False},
                {'codigo': 'presentar', 'realizado': False}, {'codigo': 'pagar', 'realizado': False}]
+    aviso = None
     consulted = False
     async def remaining(status, code, text):
         if run_handle is None:
@@ -225,13 +227,14 @@ async def run(flow, adapter, chat, thread, key, state):
         raw, _ = await asyncio.wait_for(flow._communicate_with_progress(proc, state, adapter=adapter,
             chat_id=chat, thread_id=thread), timeout=medida.espera_para(meses))
         result = flow._parse_result(raw)
+        aviso = aviso_del_ejecutor(result, OPERATION, verified)
+        if aviso:
+            raise RuntimeError('ARCA_REPRESENTACION_AUSENTE')
         if proc.returncode != 0 or result.get('ok') is not True:
             raise RuntimeError('DDJJ_EJECUCION_NO_COMPLETADA')
         cases, source = validate_result(flow, state, result)
         if verified.get('relation_id'):
-            # Se marca verificada la representación del titular cuya clave se usó. Con la clave propia del
-            # contribuyente sin representación cargada (#177, turno 1900) no hay ninguna que marcar.
-            await verify_representation(state.user_id, verified, 'ARCA', str(result.get('representado_verificado', '')))
+            await require_delivery_scope(state.user_id, verified, 'ARCA', str(result.get('representado_verificado', '')), ddjj=True)
         if source is not None:
             await flow.history.attach_run(run_handle, contributor_id=state.contributor_id, output=source,
                 output_relative=str(source.relative_to(flow.clients_root)), libro='ddjj_iva')
@@ -251,8 +254,9 @@ async def run(flow, adapter, chat, thread, key, state):
         code = str(exc) if re.fullmatch('[A-Z0-9_]{1,100}', str(exc)) else 'DDJJ_ERROR_TECNICO'
         text = ('No se pudo completar DDJJ de IVA a Excel. No se modificó ARCA. '
                 'Revisá el resultado en Operaciones; el diagnóstico quedó preservado.')
+        text = aviso or text
         await remaining('fallido', code.lower(), text)
-        await flow._edit_progress(state, text)
+        await flow._edit_progress(state, 'Consulta terminada.' if aviso else text)
         await flow._send(adapter, chat, text, thread)
     finally:
         if proc is not None and proc.returncode is None:

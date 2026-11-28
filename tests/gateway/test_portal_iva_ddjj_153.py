@@ -136,7 +136,7 @@ def test_historial_archivo_antes_items_y_fallo_entrega(tmp_path,monkeypatch,deli
         adapter=NS(send_document=AsyncMock(return_value=NS(success=delivery_ok,message_id='123' if delivery_ok else None)))
         monkeypatch.setattr(ddjj,'command',lambda *a:['synthetic'])
         monkeypatch.setattr(ddjj,'tiempos',lambda flow:NS(reserva_para=lambda n:1920,espera_para=lambda n:1800))
-        monkeypatch.setattr(ddjj,'verify_representation',AsyncMock())
+        monkeypatch.setattr(ddjj,'require_delivery_scope',AsyncMock())
         monkeypatch.setattr(ddjj.asyncio,'create_subprocess_exec',AsyncMock(return_value=NS(returncode=0)))
         await ddjj.run(flow,adapter,'1',None,'key',s)
         assert calls[0]=='attach'

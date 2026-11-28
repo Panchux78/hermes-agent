@@ -9,7 +9,7 @@ import tempfile
 from datetime import datetime, timezone
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
 from plugins.platforms.telegram.fiscal_runtime import browser_environment, excel_library_path, require_fiscal_runtime, unavailable_message
-from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, verify_representation
+from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, require_delivery_scope
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
 from plugins.platforms.telegram.ccma_diagnostics import Diagnostics
 from plugins.platforms.telegram import documentos_contabot as documentos
@@ -114,7 +114,11 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         status = flow._sct_runner_status(stdout)
         if process.returncode != 0 or status != 'source_copied' or not source.is_file() or source.is_symlink():
             code = status if status != 'source_copied' else ('runner_exit_error' if process.returncode else 'source_missing')
-            await failed(code or 'runner_exit_error',diagnostic.failure(code, process.returncode))
+            from plugins.platforms.telegram.fiscal_scope import aviso_representacion_ausente
+            text = (aviso_representacion_ausente(client_cuit, holder_cuit)
+                    if code == 'subject_selector_does_not_contain_target' and holder_cuit and client_cuit
+                    else diagnostic.failure(code, process.returncode))
+            await failed(code or 'runner_exit_error', text)
             return
         diagnostic.record({'stage': 'source'})
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -124,7 +128,7 @@ async def run_ccma(flow, *, chat_id, state_key, credential_line, credential_sha2
         source_verified = True
         if telegram_id is None or scope_item is None:
             raise RuntimeError('fiscal_scope_missing')
-        await verify_representation(telegram_id, scope_item, 'ARCA', client_cuit)
+        await require_delivery_scope(telegram_id, scope_item, 'ARCA', client_cuit)
         source.chmod(0o600)
         await terminate_owned_group(process)
         process = None

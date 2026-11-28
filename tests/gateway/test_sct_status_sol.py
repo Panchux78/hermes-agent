@@ -35,13 +35,18 @@ async def test_nonzero_child_reports_status_without_delivering(tmp_path, monkeyp
             'runner_error': 'error técnico durante la consulta',
             'sct_subject_mismatch': 'no coincide con el contribuyente solicitado',
             'sct_subject_identity_missing': 'CUIT verificable en Información del usuario',
-            'subject_selector_does_not_contain_target': 'no figura entre los representados',
+            'subject_selector_does_not_contain_target': 'No figura 20987654321 entre los representados de 20123456783 en ARCA: posible error en la representación',
             'sct_parameters_load_timeout': 'no terminó de cargar el formulario de Estado de cumplimiento',
             'sct_compliance_menu_load_timeout': 'no habilitó la opción Estado de cumplimiento',
             'parameters_screen_not_verified': 'formulario de Estado de cumplimiento ambiguo',
         }[status]
         assert expected in text and status not in text
-    assert 'Referencia:' in text and 'private-synthetic' not in text
+        if status == 'subject_selector_does_not_contain_target':
+            assert text == expected
+            assert flow.send.await_count == 1
+    if status != 'subject_selector_does_not_contain_target':
+        assert 'Referencia:' in text
+    assert 'private-synthetic' not in text
     flow.send_document.assert_not_awaited()
 
 

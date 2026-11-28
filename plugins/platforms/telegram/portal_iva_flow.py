@@ -38,6 +38,7 @@ from plugins.platforms.telegram.contributor_selector import (
 from plugins.platforms.telegram.fiscal_scope import (
     ACCOUNT_NOT_LINKED_MESSAGE,
     AccountNotLinked,
+    aviso_del_ejecutor,
     FiscalScope,
     InvalidCuit,
 )
@@ -45,7 +46,7 @@ from plugins.platforms.telegram.fiscal_credentials import (
     lookup_connection,
     sanitized_psql_failure,
     verification_connection,
-    verify_representation,
+    require_delivery_scope,
 )
 
 try:
@@ -1881,7 +1882,7 @@ class PortalIvaFlow:
                 return
             result = self._parse_result(raw)
             if proc.returncode != 0 or not result.get("ok"):
-                failure_message = self._error_message(
+                failure_message = aviso_del_ejecutor(result, state.operation, verified[0]) or self._error_message(
                     result, f"{state.operation} no se completó.", state.operation,
                 )
                 saved_names = self._saved_before_failure(result)
@@ -1905,7 +1906,7 @@ class PortalIvaFlow:
                 return
             if result.get("etapa") != "completado":
                 raise RuntimeError("PORTAL_IVA_OUTPUT_INCOMPLETE")
-            await verify_representation(
+            await require_delivery_scope(
                 state.user_id, verified[0], "ARCA",
                 str(result.get("representado_verificado", "")),
             )

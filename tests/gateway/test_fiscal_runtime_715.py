@@ -137,7 +137,7 @@ def test_vencimientos_destino_year_or_range():
 @pytest.mark.asyncio
 async def test_ccma_reports_unreadable_amount_without_private_diagnostics(tmp_path, monkeypatch):
     verify = AsyncMock()
-    monkeypatch.setattr('plugins.platforms.telegram.ccma_dispatch.verify_representation', verify)
+    monkeypatch.setattr('plugins.platforms.telegram.ccma_dispatch.require_delivery_scope', verify)
     monkeypatch.setenv('HOME',str(tmp_path)); monkeypatch.setenv('HERMES_HOME',str(tmp_path))
     documentos = instalar_documentos(monkeypatch, tmp_path)
     scripts=tmp_path/'skills/productivity/ccma-obligaciones-pagos/scripts'

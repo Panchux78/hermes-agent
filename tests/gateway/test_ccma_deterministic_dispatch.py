@@ -14,7 +14,7 @@ from tests.gateway.documentos_falsos import instalar as instalar_documentos
 @pytest.mark.asyncio
 async def test_repeated_scope_executes_twice_and_delivers_only_new_workbooks(tmp_path, monkeypatch):
     verify = AsyncMock()
-    monkeypatch.setattr('plugins.platforms.telegram.ccma_dispatch.verify_representation', verify)
+    monkeypatch.setattr('plugins.platforms.telegram.ccma_dispatch.require_delivery_scope', verify)
     documentos = instalar_documentos(monkeypatch, tmp_path)
     monkeypatch.setenv('HOME',str(tmp_path))
     home=tmp_path/'.hermes';monkeypatch.setenv('HERMES_HOME',str(home))

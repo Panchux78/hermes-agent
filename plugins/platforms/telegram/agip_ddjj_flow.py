@@ -37,7 +37,7 @@ from plugins.platforms.telegram.fiscal_scope import (
 from plugins.platforms.telegram.fiscal_credentials import (
     lookup_connection,
     sanitized_psql_failure,
-    verify_representation,
+    require_delivery_scope,
 )
 
 try:
@@ -639,7 +639,7 @@ class AgipDdjjFlow:
                     or current[0].get("relation_id") != state.scope_item.get("relation_id")
                     or current[0].get("relation_revision") != state.scope_item.get("relation_revision")):
                 raise RuntimeError("AGIP_SELECTION_STALE")
-            await verify_representation(
+            await require_delivery_scope(
                 state.user_id, current[0], _AGIP_CLAVE_CIUDAD_ENTITY,
                 str(result.get("representado_verificado", "")),
             )

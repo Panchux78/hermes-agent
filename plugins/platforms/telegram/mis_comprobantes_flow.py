@@ -17,7 +17,8 @@ from zoneinfo import ZoneInfo
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 
-from plugins.platforms.telegram.fiscal_credentials import verify_representation
+from plugins.platforms.telegram.fiscal_scope import aviso_del_ejecutor
+from plugins.platforms.telegram.fiscal_credentials import require_delivery_scope
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.period_input import SPECS, propose_period, sender
 
@@ -230,6 +231,7 @@ async def run(flow, adapter, chat, thread, key, state):
     items = {}; finished = set()
     effects = [{'codigo': 'consultar', 'realizado': True}, {'codigo': 'preparar', 'realizado': False},
                {'codigo': 'presentar', 'realizado': False}, {'codigo': 'pagar', 'realizado': False}]
+    aviso = None
     consulted = False
     mensaje = None
     nombre = SENTIDOS[state.mc_sentido][0]
@@ -269,6 +271,9 @@ async def run(flow, adapter, chat, thread, key, state):
         raw, _ = await asyncio.wait_for(flow._communicate_with_progress(proc, state, adapter=adapter,
             chat_id=chat, thread_id=thread), timeout=1800)
         result = flow._parse_result(raw)
+        aviso = aviso_del_ejecutor(result, OPERATION, verified)
+        if aviso:
+            raise RuntimeError('ARCA_REPRESENTACION_AUSENTE')
         if result.get('ok') is not True and isinstance(result.get('mensaje'), str) and len(result['mensaje']) < 400:
             mensaje = result['mensaje']
         if result.get('ok') is not True and isinstance(result.get('diagnostico'), dict):
@@ -276,7 +281,7 @@ async def run(flow, adapter, chat, thread, key, state):
             logger.error('[MIS-COMPROBANTES] error técnico: corrida=%s %s', getattr(run_handle, 'run_id', None),
                          json.dumps(result['diagnostico'], ensure_ascii=False)[:2000])
         consultas, excel, archivos, sin_excel = validate_result(flow, state, result)
-        await verify_representation(state.user_id, verified, 'ARCA', str(result.get('representado_verificado', '')))
+        await require_delivery_scope(state.user_id, verified, 'ARCA', str(result.get('representado_verificado', '')))
         rels = [*(p for p, _ in archivos), *([excel] if excel else [])]
         for path in rels:
             await flow.history.attach_run(run_handle, contributor_id=state.contributor_id, output=path,
@@ -336,6 +341,7 @@ async def run(flow, adapter, chat, thread, key, state):
         en_curso = code in ('MC_CONSULTA_EN_CURSO', 'PORTAL_IVA_EXECUTION_ALREADY_RUNNING')
         detalle = ('Ya hay una consulta de Mis Comprobantes en curso para este contribuyente. No se inició otra en ARCA.' if en_curso
                    else mensaje_fallo(mensaje, getattr(run_handle, 'run_id', None)))
+        detalle = aviso or detalle
         await remaining('rechazado' if en_curso else 'fallido', code.lower(), detalle)
         await flow._edit_progress(state, 'Mis Comprobantes: la consulta no se completó.')
         await flow._send(adapter, chat, detalle, thread)

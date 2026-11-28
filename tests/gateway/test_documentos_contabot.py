@@ -139,7 +139,7 @@ def test_mensaje_si_cuota_no_inventa(salida):
 # ------------------------------------------------------------------ CCMA y SCT
 
 def _ccma(tmp_path, monkeypatch):
-    monkeypatch.setattr("plugins.platforms.telegram.ccma_dispatch.verify_representation", AsyncMock())
+    monkeypatch.setattr("plugins.platforms.telegram.ccma_dispatch.require_delivery_scope", AsyncMock())
     monkeypatch.setenv("HOME", str(tmp_path))
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -452,8 +452,8 @@ def test_agip_history_uses_documents_route(tmp_path):
         import plugins.platforms.telegram.agip_ddjj_flow as module
         original = asyncio.create_subprocess_exec
         asyncio.create_subprocess_exec = AsyncMock(return_value=process)
-        old_verify = module.verify_representation
-        module.verify_representation = AsyncMock()
+        old_verify = module.require_delivery_scope
+        module.require_delivery_scope = AsyncMock()
         try:
             flow._acquire_execution_lock = lambda _key: None
             flow._release_execution_lock = lambda _key: None
@@ -465,7 +465,7 @@ def test_agip_history_uses_documents_route(tmp_path):
             await flow._run_query(adapter, "10", None, "k", state, "2026-08")
         finally:
             asyncio.create_subprocess_exec = original
-            module.verify_representation = old_verify
+            module.require_delivery_scope = old_verify
         kwargs = history.finish_single.await_args.kwargs
         assert kwargs["state"] == "completado"
         assert kwargs["output_relative"] == ruta

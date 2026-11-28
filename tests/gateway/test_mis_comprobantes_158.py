@@ -231,7 +231,7 @@ def _corrida(monkeypatch, tmp_path, sentido, result, falla_envio=False):
     async def verificada(*a, **k):
         return None
     monkeypatch.setattr(mc.asyncio, 'create_subprocess_exec', proceso)
-    monkeypatch.setattr(mc, 'verify_representation', verificada)
+    monkeypatch.setattr(mc, 'require_delivery_scope', verificada)
     monkeypatch.setattr(mc.shutil, 'rmtree', lambda *a, **k: None)
     asyncio.run(mc.run(flow, SimpleNamespace(send_document=send_document), 1, None, 'k', s))
     return flow, enviados, comandos

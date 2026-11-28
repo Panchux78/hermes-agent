@@ -26,10 +26,10 @@ HOLDER_CUIT = "20123456786"
 
 
 @pytest.fixture(autouse=True)
-def verify_representation_mock(monkeypatch):
+def require_delivery_scope_mock(monkeypatch):
     verification = AsyncMock(return_value=None)
     monkeypatch.setattr(
-        "plugins.platforms.telegram.agip_ddjj_flow.verify_representation",
+        "plugins.platforms.telegram.agip_ddjj_flow.require_delivery_scope",
         verification,
     )
     return verification
@@ -267,7 +267,7 @@ def test_worker_starts_in_new_session(monkeypatch):
 
 
 def test_success_uses_verification_profile_before_delivery(
-    monkeypatch, tmp_path, verify_representation_mock,
+    monkeypatch, tmp_path, require_delivery_scope_mock,
 ):
     async def scenario():
         flow = AgipDdjjFlow(clients_root=tmp_path)
@@ -304,7 +304,7 @@ def test_success_uses_verification_profile_before_delivery(
 
         await flow._run_query(adapter, "10", None, key, state, "2026-08")
 
-        verify_representation_mock.assert_awaited_once_with(
+        require_delivery_scope_mock.assert_awaited_once_with(
             "7", item, "AGIP - Clave Ciudad", VALID_CUIT,
         )
         adapter.send_document.assert_awaited_once()

@@ -55,10 +55,10 @@ def test_161_absence_progress_removes_expected_file_not_count_as_download():
 
 
 @pytest.fixture(autouse=True)
-def verify_representation_mock(monkeypatch):
+def require_delivery_scope_mock(monkeypatch):
     verification = AsyncMock(return_value=None)
     monkeypatch.setattr(
-        "plugins.platforms.telegram.portal_iva_flow.verify_representation",
+        "plugins.platforms.telegram.portal_iva_flow.require_delivery_scope",
         verification,
     )
     return verification
@@ -80,8 +80,6 @@ def _scope_query(sql):
         return [{"linked": True}]
     if "fn_actor_telegram_permiso" in sql:
         return [{"allowed": True}]
-    if "fn_verificar_representacion_fiscal" in sql:
-        return [{"verified": True}]
     return []
 
 
@@ -948,7 +946,7 @@ def test_captcha_path_rejects_escape_and_symlink(tmp_path):
 
 @pytest.mark.parametrize('apertura',[None,'pendiente','verificada'])
 def test_success_delivers_both_csvs_and_updates_same_message(
-    monkeypatch, tmp_path, verify_representation_mock, apertura,
+    monkeypatch, tmp_path, require_delivery_scope_mock, apertura,
 ):
     async def scenario():
         flow = PortalIvaFlow(executor=tmp_path / "portal_iva.py", uv=tmp_path / "uv", clients_root=tmp_path)
@@ -968,7 +966,7 @@ def test_success_delivers_both_csvs_and_updates_same_message(
         assert adapter.send_document.await_count == 2
         sent_names = [call.kwargs["file_name"] for call in adapter.send_document.await_args_list]
         assert sent_names == ["cliente-portal-iva-ventas-2026-08.csv", "cliente-portal-iva-compras-2026-08.csv"]
-        verify_representation_mock.assert_awaited_once()
+        require_delivery_scope_mock.assert_awaited_once()
         expected = (
             "Portal IVA completado.\n"
             "Ventas: sin comprobantes para el período.\n"
@@ -1747,7 +1745,7 @@ def _single_flow(tmp_path, history=None):
 
 
 @pytest.mark.parametrize('operation', ['generar', 'descargar-presentados'])
-def test_single_history_registers_the_documents_route(monkeypatch, tmp_path, verify_representation_mock, operation):
+def test_single_history_registers_the_documents_route(monkeypatch, tmp_path, require_delivery_scope_mock, operation):
     async def scenario():
         history = FakeHistory()
         flow, state = _single_flow(tmp_path, history)
@@ -1797,7 +1795,7 @@ def test_single_failure_reports_what_was_already_saved(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
-def test_single_delivers_f2083_when_reported(monkeypatch, tmp_path, verify_representation_mock):
+def test_single_delivers_f2083_when_reported(monkeypatch, tmp_path, require_delivery_scope_mock):
     async def scenario():
         flow, state = _single_flow(tmp_path)
         result = _result(tmp_path, state)

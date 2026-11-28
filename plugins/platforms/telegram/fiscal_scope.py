@@ -31,6 +31,20 @@ def valid_cuit(value: str) -> bool:
     return int(digits[-1]) == expected
 
 
+def aviso_representacion_ausente(representado, titular):
+    if not all(isinstance(cuit, str) and re.fullmatch(r'[0-9]{11}', cuit) for cuit in (representado, titular)):
+        raise ValueError('ARCA_IDENTIDAD_INVALIDA')
+    return f'No figura {representado} entre los representados de {titular} en ARCA: posible error en la representación'
+
+
+def aviso_del_ejecutor(result, operation, subject):
+    if (not isinstance(result, dict) or result.get('ok') is not False
+            or result.get('operacion') != operation or result.get('motivo') != 'ARCA_REPRESENTACION_AUSENTE'
+            or result.get('cuit') != subject.get('cuit') or result.get('cuit_titular') != subject.get('holder_cuit')):
+        return None
+    return aviso_representacion_ausente(subject['cuit'], subject['holder_cuit'])
+
+
 def validate_search_term(value: str) -> str:
     term = (value or "").strip()
     digits = re.sub(r"[^0-9]", "", term)
@@ -104,7 +118,6 @@ class FiscalScope:
                 'id',s.id_contribuyente,'nombre',s.nombre_legal,'cuit',s.cuit,'slug',s.slug,
                 'study_id',s.id_estudio,'relation_id',s.id_representacion,
                 'relation_revision',s.revision_representacion,
-                'verified',s.fecha_verificacion IS NOT NULL,
                 'representative_id',s.id_representante,'holder_cuit',s.cuit_representante,
                 'access_id',s.id_acceso
               )::text
@@ -116,7 +129,6 @@ class FiscalScope:
             'id',s.id_contribuyente,'nombre',s.nombre_legal,'cuit',s.cuit,'slug',s.slug,
             'study_id',s.id_estudio,'relation_id',s.id_representacion,
             'relation_revision',s.revision_representacion,
-            'verified',s.fecha_verificacion IS NOT NULL,
             'representative_id',s.id_representante,'holder_cuit',s.cuit_representante,
             'access_id',b.id_acceso{",'iva',b.iva" if self.binding == "mis_retenciones" else ""}
           )::text
@@ -137,19 +149,17 @@ class FiscalScope:
         return safe
 
 
-def mark_verified_sql(telegram_id: Any, item: dict[str, Any], entity: str, verified_cuit: str) -> str:
+def delivery_scope_sql(telegram_id, item, entity, returned_cuit, *, ddjj=False):
+    """La identidad devuelta y la cartera vigente deben coincidir antes de entregar datos."""
     actor = FiscalScope._telegram_id(telegram_id)
-    relation_id = int(item["relation_id"])
-    revision = int(item["relation_revision"])
-    expected = str(item["cuit"])
-    if not valid_cuit(verified_cuit) or verified_cuit != expected:
+    if not valid_cuit(returned_cuit) or returned_cuit != item['cuit']:
         raise InvalidCuit("VERIFIED_SUBJECT_MISMATCH")
-    return (
-        "SELECT json_build_object('verified',console.fn_verificar_representacion_fiscal("
-        f"{actor},{relation_id},{revision},{_literal(entity)},{_literal(expected)}))::text;"
-    )
-
-
-def assert_marked(rows: list[Any]) -> None:
-    if len(rows) != 1 or rows[0] != {"verified": True}:
-        raise RuntimeError("REPRESENTATION_VERIFICATION_FAILED")
+    cid = int(item['id'])
+    if ddjj:
+        source = f"console.fn_ddjj_iva_buscar_telegram({actor},NULL,{cid})"
+    else:
+        source = f"console.fn_buscar_contribuyente_fiscal({actor},{_literal(entity)},NULL,{cid})"
+    return f"""SELECT EXISTS (SELECT 1 FROM {source} s
+        WHERE s.id_representacion={int(item['relation_id'])}
+          AND s.revision_representacion={int(item['relation_revision'])}
+          AND s.cuit={_literal(returned_cuit)})::int;"""

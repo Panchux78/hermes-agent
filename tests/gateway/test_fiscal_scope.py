@@ -6,8 +6,7 @@ from plugins.platforms.telegram.fiscal_scope import (
     AccountNotLinked,
     FiscalScope,
     InvalidCuit,
-    assert_marked,
-    mark_verified_sql,
+    delivery_scope_sql,
     valid_cuit,
 )
 
@@ -16,7 +15,7 @@ def item(**overrides):
     value = {
         "id": 12, "nombre": "Cliente sintético", "cuit": "20987654326",
         "slug": "cliente-sintetico", "study_id": 1, "relation_id": 101,
-        "relation_revision": 3, "verified": False, "representative_id": 11,
+        "relation_revision": 3, "representative_id": 11,
         "holder_cuit": "20123456786", "access_id": 31,
     }
     value.update(overrides)
@@ -55,14 +54,12 @@ def test_invalid_stored_cuit_is_not_returned():
     assert FiscalScope(query, "ARCA").by_id("7", 12) == []
 
 
-def test_verification_requires_exact_cuit_and_expected_database_ack():
-    sql = mark_verified_sql("7", item(), "ARCA", "20987654326")
-    assert "fn_verificar_representacion_fiscal(7,101,3" in sql
+def test_delivery_requires_exact_subject_and_current_actor_scope():
+    sql = delivery_scope_sql("7", item(), "ARCA", "20987654326")
+    assert "fn_buscar_contribuyente_fiscal(7," in sql
+    assert "s.id_representacion=101" in sql and "s.revision_representacion=3" in sql
     with pytest.raises(InvalidCuit, match="VERIFIED_SUBJECT_MISMATCH"):
-        mark_verified_sql("7", item(), "ARCA", "20123456786")
-    assert_marked([{"verified": True}])
-    with pytest.raises(RuntimeError, match="REPRESENTATION_VERIFICATION_FAILED"):
-        assert_marked([{"verified": False}])
+        delivery_scope_sql("7", item(), "ARCA", "20123456786")
 
 
 def test_mis_retenciones_no_exige_responsable_inscripto():

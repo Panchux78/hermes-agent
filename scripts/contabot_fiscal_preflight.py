@@ -261,7 +261,6 @@ def level1(gate: Gate) -> None:
         gate_ok = False
     gate.check(1, "telegram_user_gate", gate_ok, f"actors={len(actors)}")
     database_ok = True
-    verified_rollbacks = 0
     try:
         for actor in actors:
             for capability in ("lookup", "fiscal"):
@@ -271,19 +270,10 @@ def level1(gate: Gate) -> None:
                 for entity in ("ARCA", "AGIP - Clave Ciudad"):
                     if not function_rows(actor, entity, capability):
                         raise RuntimeError("entity_candidates_missing")
-            relation_id, revision, cuit = function_rows(actor, "ARCA", "fiscal")[0].split("|")
-            transaction = psql(
-                "verification",
-                "BEGIN; SELECT console.fn_verificar_representacion_fiscal("
-                f"{actor},{int(relation_id)},{int(revision)},'ARCA','{cuit}'); ROLLBACK;",
-            )
-            if transaction.returncode or b"t" not in transaction.stdout.splitlines():
-                raise RuntimeError("verification_rollback_failed")
-            verified_rollbacks += 1
     except Exception:
         database_ok = False
     gate.check(1, "fiscal_roles_and_scopes", database_ok,
-               f"actors={len(actors)} rollback_checks={verified_rollbacks}")
+               f"actors={len(actors)}")
 
     try:
         router = router_psql("SELECT 1;")

@@ -100,7 +100,7 @@ async def test_verification_database_failure_reports_completed_portal_stage(tmp_
     monkeypatch.setattr(module, 'canonical_access', AsyncMock(return_value=b'{"type":"access"}\n'))
     monkeypatch.setattr(
         module,
-        'verify_representation',
+        'require_delivery_scope',
         AsyncMock(side_effect=credentials.FiscalDatabaseError('fiscal_database_unavailable')),
     )
     monkeypatch.setattr(module, 'terminate_owned_group', AsyncMock())

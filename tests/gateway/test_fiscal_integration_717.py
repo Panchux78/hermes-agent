@@ -19,7 +19,7 @@ from tests.gateway.documentos_falsos import instalar as instalar_documentos
 def test_canonical_access_decrypts_only_inside_postgresql():
     sql = credentials.access_sql(8, '20987654321', 'synthetic-client', '20123456783')
     assert "console.fn_acceso_fiscal_contexto(8,'ARCA',titular)" in sql
-    assert 'r.activo AND c.id_contribuyente=8' in sql
+    assert 'r.activo AND NOT r.retirada AND c.id_contribuyente=8' in sql
     assert "access->>'representado_cuit'=representado" in sql
     assert 'a.contrasena' not in sql
 
@@ -77,24 +77,24 @@ async def test_missing_profile_has_no_privileged_or_csv_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_verification_uses_the_narrow_write_capability(monkeypatch):
+async def test_delivery_rechecks_the_read_only_scope(monkeypatch):
     calls = []
 
     def invocation(capability):
         calls.append(capability)
-        raw = b'{"verified": true}\n'
+        raw = b'1\n'
         return [sys.executable, '-c', f'import sys;sys.stdout.buffer.write({raw!r})'], {}
 
     monkeypatch.setitem(sys.modules, 'contabot_pg', NS(psql_invocation=invocation))
     item = {
-        'relation_id': 31,
+        'id': 8, 'relation_id': 31,
         'relation_revision': 1,
         'cuit': '20987654326',
     }
 
-    await credentials.verify_representation(7, item, 'ARCA', '20987654326')
+    await credentials.require_delivery_scope(7, item, 'ARCA', '20987654326')
 
-    assert calls == ['verification']
+    assert calls == ['lookup']
 
 
 def make_flow():

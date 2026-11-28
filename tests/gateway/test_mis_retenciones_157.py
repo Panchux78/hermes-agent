@@ -262,7 +262,7 @@ def _corrida(monkeypatch, tmp_path, impuesto, consultas, xlsx=None, iva='corresp
     async def verificada(*a, **k):
         return None
     monkeypatch.setattr(mr.asyncio, 'create_subprocess_exec', proceso)
-    monkeypatch.setattr(mr, 'verify_representation', verificada)
+    monkeypatch.setattr(mr, 'require_delivery_scope', verificada)
     monkeypatch.setattr(mr.shutil, 'rmtree', lambda *a, **k: None)
     asyncio.run(mr.run(flow, SimpleNamespace(send_document=send_document), 1, None, 'k', s))
     return flow, enviados

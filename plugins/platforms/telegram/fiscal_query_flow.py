@@ -20,7 +20,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from plugins.platforms.telegram.menu_buttons import menu_label
 from plugins.platforms.telegram.fiscal_execution import freeze_credentials, terminate_owned_group
 from plugins.platforms.telegram.fiscal_runtime import browser_environment, excel_library_path, require_fiscal_runtime, unavailable_message
-from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, verify_representation
+from plugins.platforms.telegram.fiscal_credentials import canonical_access, FiscalDatabaseError, require_delivery_scope
 from plugins.platforms.telegram.fiscal_scope import ACCOUNT_NOT_LINKED_MESSAGE, AccountNotLinked, InvalidCuit
 from plugins.platforms.telegram.fiscal_interaction import communicate as interactive_communicate
 from plugins.platforms.telegram import documentos_contabot as documentos
@@ -565,7 +565,11 @@ class FiscalQueryFlow:
                 await failed('runner_exit_error',f"El runner SCT terminó sin un estado verificable (salida {process.returncode}). No se entregó ningún resultado. Referencia: {captcha_dir.name}.")
                 return
             if status != "sct_exported":
-                await failed(status,sct_failure_message(status, captcha_dir.name))
+                from plugins.platforms.telegram.fiscal_scope import aviso_representacion_ausente
+                text = (aviso_representacion_ausente(client_cuit, holder_cuit)
+                        if status == 'subject_selector_does_not_contain_target' and holder_cuit and client_cuit
+                        else sct_failure_message(status, captcha_dir.name))
+                await failed(status, text)
                 return
 
             if process.returncode != 0:
@@ -575,7 +579,7 @@ class FiscalQueryFlow:
             source_exported = True
             if telegram_id is None or scope_item is None:
                 raise RuntimeError('fiscal_scope_missing')
-            await verify_representation(telegram_id, scope_item, 'ARCA', client_cuit)
+            await require_delivery_scope(telegram_id, scope_item, 'ARCA', client_cuit)
 
             await terminate_owned_group(process)
             process = None
