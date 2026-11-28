@@ -1,8 +1,11 @@
-"""Revisión de la planilla de facturación; no entrega archivos al modelo ni emite."""
+"""Facturación de la planilla exclusivamente en el chat privado autenticado."""
 import asyncio
+from hashlib import sha256
 from io import BytesIO
 import json
 import logging
+import os
+from pathlib import Path
 import re
 import secrets
 import subprocess
@@ -14,7 +17,7 @@ from plugins.platforms.telegram.comarb_deducciones_flow import ComarbDeducciones
 from plugins.platforms.telegram.contabot_access import catalog_connection
 from plugins.platforms.telegram.contabot_compartido import cargar
 from plugins.platforms.telegram.execution_origin import environment as with_origin
-from plugins.platforms.telegram.execution_origin import origen_del_mensaje
+from plugins.platforms.telegram.execution_origin import origen_del_mensaje, origen_callback_confirmado
 from plugins.platforms.telegram.fiscal_scope import AccountNotLinked, FiscalScope
 
 log=logging.getLogger(__name__)
@@ -30,6 +33,7 @@ class FacturacionFlow:
         self.jobs={}
         self.challenges={}
         self.challenge_messages={}
+        self.confirmaciones={}
 
     def _query(self,sql):
         return ComarbDeduccionesFlow._run(sql,self.query_connection)
@@ -74,6 +78,37 @@ class FacturacionFlow:
             raise RuntimeError('facturacion_cola_no_disponible')
         return json.loads(result.stdout.strip() or 'null')
 
+    def _emision(self,actor,jid,action,data=None,*,origin=None):
+        assert type(actor) is int and actor>0 and type(jid) is int and jid>0
+        assert action in {'emitir','estado','archivo'}
+        if action=='emitir' and origin is None:
+            return None
+        raw=json.dumps(data or {},ensure_ascii=True).replace("'","''")
+        command,env=(catalog_connection if action=='emitir' else self.query_connection)()
+        if action=='emitir':
+            env=with_origin(env,origen_mensaje=origin)
+        sql=("SET standard_conforming_strings=on; SELECT console.fn_facturacion_emision_usuario("
+             f"NULL,{actor},{jid},'{action}','{raw}'::jsonb)::text;")
+        result=subprocess.run([*command,'-XqAt','-v','ON_ERROR_STOP=1'],input=sql,env=env,text=True,
+                              capture_output=True,timeout=15)
+        if result.returncode:
+            raise RuntimeError('facturacion_cola_no_disponible')
+        return json.loads(result.stdout.strip() or 'null')
+
+    @staticmethod
+    def _pdf(meta):
+        root=Path(os.environ.get('CONTABOT_CLIENTES_ROOT',str(Path.home()/'clientes'))).resolve(strict=True)
+        part=Path(meta['ruta'])
+        if part.is_absolute() or '..' in part.parts or part.name!=meta['nombre'] or not part.name.endswith('.pdf'):
+            raise ValueError('pdf_factura_no_valido')
+        path=(root/part).resolve(strict=True)
+        if not path.is_relative_to(root) or not path.is_file() or path.stat().st_size!=meta['bytes'] or not 200<meta['bytes']<45*1024*1024:
+            raise ValueError('pdf_factura_no_valido')
+        data=path.read_bytes()
+        if not data.startswith(b'%PDF-') or sha256(data).hexdigest()!=meta['sha256']:
+            raise ValueError('pdf_factura_no_valido')
+        return InputFile(BytesIO(data),filename=part.name)
+
     @staticmethod
     def _menu(active=False,queued=None,preview=None):
         options=[[InlineKeyboardButton('Descargar modelo',callback_data='fe:modelo')]]
@@ -102,6 +137,37 @@ class FacturacionFlow:
             await query.answer('La revisión de facturación no está disponible.')
             return
         key=(chat,user)
+        match=re.fullmatch(r'fe:emit:(\d{1,18}):([a-zA-Z0-9_-]{10,24})',data)
+        if match:
+            jid=int(match[1])
+            current=self.confirmaciones.get(key)
+            if (not current or current[:2]!=(jid,match[2]) or current[2]<=monotonic()
+                    or query.message.message_id!=current[4] or key in self.busy or key in self.jobs):
+                await query.answer('Esta confirmación no está vigente. Revisá Operaciones.')
+                return
+            origin=origen_callback_confirmado(actor)
+            if not origin:
+                await query.answer('No se puede emitir desde una prueba ni desde otro chat.')
+                return
+            self.confirmaciones.pop(key,None)
+            self.busy.add(key)
+            try:
+                result=await asyncio.to_thread(self._emision,actor,jid,'emitir',
+                                               {'confirmo':True,'filas':current[3]},origin=origin)
+                if not result or not result.get('id_emision'):
+                    await query.answer('No pude confirmar el inicio. Revisá Operaciones.')
+                    return
+                emision_id=int(result['id_emision'])
+                await query.answer('Confirmación recibida. Sigo en ARCA.')
+                task=asyncio.create_task(self._wait_job(query.message,key,actor,emision_id,shared,None,emision=jid),
+                                         name=f'facturacion-emision-{emision_id}')
+                self.jobs[key]=(emision_id,task)
+            except Exception as ex:
+                log.warning('Facturación: no se confirmó el inicio; clase=%s',type(ex).__name__)
+                await query.answer('No pude confirmar el inicio. Revisá Operaciones antes de volver a emitir.')
+            finally:
+                self.busy.discard(key)
+            return
         if data.startswith('fe:confirm:'):
             preview=self.previews.get(key)
             if not preview or preview[1]<=monotonic() or data!=f'fe:confirm:{preview[0]}':
@@ -231,16 +297,56 @@ class FacturacionFlow:
             caption=f'Facturación electrónica · {titulo}\n{summary} · {blocked} no disponibles · {obs} {"fila" if obs==1 else "filas"} para corregir.\nNo se emitió nada.{ref}',
             reply_markup=self._menu(active=bool(preview),preview=preview))
 
-    async def _wait_job(self,msg,key,actor,jid,shared,revision):
+    async def _ofrecer_emision(self,msg,key,actor,jid,revision):
+        estado=await asyncio.to_thread(self._emision,actor,jid,'estado')
+        filas=[r['fila'] for r in (estado or {}).get('filas',[]) if r['estado']=='verificada']
+        if not filas or (estado or {}).get('id_emision'):
+            return
+        datos=[r for r in revision['comprobantes'] if r['fila'] in filas and r['estado']=='resumen_arca']
+        if len(datos)!=len(filas):
+            return
+        nonce=secrets.token_urlsafe(10)
+        info='\n'.join(f'Fila {r["fila"]} · Receptor {r["receptor"]} · Total {r["total"]} {r["moneda"]}' for r in datos)
+        sent=await msg.reply_text(
+            f'Revisá antes de emitir:\n{info}\n\nSi tocás Emitir, ContaBot va a solicitar el CAE a ARCA.',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('Emitir',callback_data=f'fe:emit:{jid}:{nonce}')]]))
+        self.confirmaciones={k:v for k,v in self.confirmaciones.items() if v[2]>monotonic()}
+        self.confirmaciones[key]=(jid,nonce,monotonic()+7200,filas,sent.message_id)
+
+    async def _entregar_emision(self,msg,actor,previa):
+        result=await asyncio.to_thread(self._emision,actor,previa,'estado')
+        if not result:
+            raise RuntimeError('resultado_emision_no_visible')
+        lines=[]
+        for row in result['filas']:
+            await asyncio.to_thread(self._actor,actor)
+            line=f'Fila {row["fila"]}: '+(row.get('motivo') or 'Confirmación pendiente. Revisá Operaciones.')
+            if row.get('numero') and row.get('punto'):
+                line+=f' {row["punto"]:05d}-{row["numero"]:08d} · CAE {row["cae"]}.'
+            if row.get('id_archivo'):
+                try:
+                    meta=await asyncio.to_thread(self._emision,actor,previa,'archivo',{'fila':row['fila']})
+                    pdf=await asyncio.to_thread(self._pdf,meta)
+                    await msg.reply_document(pdf,caption=f'Factura oficial · Fila {row["fila"]}')
+                except Exception as ex:
+                    log.warning('Facturación: no se adjuntó PDF; clase=%s',type(ex).__name__)
+                    line+=' No pude adjuntarlo acá; descargalo en Documentos.'
+            lines.append(line)
+        for i in range(0,len(lines),8):
+            await msg.reply_text('\n'.join(lines[i:i+8])+f'\nReferencia en Operaciones: {result["id_corrida"]}.')
+
+    async def _wait_job(self,msg,key,actor,jid,shared,revision,*,emision=None):
         last=None;sent=set();until=monotonic()+24*60
+        buttons=None if emision else self._menu(True,jid)
+        espera='No pude mostrar el resultado. Revisá Operaciones antes de volver a emitir.' if emision else 'No pude mostrar el resultado. Revisá Operaciones antes de reintentar. No se emitió nada.'
         try:
-            progress=await msg.reply_text('Facturación electrónica · Esperando la verificación en ARCA…',reply_markup=self._menu(True,jid))
+            progress=await msg.reply_text('Facturación electrónica · Esperando ARCA…',reply_markup=buttons)
             while monotonic()<until:
                 status=await asyncio.to_thread(self._job,actor,jid,'estado')
                 if not status:raise RuntimeError('facturacion_no_visible')
                 if status['progreso']!=last:
                     last=status['progreso']
-                    try:await progress.edit_text(last,reply_markup=self._menu(True,jid))
+                    try:await progress.edit_text(last,reply_markup=buttons)
                     except Exception as ex:log.warning('Facturación: no se editó el avance; clase=%s',type(ex).__name__)
                 nonce=status.get('captcha')
                 if nonce and nonce not in sent and re.fullmatch('[a-f0-9]{16}',nonce):
@@ -256,13 +362,19 @@ class FacturacionFlow:
                             sent.add(nonce)
                 if status['estado'] not in ('pendiente','consultando'):
                     await asyncio.to_thread(self._actor,actor)
-                    await self._result(msg,shared,shared.aplicar_previa(revision,status),status.get('id_corrida'))
+                    if emision:
+                        await self._entregar_emision(msg,actor,emision)
+                    else:
+                        final=shared.aplicar_previa(revision,status)
+                        await self._result(msg,shared,final,status.get('id_corrida'))
+                        if any(row['estado']=='resumen_arca' for row in final['comprobantes']):
+                            await self._ofrecer_emision(msg,key,actor,jid,final)
                     return
                 await asyncio.sleep(1.5)
-            await msg.reply_text('Se dejó de mostrar el avance. Antes de reintentar, revisá Operaciones. No se emitió nada.')
+            await msg.reply_text(espera)
         except Exception as ex:
             log.warning('Facturación: no se pudo entregar el seguimiento; clase=%s',type(ex).__name__)
-            await msg.reply_text('No pude mostrar el resultado. Revisá Operaciones antes de reintentar. No se emitió nada.')
+            await msg.reply_text(espera)
         finally:
             self.jobs.pop(key,None);self.challenges.pop(key,None)
 

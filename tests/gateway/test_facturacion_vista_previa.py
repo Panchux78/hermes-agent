@@ -1,6 +1,7 @@
 import asyncio
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from plugins.platforms.telegram.execution_origin import incoming
@@ -55,3 +56,33 @@ async def _probar(monkeypatch):
     await bot.jobs[("42","42")][1]
     await bot.callback(query,confirmation,metadata)
     assert calls==[(42,"crear",{"casos":[{"fila":4}]},("telegram","","update:100/mensaje:31","42"))]
+
+
+def test_emitir_solo_desde_el_boton_privado_recibido(monkeypatch):
+    asyncio.run(_emitir(monkeypatch))
+
+
+async def _emitir(monkeypatch):
+    bot=flow.FacturacionFlow(lambda:None)
+    calls=[]
+    monkeypatch.setattr(flow,'cargar',lambda _:object())
+    monkeypatch.setattr(bot,'_actor',lambda actor:int(actor))
+    monkeypatch.setattr(bot,'_emision',lambda *args,**kwargs:calls.append((args,kwargs)) or {'id_emision':101})
+    monkeypatch.setattr(bot,'_wait_job',AsyncMock())
+    actor=SimpleNamespace(id=42)
+    msg=SimpleNamespace(message_id=31)
+    action='fe:emit:77:nonce_ficticio'
+    query=SimpleNamespace(from_user=actor,message=msg,answer=AsyncMock(),data=action)
+    bot.confirmaciones[('42','42')]=(77,'nonce_ficticio',monotonic()+60,[4,7],31)
+    await bot.callback(query,action,{'chat_id':'42','chat_type':'private'})
+    await bot.callback(query,action,{'chat_id':'99','chat_type':'group'})
+    assert not calls
+    @incoming
+    async def callback(update,_):
+        await bot.callback(query,action,{'chat_id':'42','chat_type':'private'})
+    update=SimpleNamespace(update_id=101,effective_message=msg,effective_chat=actor,callback_query=query)
+    await callback(update,None)
+    await bot.jobs[('42','42')][1]
+    await callback(update,None)
+    assert calls==[((42,77,'emitir',{'confirmo':True,'filas':[4,7]}),
+                    {'origin':('telegram','','update:101/mensaje:31','42')})]
