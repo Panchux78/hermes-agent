@@ -182,9 +182,9 @@ class PadronActDomFlow(ComarbDeduccionesFlow):
             await msg.reply_text('Adjuntá la lista en Excel .xlsx, de hasta 20 MB.');return True
         try:
             data=bytes(await (await doc.get_file()).download_as_bytearray(read_timeout=30))
-            rows=await asyncio.to_thread(self._write,f"SELECT console.fn_padron_externo_ticket({actor},{state.estudio_externo},'telegram')::text;")
-            if len(rows)!=1 or not rows[0]:raise ValueError('ticket_no_disponible')
-            result=await asyncio.to_thread(self._enviar_externo,str(rows[0]),doc.file_name,data)
+            rows=await asyncio.to_thread(self._write,f"SELECT json_build_object('ticket',console.fn_padron_externo_ticket({actor},{state.estudio_externo},'telegram'))::text;")
+            if len(rows)!=1 or not isinstance(rows[0],dict) or not rows[0].get('ticket'):raise ValueError('ticket_no_disponible')
+            result=await asyncio.to_thread(self._enviar_externo,str(rows[0]['ticket']),doc.file_name,data)
             jid=int(result['id_consulta'])
         except Exception as exc:
             log.warning('padron externo telegram no completado clase=%s',type(exc).__name__)

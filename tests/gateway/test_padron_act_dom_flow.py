@@ -184,12 +184,13 @@ class PadronExternoTelegram(IsolatedAsyncioTestCase):
     async def test_excel_externo_usa_ticket_y_misma_vigilancia(self):
         f=PadronActDomFlow();msg=self.mensaje();state=State('990000002','nonce','excel_externo','externo');state.estudio_externo=1
         key=f._key(990000002,None,990000002);f.states[key]=state
-        with patch.object(f,'_write',return_value=['2b0f6d1a-6c2e-4a43-9d5b-0a2f4f1c9e11']) as w, \
+        with patch.object(f,'_write',return_value=[{'ticket':'2b0f6d1a-6c2e-4a43-9d5b-0a2f4f1c9e11'}]) as w, \
              patch.object(f,'_enviar_externo',return_value={'id_consulta':8}) as enviar, \
              patch.object(f,'_watch_padron',new_callable=AsyncMock):
             self.assertTrue(await f.document(None,msg))
             await f.watchers[8]
-        self.assertIn('fn_padron_externo_ticket',w.call_args.args[0])
+        self.assertIn("json_build_object('ticket',console.fn_padron_externo_ticket",w.call_args.args[0])
+        self.assertEqual(enviar.call_args.args[0],'2b0f6d1a-6c2e-4a43-9d5b-0a2f4f1c9e11')
         self.assertEqual(enviar.call_args.args[2],b'PK\x03\x04externo')
         self.assertNotIn(key,f.states)
 
