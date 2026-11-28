@@ -15,6 +15,9 @@ from plugins.platforms.telegram.menu_buttons import menu_label
 
 log=logging.getLogger(__name__)
 
+XLS_VIEJO='Ese archivo es .xls. Guardalo como .xlsx y volvé a mandarlo respondiendo al mensaje del Borrador.'
+
+
 def resumen_padron(row):
     r=row.get('resultado') or {}
     # #192 (22/11/2026): el Excel es el papel de trabajo de IVA e IIBB; el aviso cuenta sólo lo de IVA.
@@ -260,6 +263,9 @@ class PadronActDomFlow(ComarbDeduccionesFlow):
             await msg.reply_text('Tu usuario no puede cargar correcciones del Borrador IVA e IIBB.');return True
         if t.get('estado')!='ok':
             await msg.reply_text('Ese mensaje no tiene un Borrador IVA e IIBB terminado para corregir.');return True
+        if (doc.file_name or '').casefold().endswith('.xls'):
+            # #240 (contadora, 27/11/2026): un .xls no se lee ni se rechaza en silencio.
+            await msg.reply_text(XLS_VIEJO);return True
         if not (doc.file_name or '').casefold().endswith('.xlsx') or not 0<(doc.file_size or 0)<=MAX_EXCEL:
             await msg.reply_text('Adjuntá el Borrador corregido en Excel (.xlsx), de hasta 20 MB.');return True
         try:

@@ -100,6 +100,10 @@ class DevolucionTelegram(IsolatedAsyncioTestCase):
              patch.object(f,'_enviar_devolucion') as enviar:
             msg=self.mensaje(nombre='corregido.pdf');await f.document(None,msg)
             self.assertIn('Excel (.xlsx)',msg.reply_text.await_args.args[0])
+            # #240: un .xls no se rechaza en silencio; pide guardarlo como .xlsx y volver a mandarlo.
+            for nombre in ('detalle octubre.xls','DETALLE.XLS'):
+                msg=self.mensaje(nombre=nombre);self.assertTrue(await f.document(None,msg))
+                self.assertEqual(msg.reply_text.await_args.args[0],'Ese archivo es .xls. Guardalo como .xlsx y volvé a mandarlo respondiendo al mensaje del Borrador.')
         enviar.assert_not_called()
         with patch.object(f,'_write',return_value=[dict(estado='sin_permiso')]):
             msg=self.mensaje();await f.document(None,msg)
